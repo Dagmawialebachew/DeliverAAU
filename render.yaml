@@ -1,0 +1,8 @@
+services:
+  - type: web
+    name: deliver-aau
+    env: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn -k uvicorn.workers.UvicornWorker bot:app --timeout 30
+    runtime: python-3.11.9
