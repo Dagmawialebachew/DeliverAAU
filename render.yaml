@@ -6,3 +6,7 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn -k uvicorn.workers.UvicornWorker bot:app --timeout 30
     runtime: python-3.11.9
+    envVars:
+      - key: DOTENV_PATH
+        value: .env
+    autoDeploy: true
