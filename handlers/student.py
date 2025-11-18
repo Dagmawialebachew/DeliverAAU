@@ -814,8 +814,9 @@ async def final_confirm(cb: CallbackQuery, state: FSMContext):
         f"🚚 Delivery fee: *{data.get('delivery_fee', 20.0):.2f} birr*\n"
         f"💵 Total: *{total_payable:.2f} birr*\n\n"
         f"📍 Drop-off: *{data.get('dropoff', '')}*\n"
-        f"{('📝 Notes: ' + data.get('notes', '') + '\\n') if data.get('notes') else ''}"
-    )
+        f"{('📝 Notes: ' + data.get('notes', '')) if data.get('notes') else ''}\n"
+)
+
 
     if chosen:
         final_preview += (
