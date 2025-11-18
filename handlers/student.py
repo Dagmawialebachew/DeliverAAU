@@ -644,7 +644,7 @@ async def ask_final_confirmation(message: Message, state: FSMContext):
         f"──────────────────────\n"
         f"💵 *Total Payable:* *{total:.2f} birr*\n\n"
         f"📍 _Drop-off:_ *{dropoff}*\n"
-        f"{('📝 _Notes:_ ' + notes + '\\n') if notes else ''}\n"
+        f"{('📝 _Notes:_ ' + notes) if notes else ''}\n"
         "\n✅ *Everything looks perfect?*\n"
         "_Tap Confirm to place your order._"
     )
