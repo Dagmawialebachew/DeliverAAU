@@ -1,0 +1,18 @@
+services:
+  - type: worker
+    name: deliver-aau-bot
+    env: python
+    region: oregon
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: ADMIN_IDS
+        sync: false
+      - key: DB_PATH
+        value: /opt/render/project/src/deliver_aau.db
+      - key: PYTHON_VERSION
+        value: 3.11.0
+    autoDeploy: true
