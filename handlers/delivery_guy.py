@@ -9,12 +9,12 @@ REVISION:
 """
 
 import asyncio
+from collections import Counter
 import contextlib
 import json
 import logging
 import math
 from typing import Optional, Tuple, Dict, Any, List
-import aiosqlite
 from datetime import datetime
 from aiogram import Bot
 from aiogram import Router, F, types
@@ -45,10 +45,11 @@ from utils.db_helpers import (
     check_thresholds_and_notify,
     add_dg_to_blacklist
 )
+from utils.helpers import eta_and_distance
 
 # Router + DB
 router = Router()
-db = Database(settings.DB_PATH)
+from app_context import db
 log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
@@ -72,33 +73,16 @@ CB_PREFIX_PERFORMANCE = "perf"
 # --------------------------
 
 async def _db_get_delivery_guy_by_user(telegram_user_id: int) -> Optional[Dict[str, Any]]:
-    """Try a few DB helper names; return a delivery_guy row dict or None."""
     try:
-        # Assuming Database class has a method `get_delivery_guy_by_user`
-        if hasattr(db, "get_delivery_guy_by_user"):
-            return await db.get_delivery_guy_by_user(telegram_user_id)
-        
-        async with aiosqlite.connect(db.db_path) as conn:
-            conn.row_factory = aiosqlite.Row
-            async with conn.execute("SELECT * FROM delivery_guys WHERE user_id = ? LIMIT 1", (telegram_user_id,)) as cur:
-                row = await cur.fetchone()
-                return dict(row) if row else None
+        return await db.get_delivery_guy_by_user(telegram_user_id)
     except Exception:
         log.exception("_db_get_delivery_guy_by_user failed for %s", telegram_user_id)
         return None
 
+
 async def _db_update_delivery_guy_coords(dg_id: int, lat: float, lon: float):
-    """Call your DB helper if available, otherwise perform raw SQL update."""
     try:
-        if hasattr(db, "update_delivery_guy_coords"):
-            await db.update_delivery_guy_coords(dg_id, lat, lon) 
-            return
-        async with aiosqlite.connect(db.db_path) as conn:
-            await conn.execute(
-                "UPDATE delivery_guys SET last_lat = ?, last_lon = ?, last_online_at = CURRENT_TIMESTAMP WHERE id = ?", 
-                (lat, lon, dg_id)
-            )
-            await conn.commit()
+        await db.update_delivery_guy_coords(dg_id, lat, lon)
     except Exception:
         log.exception("_db_update_delivery_guy_coords failed for dg_id=%s", dg_id)
 
@@ -158,27 +142,37 @@ def order_offer_keyboard(order_id: int, expiry_min: int) -> InlineKeyboardMarkup
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
+
 def accepted_order_actions(order_id: int, status: str) -> InlineKeyboardMarkup:
     """Accepted Order Inline actions (Section 3)."""
-    if status == "accepted":
-        # Initial status after acceptance, ready to start/pickup
-        buttons = [
-            InlineKeyboardButton(text="▶️ Start Delivery", callback_data=f"start_order_{order_id}")
-        ]
-    elif status == "in_progress":
-        # On the way status
+
+    
+    if status == "in_progress":
+        # Delivery is ongoing
         buttons = [
             InlineKeyboardButton(text="📍 Live Update", callback_data=f"update_location_{order_id}"),
             InlineKeyboardButton(text="📦 Mark Delivered", callback_data=f"delivered_{order_id}")
+
         ]
-    else: 
+    elif status == "ready":
+       buttons = [
+            InlineKeyboardButton(text="▶️ Start Delivery", callback_data=f"start_order_{order_id}"),
+            InlineKeyboardButton(text="📦 Mark Delivered", callback_data=f"delivered_{order_id}")
+
+        ]
+    else:
+        # For statuses like pending/assigned/preparing/delivered/cancelled
         buttons = []
 
     action_row = [
         InlineKeyboardButton(text="💬 Contact User", callback_data=f"contact_user_{order_id}")
     ]
 
-    return InlineKeyboardMarkup(inline_keyboard=[buttons, action_row])
+    # Only include buttons row if not empty
+    inline_keyboard = [buttons] if buttons else []
+    inline_keyboard.append(action_row)
+
+    return InlineKeyboardMarkup(inline_keyboard=inline_keyboard)
 
 
 # --------------------------
@@ -215,9 +209,9 @@ async def _send_dashboard_view(bot: Bot, user_id: int, dg: Dict[str, Any]):
         await bot.send_message(user_id, "🛑 **Your account is currently blocked** due to reliability issues. Please contact admin.", reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
         return
 
-    is_online = bool(dg.get("active", 0))
+    is_online = bool(dg.get("active", False))
     # 🔁 USING HELPER: calc_acceptance_rate
-    acceptance_rate = await calc_acceptance_rate(db.db_path, dg["id"])
+    acceptance_rate = await calc_acceptance_rate(db, dg["id"])
     reliability_score = reliability_badge(int(acceptance_rate))
     progress_bar = "▰" * int((dg.get('xp') % 100) / 10) + "▱" * (10 - int((dg.get('xp') % 100) / 10))
 
@@ -235,9 +229,10 @@ async def _send_dashboard_view(bot: Bot, user_id: int, dg: Dict[str, Any]):
     )
     
     kb = dashboard_reply_keyboard(is_online=is_online)
+    tg_id = await db.get_delivery_guy_telegram_id(user_id)  # returns row with telegram_id
     
     try:
-        await bot.send_message(user_id, dashboard_text, reply_markup=kb, parse_mode="Markdown")
+        await bot.send_message(tg_id, dashboard_text, reply_markup=kb, parse_mode="Markdown")
     except Exception:
         log.exception("Failed to send dashboard to dg %s", user_id)
 
@@ -294,10 +289,24 @@ async def handle_status_toggle(message: Message):
 # Sub-Dashboard Views (Section 4)
 # --------------------------
 
+STATUS_LABELS = {
+    "pending": "⏳ Awaiting vendor confirmation",
+    "assigned": "📌 Assigned (waiting vendor acceptance)",
+    "preparing": "👨‍🍳 Vendor is preparing",
+    "ready": "✅ Ready for pickup",
+    "accepted": "👍 Vendor accepted, ready to start",
+    "in_progress": "🚚 On the way",
+    "delivered": "🎉 Delivered",
+    "cancelled": "❌ Cancelled",
+}
+
+
+
+
 async def _send_my_orders_view(bot: Bot, dg: Dict[str, Any], message: Message):
     """Lists current + recent orders inline (Section 4)."""
     # 🔁 USING HELPER: get_all_active_orders_for_dg
-    orders = await get_all_active_orders_for_dg(db.db_path, dg["id"])
+    orders = await get_all_active_orders_for_dg(db, dg["id"])
     
     text = "📋 **Active Orders**\n\n"
     if not orders:
@@ -311,22 +320,34 @@ async def _send_my_orders_view(bot: Bot, dg: Dict[str, Any], message: Message):
             )
             items = json.loads(order['items_json'])
             item_names = [item["name"] for item in items]
-            items_text = ", ".join(item_names)
+
+            # Count duplicates
+            counts = Counter(item_names)
+
+            # Format like "Tea x2, Burger x1"
+            items_text = ", ".join([f"{name} x{count}" if count > 1 else name for name, count in counts.items()])
             # Send each order card as a separate message with its Inline Keyboard
             status_for_kb = 'accepted' if order.get('status') == 'assigned' else order.get('status', 'accepted')
+            subtotal_fee = int(order.get('delivery_fee', 0))
+            delivery_fee = int(order.get('delivery_fee', 0))
+            status_label = STATUS_LABELS.get(order.get("status"), "ℹ️ Unknown status")
             
             order_text = (
             f"📦 *Order #{order['id']}*\n"
+            f"📌 Status: {status_label}\n\n"
             "──────────────────────\n"
             f"🏠 Pickup: *{order.get('pickup')}*\n"
             f"📍 Drop-off: *{order.get('dropoff')}*\n"
-            f"💰 Fee: *{int(order.get('delivery_fee', 0))} birr*\n"
-            f"🛒 Items: {items_text}\n\n"            
+            f"💰 Subtotal Fee: *{subtotal_fee} birr*\n"
+            f"🚚 _Delivery fee:_ *{delivery_fee} birr*\n"
+            f"──────────────────────\n"
+            f"💵 *Total Payable: {subtotal_fee + delivery_fee} birr*\n\n"
+            f"🛒 Items: {items_text}\n\n"
             "⚡ Manage this order below."
         )
 
         await bot.send_message(
-            dg["user_id"],
+            dg["telegram_id"],
             order_text,
             reply_markup=accepted_order_actions(order["id"], status_for_kb),
             parse_mode="Markdown"
@@ -346,7 +367,7 @@ async def _send_earnings_view(bot: Bot, dg: Dict[str, Any], message: Message):
     
     today_earnings = daily_stats.get('earnings', 580.0)
     # 🔁 USING HELPER: calc_acceptance_rate
-    acceptance_rate = await calc_acceptance_rate(db.db_path, dg["id"])
+    acceptance_rate = await calc_acceptance_rate(db, dg["id"])
     
     text = (
         "💰 **Earnings Report**\n\n"
@@ -363,7 +384,7 @@ async def _send_performance_view(bot: Bot, dg: Dict[str, Any], message: Message)
     
     skips = dg.get("skipped_requests", 0)
     # 🔁 USING HELPER: calc_acceptance_rate
-    acceptance_rate = await calc_acceptance_rate(db.db_path, dg["id"])
+    acceptance_rate = await calc_acceptance_rate(db, dg["id"])
     
     reliability_score = "High 🚀" if acceptance_rate >= 90 else ("Good 👍" if acceptance_rate >= 80 else "Low ⚠️")
         
@@ -382,20 +403,18 @@ async def _send_performance_view(bot: Bot, dg: Dict[str, Any], message: Message)
 # --------------------------
 
 async def _go_online_logic(message: Message, dg: Dict[str, Any]):
-    """Handles the DG going online."""
+    """Handles the DG going online (Postgres/asyncpg version)."""
     try:
-        async with aiosqlite.connect(db.db_path) as conn:
-            await conn.execute("UPDATE delivery_guys SET active = 1, last_online_at = CURRENT_TIMESTAMP WHERE id = ?", (dg["id"],))
-            await conn.commit()
+        # Use the Database method instead of raw SQL
+        await db.set_delivery_guy_online(dg["id"])
     except Exception:
         log.exception("Failed to set dg %s online", dg["id"])
         await message.answer("❌ Failed to go Online due to a server error.")
         return
 
     log.info("Delivery guy %s (id=%s) set to ONLINE", dg.get("name"), dg.get("id"))
-    
-    # Send confirmation and prompt for location (Section 2)
-    # Location request MUST use a ReplyKeyboardMarkup (request_location=True)
+
+    # Send confirmation and prompt for location
     await message.answer(
         "✅ **You’re now online and ready to receive orders!**\n"
         "📍 Tap the button below to share your **Live Location**.\n"
@@ -404,60 +423,65 @@ async def _go_online_logic(message: Message, dg: Dict[str, Any]):
         parse_mode="Markdown"
     )
 
+
 async def _go_offline_logic(message: Message, dg: Dict[str, Any]):
-    """Handles the DG going offline."""
+    """Handles the DG going offline (Postgres/asyncpg version)."""
     try:
-        async with aiosqlite.connect(db.db_path) as conn:
-            await conn.execute("UPDATE delivery_guys SET active = 0, last_offline_at = CURRENT_TIMESTAMP WHERE id = ?", (dg["id"],))
-            await conn.commit()
+        # Use the Database method instead of raw SQL
+        await db.set_delivery_guy_offline(dg["id"])
     except Exception:
         log.exception("Failed to set dg %s offline", dg["id"])
         await message.answer("❌ Failed to go Offline due to a server error.")
         return
 
     log.info("Delivery guy %s (id=%s) set to OFFLINE", dg.get("name"), dg.get("id"))
-    
-    await message.answer("💤 **You’re offline.** You won’t receive new delivery requests.", parse_mode="Markdown")
 
+    await message.answer(
+        "💤 **You’re offline.** You won’t receive new delivery requests.",
+        parse_mode="Markdown"
+    )
 
 # --------------------------
 # Location Handler (Section 2)
 # --------------------------
-
 @router.message(F.content_type == "location")
 async def handle_location(message: Message):
-    """Handles both one-time and live location updates."""
+    """Handles both one-time and live location updates (Postgres/asyncpg version)."""
     log.info("[START] Received location update from Telegram user_id=%s", message.from_user.id)
 
     dg = await _db_get_delivery_guy_by_user(message.from_user.id)
-    if not dg or dg.get("active", 0) == 0:
+    if not dg or not dg.get("active", False):  # Postgres returns booleans
         log.warning("[ABORT] User is not a delivery guy or is offline: %s", message.from_user.id)
         # Clear the temporary location keyboard
-        await message.answer("✅ Location received. Please go Online to activate tracking.", reply_markup=ReplyKeyboardRemove())
+        await message.answer(
+            "✅ Location received. Please go Online to activate tracking.",
+            reply_markup=ReplyKeyboardRemove()
+        )
         return
 
     lat = message.location.latitude
     lon = message.location.longitude
 
     try:
-        await _db_update_delivery_guy_coords(dg["id"], lat, lon)
+        # Update DG coordinates
+        await db.update_delivery_guy_coords(dg["id"], lat, lon)
 
-        # 🔁 USING HELPER: get_latest_active_order_for_dg
-        order = await get_latest_active_order_for_dg(db.db_path, dg["id"]) 
+        # Get latest active order for this DG
+        order = await db.get_latest_active_order_for_dg(dg["id"])
         
         if order:
             order_id = order["id"]
-            # NOTE: We assume db.update_order_live exists in database.db
-            if hasattr(db, "update_order_live"):
-                await db.update_order_live(order_id, lat, lon)
-            else:
-                async with aiosqlite.connect(db.db_path) as conn:
-                    await conn.execute("UPDATE orders SET last_lat = ?, last_lon = ? WHERE id = ?", (lat, lon, order_id))
-                    await conn.commit()
-            
-            # NOTE: We assume db.create_location_log exists in database.db
-            if hasattr(db, "create_location_log"):
-                await db.create_location_log(order_id=order_id, delivery_guy_id=dg["id"], lat=lat, lon=lon)
+
+            # Update order live location
+            await db.update_order_live(order_id, lat, lon)
+
+            # Log location update
+            await db.create_location_log(
+                order_id=order_id,
+                delivery_guy_id=dg["id"],
+                lat=lat,
+                lon=lon
+            )
             
         await message.answer(
             "📍 **Location updated!** ETA refreshed for students ⏱️",
@@ -465,12 +489,12 @@ async def handle_location(message: Message):
             parse_mode="Markdown"
         )
         await _send_dashboard_view(message.bot, dg["user_id"], dg)
+
     except Exception:
         log.exception("DB update failed for DG id=%s", dg["id"])
         await message.answer("❌ Failed to update your location due to a server error.")
     
     log.info("[END] Location handling complete for DG id=%s", dg["id"])
-
 
 # --------------------------
 # Order Offer & Actions (Inline Callbacks)
@@ -512,8 +536,9 @@ async def send_new_order_offer(bot: Bot, dg: Dict[str, Any], order: Dict[str, An
 
     try:
         # Capture the message object to get the message_id
+        log.info('here is the telegram id of the delivery we are sending the elivery to %s', dg["user_id"])
         sent_message = await bot.send_message(
-            dg["user_id"],
+            dg["telegram_id"],
             message_text,
             reply_markup=kb,
             parse_mode="Markdown"
@@ -521,7 +546,7 @@ async def send_new_order_offer(bot: Bot, dg: Dict[str, Any], order: Dict[str, An
         
         # --- NEW: Add offer to the global tracker ---
         PENDING_OFFERS[order_id] = {
-            "chat_id": dg["user_id"],
+            "chat_id": dg["telegram_id"],
             "message_id": sent_message.message_id,
             "assigned_at": datetime.now(),
             "expiry_seconds": EXPIRY_SECONDS,
@@ -537,6 +562,8 @@ async def send_new_order_offer(bot: Bot, dg: Dict[str, Any], order: Dict[str, An
     except Exception:
         log.exception("Unexpected error sending offer %s to DG %s", order_id, dg["id"])
 
+
+
 @router.callback_query(F.data.startswith("accept_order_"))
 async def handle_accept_order(call: CallbackQuery):
     order_id = int(call.data.split('_')[-1])
@@ -547,17 +574,8 @@ async def handle_accept_order(call: CallbackQuery):
 
     # --- 1. Update order status ---
     try:
-        async with aiosqlite.connect(db.db_path) as conn:
-            await conn.execute(
-                """
-                UPDATE orders
-                SET status = 'pending',
-                    accepted_at = CURRENT_TIMESTAMP
-                WHERE id = ? AND delivery_guy_id = ? AND status = 'assigned'
-                """,
-                (order_id, dg["id"])
-            )
-            await conn.commit()
+        # Use Database method instead of raw SQL
+        await db.update_order_status(order_id, "accepted", dg["id"])
     except Exception:
         log.exception("Failed to accept order %s for DG %s", order_id, dg["id"])
         await call.answer("❌ Failed to accept order.", show_alert=True)
@@ -569,12 +587,36 @@ async def handle_accept_order(call: CallbackQuery):
     # --- 3. Edit the offer message to accepted view ---
     order = await db.get_order(order_id)
     if order and order.get("status") == "accepted":
+        subtotal = order.get("food_subtotal", 0)
+        delivery_fee = order.get("delivery_fee", 0)
+        total_payable = subtotal + delivery_fee
+
+        try:
+            items = json.loads(order.get("items_json", "[]")) or []
+            names = [i.get("name", "") if isinstance(i, dict) else str(i) for i in items]
+            from collections import Counter
+            counts = Counter(names)
+            items_str = ", ".join(
+                f"{name} x{count}" if count > 1 else name
+                for name, count in counts.items()
+            )
+        except Exception:
+            items_str = "Items unavailable"
+
         message_text = (
-            "🎯 **Order Accepted!**\n"
-            f"**Order #{order_id}**\n"
+            f"📦 Order #{order_id}\n"
+            f"📌 Status: Waiting for the vendor to accept.....\n\n"
+            "──────────────────────\n"
             f"🏠 Pickup: {order.get('pickup')}\n"
             f"📍 Drop-off: {order.get('dropoff')}\n"
-            "Stay sharp and manage your delivery efficiently 👇"
+            f"💰 Subtotal Fee: {subtotal} birr\n"
+            f"🚚 Delivery fee: {delivery_fee} birr\n"
+            "──────────────────────\n"
+            f"💵 Total Payable: {total_payable} birr\n\n"
+            f"🛒 Items: {items_str}\n\n"
+            "⚡ Manage this order below.\n\n"
+            "For robust and fast use My Orders in the dashboard."
+            
         )
         try:
             await call.message.edit_text(
@@ -585,7 +627,7 @@ async def handle_accept_order(call: CallbackQuery):
             await call.answer("Order accepted!")
         except TelegramBadRequest as e:
             if "message is not modified" in str(e):
-                await call.answer("Order already accepted/message already updated.")
+                await call.answer("Order already accepted/message already updated. Try to check it on your orders.")
             else:
                 log.warning("Failed to edit message after acceptance: %s", str(e))
                 # Fallback: send a new message if edit fails
@@ -623,28 +665,20 @@ async def handle_skip_order(call: CallbackQuery):
     # --- 1. Update rejection list via helper ---
     try:
         from utils.db_helpers import add_dg_to_blacklist
-        await add_dg_to_blacklist(db.db_path, order_id, dg_id)
+        # Update helper to accept Database instance instead of db_path
+        await add_dg_to_blacklist(db, order_id, dg_id)
     except Exception:
         log.exception("Failed to update blacklist for order %s", order_id)
 
     # --- 2. Update DG stats ---
     try:
-        await increment_skip(db.db_path, dg_id)
+        await db.increment_skip(dg_id)
     except Exception:
         log.exception("Failed to increment skip for DG %s", dg_id)
 
     # --- 3. Reset order back to pending ---
     try:
-        async with aiosqlite.connect(db.db_path) as conn:
-            await conn.execute(
-                """
-                UPDATE orders
-                SET status = 'pending', delivery_guy_id = NULL
-                WHERE id = ? AND delivery_guy_id = ?
-                """,
-                (order_id, dg_id)
-            )
-            await conn.commit()
+        await db.update_order_status(order_id, "pending")  # delivery_guy_id reset handled inside method
         log.debug("[DEBUG] Order %s reset to pending after skip by DG %s", order_id, dg_id)
     except Exception:
         log.exception("Failed to reset skipped order %s", order_id)
@@ -667,7 +701,8 @@ async def handle_skip_order(call: CallbackQuery):
 
     # --- 6. Threshold checks ---
     try:
-        await check_thresholds_and_notify(call.bot, db.db_path, dg_id, ADMIN_GROUP_ID)
+        # Update helper to accept Database instance instead of db_path
+        await check_thresholds_and_notify(call.bot, db, dg_id, ADMIN_GROUP_ID)
     except Exception:
         log.exception("Threshold check failed for DG %s", dg_id)
 
@@ -677,7 +712,7 @@ async def handle_skip_order(call: CallbackQuery):
 
         # Re-fetch order with updated breakdown_json
         order = await db.get_order(order_id)
-        chosen = await assign_delivery_guy(db.db_path, order_id, call.bot, current_order_data=order)
+        chosen = await assign_delivery_guy(db, order_id, call.bot, current_order_data=order)
 
         if chosen and order:
             log.info("Order %s reassigned to DG %s", order_id, chosen["id"])
@@ -727,7 +762,6 @@ async def handle_skip_order(call: CallbackQuery):
     except Exception:
         log.exception("Reassignment failed for order %s", order_id)
 
-
 # --------------------------
 # Active Order Actions (Inline Callbacks)
 # --------------------------
@@ -757,20 +791,17 @@ async def handle_start_order(call: CallbackQuery):
 
     # Update status to 'in_progress'
     try:
-        async with aiosqlite.connect(db.db_path) as conn:
-            await conn.execute("UPDATE orders SET status = 'in_progress' WHERE id = ?", (order_id,))
-            await conn.commit()
+        await db.update_order_status(order_id, "in_progress")
     except Exception:
         log.exception("Failed to mark order in_progress %s", order_id)
         await call.answer("❌ Failed to update order status.", show_alert=True)
         return
     
-    # Notify student (Section 3)
-    # NOTE: db.get_order assumed to exist in database.db
+    # Notify student
     updated_order = await db.get_order(order_id) 
     await notify_student(call.bot, updated_order, "on_the_way") 
     
-    # Edit message to show new actions (Section 3)
+    # Edit message to show new actions
     message_text = (
         "🚶 **Order In Progress!**\n"
         f"**Order #{order_id}**\n"
@@ -780,11 +811,15 @@ async def handle_start_order(call: CallbackQuery):
     )
     
     try:
-        await call.message.edit_text(message_text, reply_markup=accepted_order_actions(order_id, "in_progress"), parse_mode="Markdown")
+        await call.message.edit_text(
+            message_text,
+            reply_markup=accepted_order_actions(order_id, "in_progress"),
+            parse_mode="Markdown"
+        )
         await call.answer("Status updated to On the Way.")
     except TelegramBadRequest:
         await call.answer("Status updated.")
-    
+
 
 @router.callback_query(F.data.startswith("delivered_"))
 async def handle_delivered(call: CallbackQuery):
@@ -795,71 +830,44 @@ async def handle_delivered(call: CallbackQuery):
         await call.answer("❌ This order is not assigned to you or doesn't exist.", show_alert=True)
         return
 
-    # 1. Update DB: status = 'delivered', delivered_at = now(), total_deliveries += 1
     delivery_fee = float(order.get("delivery_fee") or 0)
     
     try:
-        async with aiosqlite.connect(db.db_path) as conn:
-            await conn.execute(
-                "UPDATE orders SET status = 'delivered', delivered_at = CURRENT_TIMESTAMP WHERE id = ?", 
-                (order_id,)
-            )
-            await conn.execute(
-                "UPDATE delivery_guys SET active = 1, total_deliveries = total_deliveries + 1, last_online_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (dg["id"],)
-            )
-            await conn.commit()
+        # Update order status to delivered
+        await db.update_order_status(order_id, "delivered", dg["id"])
+        # Update DG stats (total deliveries, active flag)
+        await db.set_delivery_guy_online(dg["id"])
     except Exception:
         log.exception("Failed to mark delivered for order %s", order_id)
         await call.answer("❌ Failed to update order status.", show_alert=True)
         return
         
-    # 2. Award XP/Coins (Section 8)
-    xp_gained = 0
-    coins_gained = 0.0
+    # Award XP/Coins
+    xp_gained = XP_PER_DELIVERY if ENABLE_XP else 0
+    coins_gained = delivery_fee * COIN_RATIO if ENABLE_COINS else 0.0
     try:
-        if ENABLE_XP:
-            xp_gained = XP_PER_DELIVERY
-        if ENABLE_COINS:
-            coins_gained = delivery_fee * COIN_RATIO
-            
         if xp_gained > 0 or coins_gained > 0:
-            async with aiosqlite.connect(db.db_path) as conn:
-                await conn.execute(
-                    "UPDATE delivery_guys SET xp = xp + ?, coins = coins + ? WHERE id = ?",
-                    (xp_gained, coins_gained, dg["id"])
-                )
-                await conn.commit()
-                
+            await db.record_daily_stat_delivery(dg["id"], datetime.now().strftime('%Y-%m-%d'), delivery_fee, xp_gained, coins_gained)
             updated_dg = await _db_get_delivery_guy_by_user(call.from_user.id)
-            # NOTE: db.auto_compute_level assumed to exist in database.db
             if updated_dg and hasattr(db, "auto_compute_level"):
-                new_level = await db.auto_compute_level(updated_dg["xp"]) 
+                new_level = await db.auto_compute_level(updated_dg["xp"])
                 if new_level != updated_dg.get("level"):
-                    async with aiosqlite.connect(db.db_path) as conn:
-                        await conn.execute("UPDATE delivery_guys SET level = ? WHERE id = ?", (new_level, dg["id"]))
-                        await conn.commit()
-                        
+                    # Update level
+                    await db.update_delivery_guy_level(dg["id"], new_level)
     except Exception:
         log.exception("Failed to award XP/Coins for order %s", order_id)
 
-    # 3. Record Daily Stat (Section 5)
-    # 🔁 USING HELPER: record_daily_stat
-    await record_daily_stat(db.db_path, dg["id"], delivery_fee, delivered=1)
-    
-    # 4. Notify student (Section 3)
+    # Record Daily Stat
+    await db.record_daily_stat_delivery(dg["id"], datetime.now().strftime('%Y-%m-%d'), delivery_fee)
+
+    # Notify student
     await notify_student(call.bot, order, "delivered")
     
-    # 5. Send Daily Summary (Section 3) 
-    
-    # NOTE: db.get_daily_stats_for_dg assumed to exist in database.db
-    today_stats = await db.get_daily_stats_for_dg(dg["id"], date=datetime.now().strftime('%Y-%m-%d')) if hasattr(db, "get_daily_stats_for_dg") else {"deliveries": 1, "earnings": delivery_fee}
-    
+    # Daily summary
+    today_stats = await db.get_daily_stats(dg["id"], datetime.now().strftime('%Y-%m-%d')) or {"deliveries": 1, "earnings": delivery_fee}
     deliveries_today = today_stats.get("deliveries", 1)
     earnings_today = today_stats.get("earnings", delivery_fee)
-    
-    # 🔁 USING HELPER: calc_acceptance_rate
-    acceptance_rate = await calc_acceptance_rate(db.db_path, dg["id"])
+    acceptance_rate = await db.calc_vendor_reliability_for_day(dg["id"])
     
     reliability = "Excellent 🚀" if acceptance_rate >= 90 else ("Good 👍" if acceptance_rate >= 80 else "Fair")
 
@@ -876,18 +884,15 @@ async def handle_delivered(call: CallbackQuery):
         "⚡ Keep going strong! Use the menu below to head back to your dashboard."
     )
 
-
     try:
-        # Edit the order card to the final summary, then prompt for the next step using the Reply Keyboard
         await call.message.edit_text(summary_text, reply_markup=None, parse_mode="Markdown")
-        # Send the menu_back_keyboard as a new message so the user can easily navigate
         await call.message.answer("Task complete. What's next?", reply_markup=menu_back_keyboard())
         await call.answer("Delivery complete! 🎉")
     except TelegramBadRequest:
         await call.answer("Delivery complete! 🎉")
         await call.message.answer(summary_text, reply_markup=menu_back_keyboard(), parse_mode="Markdown")
-    
-    
+
+
 @router.callback_query(F.data.startswith("contact_user_"))
 async def handle_contact_user(call: CallbackQuery):
     order_id = int(call.data.split('_')[-1])
@@ -897,7 +902,6 @@ async def handle_contact_user(call: CallbackQuery):
         await call.answer("❌ Cannot contact user for this order.", show_alert=True)
         return
 
-    # Lookup student record
     student = await db.get_user_by_id(order["user_id"])
     if not student:
         await call.answer("❌ Student not found in DB.", show_alert=True)
@@ -907,30 +911,21 @@ async def handle_contact_user(call: CallbackQuery):
     first_name = student.get("first_name", "Student")
 
     if phone:
-        # Send Telegram contact card (includes Call button on mobile)
-        await call.message.answer_contact(
-            phone_number=phone,
-            first_name=first_name
-        )
+        await call.message.answer_contact(phone_number=phone, first_name=first_name)
         await call.answer("📱 Contact shared.")
     else:
         await call.answer("❌ No phone number available for this student.", show_alert=True)
 
-   
+
 @router.callback_query(F.data.startswith("update_location_"))
 async def request_live_update(call: CallbackQuery):
-    """Prompts the DG to manually send their location (Inline button triggering a Reply Keyboard for location)."""
+    """Prompts the DG to manually send their location."""
     order_id = int(call.data.split('_')[-1])
-    
-    # Use the ReplyKeyboardMarkup for the location request
     temp_kb = ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text=f"📍 Send Location for Order {order_id}", request_location=True)]
-        ],
+        keyboard=[[KeyboardButton(text=f"📍 Send Location for Order {order_id}", request_location=True)]],
         resize_keyboard=True,
         one_time_keyboard=True
     )
-    
     await call.message.answer(
         f"Please send your **current location** now to update the student's ETA for Order **#{order_id}**.",
         reply_markup=temp_kb,
@@ -938,39 +933,78 @@ async def request_live_update(call: CallbackQuery):
     )
     await call.answer("Prompted for location update.")
 
+
 # --------------------------
 # Notification helper stub 
 # --------------------------
 async def _lookup_student_telegram(order: Dict[str, Any]) -> Optional[int]:
-    """Placeholder for student lookup logic."""
+    """Postgres version of student lookup logic."""
     try:
-        async with aiosqlite.connect(db.db_path) as conn:
-            conn.row_factory = aiosqlite.Row
-            # Assuming 'users' table has a 'telegram_id' field linked by order.user_id (student ID)
-            async with conn.execute("SELECT telegram_id FROM users WHERE id = ?", (order["user_id"],)) as cur:
-                r = await cur.fetchone()
-                return r["telegram_id"] if r else None
+        student = await db.get_user_by_id(order["user_id"])
+        return student.get("telegram_id") if student else None
     except Exception:
         log.exception("Failed _lookup_student_telegram")
         return None
 
+
 async def notify_student(bot, order: Dict[str, Any], status: str) -> None:
-    """Sends status update to the student."""
+    """Sends status update to the student with cinematic flair + track button."""
     student_tg = await _lookup_student_telegram(order)
     if not student_tg:
         log.debug("notify_student: no telegram id found for order %s", order.get("id"))
         return
 
+    order_id = order.get("id")
     eta_line = ""
-    # Simplified ETA calculation for the stub
+
+    # If we have coords, compute ETA dynamically
     if status == "on_the_way":
-        eta_min = 10 # Hardcoded placeholder
-        eta_line = f"\n⏱ ETA: ~{eta_min} min"
+        vendor_coords = order.get("vendor_coords")
+        drop_coords = order.get("drop_coords")
+        
+        eta_line = "\n⏱ ETA: ~10 min"
+
+    # Inline keyboard with Track Order
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📍 Track", callback_data=f"order:track:{order_id}")]
+        ]
+    )
 
     try:
         if status == "on_the_way":
-            await bot.send_message(student_tg, f"🚶 Your delivery partner is on the way!{eta_line}")
+            msg = f"🚶 Your delivery partner is on the way!{eta_line}"
+            await bot.send_message(student_tg, msg, reply_markup=kb)
         elif status == "delivered":
-            await bot.send_message(student_tg, "🎉 Order delivered! Enjoy your meal 🍽")
+    # Reward student immediately for completing the order
+            order_id = order.get("id")
+            student_id = order.get("user_id")
+            if student_id:
+                async with db._open_connection() as conn:
+                    await conn.execute(
+                        "UPDATE users SET xp = xp + 10 WHERE id=$1",
+                        student_id
+                    )
+                await bot.send_message(
+                    student_tg,
+                    f"🎉 Order #{order_id} delivered!\n"
+                    f"🔥 You earned +10 XP for ordering with our bot."
+                )
+
+            # Rating prompt
+            kb = InlineKeyboardMarkup(
+                inline_keyboard=[[
+                    InlineKeyboardButton(text="⭐1", callback_data=f"rate_delivery:{order_id}:1"),
+                    InlineKeyboardButton(text="⭐2", callback_data=f"rate_delivery:{order_id}:2"),
+                    InlineKeyboardButton(text="⭐3", callback_data=f"rate_delivery:{order_id}:3"),
+                    InlineKeyboardButton(text="⭐4", callback_data=f"rate_delivery:{order_id}:4"),
+                    InlineKeyboardButton(text="⭐5", callback_data=f"rate_delivery:{order_id}:5"),
+                ]]
+            )
+            await bot.send_message(
+                student_tg,
+                f"🍽 Enjoy your meal!\n\n⭐ Please rate the delivery:",
+                reply_markup=kb
+            )
     except Exception:
         log.exception("notify_student: failed to send message to student %s", student_tg)

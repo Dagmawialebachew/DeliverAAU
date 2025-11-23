@@ -1,12 +1,13 @@
 services:
   - type: web
-    name: deliver-aau
-    env: python
-    plan: starter
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn -k uvicorn.workers.UvicornWorker bot:app --timeout 30
-    runtime: python-3.11.9
+    name: deliver-aau-bot
+    env: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
     envVars:
-      - key: DOTENV_PATH
-        value: .env
-    autoDeploy: true
+      - key: BOT_TOKEN
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: WEBHOOK_BASE_URL
+        sync: false

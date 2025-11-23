@@ -20,7 +20,8 @@ from utils.helpers import typing_pause, format_phone_number
 from handlers import vendor as vendor_handler
 
 router = Router()
-db = Database(settings.DB_PATH)
+# CHANGED: Use Database() that reads DATABASE_URL from environment
+from app_context import db
 
 
 class OnboardingStates(StatesGroup):
@@ -68,13 +69,29 @@ def main_menu() -> ReplyKeyboardMarkup:
 
 def more_menu() -> ReplyKeyboardMarkup:
     buttons = [
-        [KeyboardButton(text="💰 My Coins"), KeyboardButton(text="🪙 Subscriptions")],
+        [KeyboardButton(text="🎁 Redeem Coins"), KeyboardButton(text="🪙 Subscriptions")],
         [KeyboardButton(text="⚙️ Settings"), KeyboardButton(text="⬅️ Back")],
     ]
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
 
-# --- PROFILE CARD BUILDER ---
+@router.message(F.text == "🎁 Redeem Coins")
+async def redeem_coins(message: Message):
+    await message.answer(
+        "🎬 Welcome to Deliver AAU Rewards!\n\n"
+        "✨ Redeem Coins feature is coming soon...\n"
+        "Stay tuned for campus-first perks and surprises!"
+    )
+
+# Subscriptions
+@router.message(F.text == "🪙 Subscriptions")
+async def subscriptions(message: Message):
+    await message.answer(
+        "📦 Subscription plans are coming soon!\n"
+        "You’ll be able to unlock premium campus delivery perks."
+    )
+    
+    
 
 def build_profile_card(user: dict, role: str = "student") -> str:
     """Reusable profile card for all roles."""
@@ -90,7 +107,8 @@ def build_profile_card(user: dict, role: str = "student") -> str:
             f"👤 {user.get('name', user.get('first_name', 'Unknown'))}\n"
             f"🏛 {user.get('campus', 'N/A')}\n"
             f"📦 Deliveries: {user.get('total_deliveries', 0)}\n"
-            f"⚡ Status: {'🟢 Active' if user.get('active', 1) else '🔴 Inactive'}\n\n"
+            # CHANGED: Postgres boolean
+            f"⚡ Status: {'🟢 Active' if user.get('active', False) else '🔴 Inactive'}\n\n"
             f"💰 Coins: {coins} • 🏆 XP: {xp} • 🔰 Level: {level}\n"
             f"{progress_bar}\n\n"
             "🚴 Keep hustling — every delivery powers your reputation ⚡"

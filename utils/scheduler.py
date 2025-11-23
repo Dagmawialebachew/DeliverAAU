@@ -1,7 +1,6 @@
 import logging
 import json 
 from datetime import datetime, timedelta
-import aiosqlite
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from aiogram import Bot
@@ -82,12 +81,13 @@ class BotScheduler:
                     )
 
                     # Reset order
-                    async with aiosqlite.connect(self.db.db_path) as conn:
+                    async with self.db._open_connection() as conn: 
                         await conn.execute(
-                            "UPDATE orders SET status = 'pending', delivery_guy_id = NULL WHERE id = ?",
-                            (order_id,)
+                            # Use positional parameters ($1, $2, etc.) for PostgreSQL
+                            # NULL is handled the same way, but the parameter must be explicitly passed or hardcoded.
+                            "UPDATE orders SET status = $1, delivery_guy_id = $2 WHERE id = $3",
+                            'pending', None, order_id
                         )
-                        await conn.commit()
 
                     # Persist rejection using DG internal ID
                     dg = await _db_get_delivery_guy_by_user(chat_id)
@@ -178,6 +178,7 @@ class BotScheduler:
     #----------------------------------
     # 🆕 NEW: Core System Jobs (Section 7)
     # -----------------------------------------------
+        
     async def auto_reassign_unaccepted_orders(self) -> None:
         """
         Periodically checks for 'assigned' orders that were not accepted
@@ -187,36 +188,50 @@ class BotScheduler:
         try:
             # Reassign orders older than 5 minutes that are still in 'assigned' status
             cutoff_time = datetime.now() - timedelta(minutes=5)
-            cutoff_time_str = cutoff_time.isoformat()
 
-            async with aiosqlite.connect(self.db.db_path) as conn:
-                async with conn.execute(
-                    "SELECT id, delivery_guy_id FROM orders WHERE status = 'assigned' AND created_at < ?", 
-                    (cutoff_time_str,)
-                ) as cur:
-                    unaccepted_orders = await cur.fetchall()
+            async with self.db._pool.acquire() as conn:                # Fetch unaccepted orders
+                unaccepted_orders = await conn.fetch(
+                    """
+                    SELECT id, delivery_guy_id
+                    FROM orders
+                    WHERE status = 'assigned' AND created_at < $1
+                    """,
+                    cutoff_time
+                )
 
                 if not unaccepted_orders:
                     log.info("No unaccepted orders found to reassign.")
                     return
 
-                for order_id, dg_id in unaccepted_orders:
+                for row in unaccepted_orders:
+                    order_id, dg_id = row["id"], row["delivery_guy_id"]
+
                     # 1. Reassign order back to pending
                     await conn.execute(
-                        "UPDATE orders SET status = 'pending', delivery_guy_id = NULL WHERE id = ?",
-                        (order_id,)
+                        """
+                        UPDATE orders
+                        SET status = 'pending', delivery_guy_id = NULL
+                        WHERE id = $1
+                        """,
+                        order_id
                     )
-                    # 2. Set the DG back to active (if they were inactive due to assignment)
-                    await conn.execute(
-                        "UPDATE delivery_guys SET active = 1 WHERE id = ?",
-                        (dg_id,)
-                    )
-                    log.warning("Reassigned timed-out order %s from DG %s.", order_id, dg_id)
 
-                await conn.commit()
+                    # 2. Set the DG back to active (if they were inactive due to assignment)
+                    if dg_id:
+                        await conn.execute(
+                            """
+                            UPDATE delivery_guys
+                            SET active = TRUE
+                            WHERE id = $1
+                            """,
+                            dg_id
+                        )
+
+                    log.warning("Reassigned timed-out order %s from DG %s.", order_id, dg_id)
 
         except Exception:
             log.exception("Error during auto-reassign task")
+            
             
     async def reset_skips_daily_job(self) -> None:
         """Job wrapper for the daily skip reset function."""
@@ -306,7 +321,7 @@ class BotScheduler:
         self.scheduler.add_job(
             self.update_order_offers,
             'interval',
-            seconds=5,
+            seconds=180,
             id='update_order_offers'
         )
 

@@ -1,9 +1,9 @@
 # handlers/student_track_order.py
 import asyncio
+from collections import Counter
 import json
 from typing import Optional, Dict, Any, List, Tuple
 from aiogram.fsm.context import FSMContext
-import aiosqlite
 from aiogram import Router, F
 from aiogram.types import (
     Message,
@@ -13,6 +13,8 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
     KeyboardButton,
 )
+from utils.helpers import time_ago
+
 from aiogram.exceptions import TelegramBadRequest
 from aiogram import Bot
 from handlers.onboarding import main_menu
@@ -21,7 +23,7 @@ from config import settings
 from utils import helpers
 
 router = Router()
-db = db_module.Database(settings.DB_PATH)
+from app_context import db
 
 # Status mapping with stage index
 STATUS_MAP = {
@@ -56,18 +58,28 @@ async def notify_dg_ping(bot: Bot, dg_user_id: int, order_id: int, vendor_name: 
     msg = f"📣 Pickup Reminder — Order #{order_id} at {vendor_name} is READY. Please collect now."
     await safe_send(bot, dg_user_id, msg)
 
-async def notify_student_ready(bot: Bot, student_chat_id: int, order_id: int):
-    msg = f"📦 Your order #{order_id} is ready and will be picked up soon."
-    await safe_send(bot, student_chat_id, msg)
 
+async def notify_student(bot: Bot, student_chat_id: int, order_id: int):
+    msg = (
+        f"📦 Your order #{order_id} is ready!\n"
+        f"⏳ Maximum pickup time: *15 minutes*.\n\n"
+        "Tap below to track your order in real‑time:"
+    )
 
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📍 Track", callback_data=f"order:track:{order_id}")]
+        ]
+    )
+
+    await safe_send(bot, student_chat_id, msg, parse_mode="Markdown", reply_markup=kb)
+    
 def track_reply_keyboard() -> ReplyKeyboardMarkup:
     # Compact contextual reply keyboard while tracking (no Track Order button)
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="🔁 Refresh"), KeyboardButton(text="⬅️ Back to Menu")]],
         resize_keyboard=True,
     )
-
 
 
 def build_track_keyboard(
@@ -78,27 +90,33 @@ def build_track_keyboard(
     dg_phone: Optional[str] = None,
     is_ready: bool = False,
     map_url: Optional[str] = None,
+    paused: bool = False,   # NEW: pause flag
 ) -> InlineKeyboardMarkup:
     rows = []
 
     # Row 1: Details + Route if present
     left = InlineKeyboardButton(text="🔍 Details", callback_data=f"order:detail:{order_id}")
-    refresh_btn = InlineKeyboardButton(text="❌ Close", callback_data=f"order:close:{order_id}")
+    close_btn = InlineKeyboardButton(text="❌ Close", callback_data=f"order:close:{order_id}")
 
     if map_url:
         right = InlineKeyboardButton(text="🗺 Route", url=map_url)
-        rows.append([left, refresh_btn, right])
+        rows.append([left, close_btn, right])
     else:
-        rows.append([left, refresh_btn])
+        rows.append([left, close_btn])
 
     # Row 2: DG actions (if DG assigned)
     if has_dg:
         call_btn = InlineKeyboardButton(text="📞 Contact D.G.", callback_data=f"track:call_dg:{order_id}")
         rows.append([call_btn])
 
-   
+    # Row 3: Pause/Resume toggle
+    # if paused:
+    #     resume_btn = InlineKeyboardButton(text="▶️ Resume", callback_data=f"order:resume:{order_id}")
+    #     rows.append([resume_btn])
+    # else:
+    #     pause_btn = InlineKeyboardButton(text="⏸ Pause", callback_data=f"order:pause:{order_id}")
+    #     rows.append([pause_btn])
 
-    # Row 4: Back / Men
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 # Pagination helpers
@@ -126,27 +144,31 @@ async def callback_call_dg(cb: CallbackQuery):
     # Send the contact info as a secure DM message (not broadcast); user chose this action
     await cb.message.answer(f"📞 {name} — contact: {phone}")
 
+ACTIVE_STATUSES = ('pending', 'assigned', 'preparing', 'ready', 'in_progress')
 
 async def _fetch_active_orders_page_for_user(user_internal_id: int, page: int = 0) -> Tuple[List[Dict[str, Any]], int]:
     offset = page * PAGE_SIZE
     orders: List[Dict[str, Any]] = []
     total = 0
     try:
-        async with aiosqlite.connect(db.db_path) as conn:
-            conn.row_factory = aiosqlite.Row
-            async with conn.execute(
-                "SELECT COUNT(*) AS cnt FROM orders WHERE user_id = ? AND status != 'delivered'",
-                (user_internal_id,),
-            ) as cur:
-                r = await cur.fetchone()
-                total = r["cnt"] if r else 0
-            async with conn.execute(
-                "SELECT * FROM orders WHERE user_id = ? AND status != 'delivered' "
-                "ORDER BY created_at DESC LIMIT ? OFFSET ?",
-                (user_internal_id, PAGE_SIZE, offset),
-            ) as cur:
-                rows = await cur.fetchall()
-                orders = [dict(r) for r in rows]
+        async with db._open_connection() as conn:
+            # Count total active orders
+            total = await conn.fetchval(
+                "SELECT COUNT(*) FROM orders WHERE user_id = $1 AND status = ANY($2::text[])",
+                user_internal_id, ACTIVE_STATUSES
+            ) or 0
+
+            # Fetch paginated orders
+            rows = await conn.fetch(
+                """
+                SELECT * FROM orders
+                WHERE user_id = $1 AND status = ANY($2::text[])
+                ORDER BY created_at DESC
+                LIMIT $3 OFFSET $4
+                """,
+                user_internal_id, ACTIVE_STATUSES, PAGE_SIZE, offset
+            )
+            orders = [dict(r) for r in rows]
     except Exception:
         orders = []
         total = 0
@@ -246,46 +268,45 @@ async def _fetch_past_orders_page_for_user(user_internal_id: int, page: int = 0)
     orders: List[Dict[str, Any]] = []
     total = 0
     try:
-        async with aiosqlite.connect(db.db_path) as conn:
-            conn.row_factory = aiosqlite.Row
-            async with conn.execute(
-                "SELECT COUNT(*) AS cnt FROM orders WHERE user_id = ? AND status = 'delivered'",
-                (user_internal_id,),
-            ) as cur:
-                r = await cur.fetchone()
-                total = r["cnt"] if r else 0
+        async with db._open_connection() as conn:
+            # Count delivered orders
+            total = await conn.fetchval(
+                "SELECT COUNT(*) FROM orders WHERE user_id = $1 AND status = 'delivered'",
+                user_internal_id
+            ) or 0
 
-            async with conn.execute(
-                "SELECT * FROM orders WHERE user_id = ? AND status = 'delivered' "
-                "ORDER BY updated_at DESC LIMIT ? OFFSET ?",
-                (user_internal_id, PAST_PAGE_SIZE, offset),
-            ) as cur:
-                rows = await cur.fetchall()
-                orders = [dict(r) for r in rows]
+            # Fetch paginated delivered orders
+            rows = await conn.fetch(
+                """
+                SELECT * FROM orders
+                WHERE user_id = $1 AND status = 'delivered'
+                ORDER BY updated_at DESC
+                LIMIT $2 OFFSET $3
+                """,
+                user_internal_id, PAST_PAGE_SIZE, offset
+            )
+            orders = [dict(r) for r in rows]
     except Exception:
         orders = []
         total = 0
     return orders, total
 
 
-
-async def _fetch_single_past_order(order_id: int):
+async def _fetch_single_past_order(order_id: int) -> Optional[Dict[str, Any]]:
     """Fetch one delivered order by ID."""
     try:
-        async with aiosqlite.connect(db.db_path) as conn:
-            conn.row_factory = aiosqlite.Row
-            async with conn.execute(
-                "SELECT * FROM orders WHERE id = ? AND status = 'delivered'", (order_id,)
-            ) as cur:
-                row = await cur.fetchone()
-                return dict(row) if row else None
+        async with db._open_connection() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM orders WHERE id = $1 AND status = 'delivered'",
+                order_id
+            )
+            return dict(row) if row else None
     except Exception:
         return None
-
-
+    
 @router.callback_query(lambda c: c.data.startswith("past:view:"))
 async def handle_past_order_view(callback: CallbackQuery):
-    """Show full receipt-like breakdown of one delivered order."""
+    """Show full receipt-like breakdown of one delivered order + rating prompt."""
     try:
         _, _, order_id_str = callback.data.split(":")
         order_id = int(order_id_str)
@@ -308,7 +329,7 @@ async def handle_past_order_view(callback: CallbackQuery):
     # Receipt text layout
     text_lines = [
         "🧾 **Order Receipt**",
-        f"──────────────────────────",
+        "──────────────────────────",
         f"**Order ID:** #{order_id}",
         f"**Status:** ✅ Delivered",
     ]
@@ -318,30 +339,42 @@ async def handle_past_order_view(callback: CallbackQuery):
 
     text_lines.append("\n🍴 **Items:**")
     if items:
-        for it in items:
-            text_lines.append(f" • {it}")
+        # collapse duplicates into "Tea x2, Burger x1"
+        counts = Counter(items)
+        for name, count in counts.items():
+            if count > 1:
+                text_lines.append(f" • {name} x{count}")
+            else:
+                text_lines.append(f" • {name}")
     else:
         text_lines.append(" • (details unavailable)")
 
-    subtotal = order.get("food_subtotal")
-    delivery_fee = order.get("delivery_fee")
+    subtotal = order.get("food_subtotal") or 0
+    delivery_fee = order.get("delivery_fee") or 0
     
     text_lines.append(
         f"\n💳 **Payment:** {order.get('payment_method', 'N/A').capitalize()}\n"
         f"💰 **Total:** {subtotal + delivery_fee} birr"
     )
 
-    # Optional breakdown summary
     if subtotal and delivery_fee:
         text_lines.append(f"\nSubtotal: {subtotal} birr\nDelivery Fee: {delivery_fee} birr")
 
     text_lines.append("\nThank you for choosing DeliverAAU! 🌍")
+    text_lines.append("\n⭐ Please rate your overall experience:")
 
-    # Inline buttons for navigation
+    # Inline buttons: Back + Rating
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="⬅️ Back", callback_data=f"past:back"),
+                InlineKeyboardButton(text="⭐1", callback_data=f"rate_vendor:{order_id}:1"),
+                InlineKeyboardButton(text="⭐2", callback_data=f"rate_vendor:{order_id}:2"),
+                InlineKeyboardButton(text="⭐3", callback_data=f"rate_vendor:{order_id}:3"),
+                InlineKeyboardButton(text="⭐4", callback_data=f"rate_vendor:{order_id}:4"),
+                InlineKeyboardButton(text="⭐5", callback_data=f"rate_vendor:{order_id}:5"),
+            ],
+            [
+                InlineKeyboardButton(text="⬅️ Back", callback_data="past:back"),
             ]
         ]
     )
@@ -362,8 +395,7 @@ async def handle_past_order_view(callback: CallbackQuery):
         )
     await callback.answer()
     
-
-
+    
 @router.callback_query(lambda c: c.data == "past:back")
 async def handle_past_back(callback: CallbackQuery, state: FSMContext = None):
     await callback.answer("Returning to your orders…", show_alert=False)
@@ -403,7 +435,16 @@ async def send_past_orders_page(message_or_callback, user_id: int, page: int):
             items = breakdown.get("items", [])
         except Exception:
             items = []
-        items_preview = " • ".join(items[:3]) if items else "…"
+
+        if items:
+            counts = Counter(items)
+            # Show up to 3 items with counts
+            items_preview = " • ".join(
+                f"{name} x{count}" if count > 1 else name
+                for name, count in list(counts.items())[:3]
+            )
+        else:
+            items_preview = "…"
 
         payment_method = o.get("payment_method", "N/A").capitalize()
         total_cost = (
@@ -512,7 +553,16 @@ async def send_orders_page(message_or_callback, user_id: int, page: int):
             items = breakdown.get("items", [])
         except Exception:
             items = []
-        items_preview = " • ".join(items[:2]) if items else "…"
+
+        if items:
+            counts = Counter(items)
+            # Show up to 2 unique items with counts
+            items_preview = " • ".join(
+                f"{name} x{count}" if count > 1 else name
+                for name, count in list(counts.items())[:2]
+            )
+        else:
+            items_preview = "…"
 
         lines.append(
             f"#{o['id']} — {status_text}\n"
@@ -626,124 +676,21 @@ async def order_track_long(cb: CallbackQuery):
         return
 
     await cb.answer()
-    order = dict(order)
     editable_msg = None
     tick = 0
-    refresh_interval = 5
+    refresh_interval = 40
     max_rounds = 120
     rounds = 0
+    paused = False
 
     try:
         await cb.message.answer("🔎 Tracking your order — live updates will refresh here.", reply_markup=track_reply_keyboard())
     except Exception:
         pass
 
-    paused = False
-    user_wants_pause = False
+    while rounds < max_rounds and not paused:
+        text, kb = await render_order_summary(order_id, tick, paused)
 
-    while True:
-        order = await db.get_order(order["id"])
-        if not order:
-            try:
-                if editable_msg:
-                    await editable_msg.edit_text("❌ Order not found (it may have been removed).", reply_markup=None)
-                else:
-                    await cb.message.answer("❌ Order not found (it may have been removed).", reply_markup=main_menu())
-            except Exception:
-                pass
-            break
-
-        order = dict(order)
-        status_text, stage = STATUS_MAP.get(order["status"], (order["status"], 1))
-
-        # Vendor info
-        vendor = await db.get_vendor(order["vendor_id"]) if order.get("vendor_id") else None
-        vendor_name = vendor.get("name") if vendor else "Vendor"
-        vendor_line = f"🏪 {vendor_name}"
-        if vendor and vendor.get("rating_avg") is not None:
-            vendor_line += f" • ★ {round(vendor.get('rating_avg',0),1)} ({vendor.get('rating_count',0)})"
-
-        # DG info
-        dg_text = ""
-        dg_profile_line = ""
-        has_dg = False
-        dg_phone = None
-        dg_user_id = None
-        last_lat = order.get("last_lat")
-        last_lon = order.get("last_lon")
-        if order.get("delivery_guy_id"):
-            dg = await db.get_delivery_guy(order["delivery_guy_id"])
-            if dg:
-                has_dg = True
-                dg_user_id = dg.get("user_id")
-                dg_phone = dg.get("phone") or None
-                dg_name = dg.get("name", "Delivery Partner")
-                dg_rating = dg.get("rating", None) or dg.get("rating_avg", None)
-                dg_campus = dg.get("campus", "")
-                dg_profile_line = f"🚴 {dg_name} ({dg_campus})"
-                if dg_rating is not None:
-                    dg_profile_line += f" • ★ {round(dg_rating,1)}"
-                last_lat = last_lat or dg.get("last_lat")
-                last_lon = last_lon or dg.get("last_lon")
-                dg_text = dg_profile_line
-
-        # breakdown / coords
-        breakdown = {}
-        drop_lat = drop_lon = None
-        try:
-            breakdown = json.loads(order.get("breakdown_json") or "{}")
-            drop_lat = breakdown.get("drop_lat")
-            drop_lon = breakdown.get("drop_lon")
-        except Exception:
-            drop_lat = drop_lon = None
-
-        # ETA & map
-        eta_text = ""
-        map_url = None
-        if last_lat and last_lon and drop_lat and drop_lon:
-            try:
-                eta_text, map_url = await _compute_eta_and_map(last_lat, last_lon, drop_lat, drop_lon)
-            except Exception:
-                eta_text = "⏱ ETA: unavailable"
-        else:
-            eta_text = "⌛ Waiting for live location..." if has_dg else "⌛ Waiting for a delivery partner..."
-
-        # timestamps
-        created = order.get("created_at") or "—"
-        accepted = order.get("accepted_at") or "—"
-        delivered = order.get("delivered_at") or "—"
-
-        # items summary
-        try:
-            breakdown_items = breakdown.get("items") or []
-            items_preview = ", ".join([str(i) if isinstance(i, str) else i.get("name","") for i in breakdown_items[:6]]) or "Items"
-        except Exception:
-            items_preview = "Items"
-
-        # compose text
-        text = (
-            f"{animated_dot(stage, tick)} {status_text}\n\n"
-            f"{render_progress(stage)}\n\n"
-            f"{vendor_line}\n"
-            f"{dg_text + chr(10) if dg_text else ''}"
-            f"{eta_text + chr(10) if eta_text else ''}"
-            f"\n🛒 {items_preview}\n"
-            f"💵 {order.get('food_subtotal',0)} Birr • Fee: {order.get('delivery_fee',0)} Birr\n\n"
-            f"⏱ Created: {created}  •  Accepted: {accepted}  •  Delivered: {delivered}\n\n"
-            "✨ Hang tight — your campus meal is on its way!"
-        )
-
-        # build keyboard with flags
-        kb = build_track_keyboard(
-            order["id"],
-            has_dg=has_dg,
-            dg_user_id=dg_user_id,
-            dg_phone=dg_phone,
-            is_ready=(order.get("status") == "ready"),
-            map_url=map_url,
-        )
-
-        # send/edit message safely
         try:
             if editable_msg is None:
                 editable_msg = await cb.message.answer(text, reply_markup=kb, disable_web_page_preview=True)
@@ -751,19 +698,14 @@ async def order_track_long(cb: CallbackQuery):
                 try:
                     await editable_msg.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
                 except TelegramBadRequest as e:
-                    if "message is not modified" in str(e):
-                        pass
-                    else:
-                        raise
+                    if "message is not modified" not in str(e):
+                        editable_msg = await cb.message.answer(text, reply_markup=kb, disable_web_page_preview=True)
         except Exception:
-            try:
-                editable_msg = await cb.message.answer(text, reply_markup=kb, disable_web_page_preview=True)
-            except Exception:
-                break
+            break
 
-        # delivered end-state
-        if order.get("status") == "delivered":
-            final_text = f"🎉 Order #{order['id']} has been delivered! Enjoy your meal 💚"
+        order = await db.get_order(order_id)
+        if order and order.get("status") == "delivered":
+            final_text = f"🎉 Order #{order_id} has been delivered! Enjoy your meal 💚"
             try:
                 await editable_msg.edit_text(final_text, reply_markup=None)
             except Exception:
@@ -771,19 +713,20 @@ async def order_track_long(cb: CallbackQuery):
             break
 
         rounds += 1
-        if rounds >= max_rounds:
+        tick += 1
+
+        if rounds == 12: refresh_interval = 10
+        elif rounds == 36: refresh_interval = 30
+
+        if paused:
             try:
-                await editable_msg.edit_text(
-                    text + "\n\n⌛ Live updates paused to save resources. Tap 🔁 Refresh or reopen Track Order to continue.",
-                    reply_markup=kb,
-                    disable_web_page_preview=True
-                )
+                await editable_msg.edit_text(text + "\n\n⏸ Live updates paused. Tap ▶️ Resume to continue.", reply_markup=kb, disable_web_page_preview=True)
             except Exception:
                 pass
             break
 
-        tick += 1
         await asyncio.sleep(refresh_interval)
+
 # --- Reply keyboard: silent Refresh and Back to Menu ---
 @router.message(F.text == "🔁 Refresh")
 async def reply_refresh_silent(message: Message):
@@ -846,13 +789,23 @@ async def show_order_detail(callback: CallbackQuery):
     except Exception:
         breakdown = {}
     items_list = breakdown.get("items", [])
-    items_str = "\n".join([f"• {i}" for i in items_list[:10]]) if isinstance(items_list, list) else str(items_list or "N/A")
-
+    if isinstance(items_list, list):
+        counts = Counter(items_list)
+        # Show up to 10 unique items with counts
+        items_str = "\n".join(
+            f"• {name} x{count}" if count > 1 else f"• {name}"
+            for name, count in list(counts.items())[:10]
+        )
+    else:
+        items_str = str(items_list or "N/A")
     # ETA
     last_lat = order.get("last_lat")
     last_lon = order.get("last_lon")
     drop_lat = breakdown.get("drop_lat")
     drop_lon = breakdown.get("drop_lon")
+    created = time_ago(order.get("created_at"))
+    accepted = time_ago(order.get("accepted_at"))
+    delivered = time_ago(order.get("delivered_at"))
     eta_text = ""
     if last_lat and last_lon and drop_lat and drop_lon:
         try:
@@ -870,8 +823,14 @@ async def show_order_detail(callback: CallbackQuery):
         f"🍴 Items:\n{items_str}\n\n"
         f"💰 Subtotal: {order.get('food_subtotal','0')} birr\n"
         f"🚚 Delivery Fee: {order.get('delivery_fee','0')} birr\n"
-        f"💳 Payment: {order.get('payment_method','N/A')} ({order.get('payment_status','N/A')})\n"
         f"──────────────────────────\n"
+
+        f"💰 **Total:** {order.get('food_subtotal','0') + order.get('delivery_fee','0')} birr\n"
+
+        f"💳 Payment: {order.get('payment_method','N/A')} ({order.get('payment_status','N/A')})\n\n"
+        
+        f"⏱ Created: {created}  •  Accepted: {accepted}  •  Delivered: {delivered}\n\n"
+
         "✨ Thanks for ordering with Deliver AAU!"
     )
 
@@ -891,16 +850,17 @@ async def show_order_detail(callback: CallbackQuery):
         await callback.message.answer(text, reply_markup=kb, parse_mode="Markdown")
     await callback.answer()
 
-# --- Back / Refresh / Close routing to single-order summary ---
-@router.callback_query(F.data.startswith("order:back:") | F.data.startswith("order:refresh:") | F.data.startswith("order:close:"))
+# 
+@router.callback_query(F.data.startswith("order:back:") | F.data.startswith("order:refresh:") | F.data.startswith("order:"))
 async def back_to_summary(callback: CallbackQuery):
     parts = callback.data.split(":")
     action = parts[1] if len(parts) > 1 else ""
     order_id = int(parts[-1])
+    internal_user_id = await db.get_internal_user_id(callback.from_user.id)
 
     if action == "close":
         try:
-            await callback.message.delete()
+            await send_orders_page(callback, user_id=internal_user_id, page=0)
         except Exception:
             try:
                 await callback.message.edit_text("Closed.")
@@ -909,90 +869,13 @@ async def back_to_summary(callback: CallbackQuery):
         await callback.answer()
         return
 
-    order = await db.get_order(order_id)
-    if not order:
-        await callback.answer()
+    text, kb = await render_order_summary(order_id)
+    if kb:
         try:
-            await callback.message.edit_text("❌ Order not found.")
+            await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
         except Exception:
-            await callback.message.answer("❌ Order not found.")
-        return
-
-    order = dict(order)
-    status_text, stage = STATUS_MAP.get(order["status"], (order["status"], 1))
-
-    dg_text = ""
-    has_dg = False
-    dg_user_id = None
-    dg_phone = None
-    last_lat = order.get("last_lat")
-    last_lon = order.get("last_lon")
-
-    breakdown = {}
-    drop_lat = None
-    drop_lon = None
-    try:
-        breakdown = json.loads(order.get("breakdown_json") or "{}")
-        drop_lat = breakdown.get("drop_lat")
-        drop_lon = breakdown.get("drop_lon")
-    except Exception:
-        pass
-
-    if order.get("delivery_guy_id"):
-        dg = await db.get_delivery_guy(order["delivery_guy_id"])
-        if dg:
-            has_dg = True
-            dg_user_id = dg.get("user_id")
-            dg_phone = dg.get("phone")
-            dg_text = f"Delivery: {dg.get('name')} ({dg.get('campus','')})"
-            last_lat = last_lat or dg.get("last_lat")
-            last_lon = last_lon or dg.get("last_lon")
-
-    if last_lat and last_lon and drop_lat and drop_lon:
-        try:
-            eta_text, map_url = await _compute_eta_and_map(last_lat, last_lon, drop_lat, drop_lon)
-        except Exception:
-            eta_text = "⏱ ETA: unavailable"
-            map_url = None
-    else:
-        eta_text = "⌛ Waiting for live location..." if has_dg else "⌛ Waiting for a delivery partner..."
-        map_url = None
-
-    text = (
-        f"{animated_dot(stage)} {status_text}\n\n"
-        f"Progress: {render_progress(stage)}\n"
-        f"{dg_text + chr(10) if dg_text else ''}"
-        f"{eta_text + chr(10) if eta_text else ''}"
-        f"\n🏠 Pickup: {order.get('pickup','N/A')}\n"
-        f"📍 Drop-off: {order.get('dropoff','N/A')}\n\n"
-        "✨ Hang tight — your campus meal is on its way!"
-    )
-
-    kb = build_track_keyboard(
-        order["id"],
-        map_url=map_url,
-        has_dg=has_dg,
-        dg_user_id=dg_user_id,
-        dg_phone=dg_phone,
-        is_ready=(order.get("status") == "ready"),
-    )
-
-    try:
-        await callback.message.edit_text(
-            text,
-            reply_markup=kb,
-            parse_mode="HTML",
-            disable_web_page_preview=True,
-        )
-    except Exception:
-        await callback.message.answer(
-            text,
-            reply_markup=kb,
-            parse_mode="HTML",
-            disable_web_page_preview=True,
-        )
+            await callback.message.answer(text, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
     await callback.answer()
-
 
 # --- Inline Refresh / Close passthrough ---
 @router.callback_query(F.data.startswith("order:refresh:"))
@@ -1000,13 +883,102 @@ async def refresh_order_card(callback: CallbackQuery):
     await back_to_summary(callback)
 
 
-@router.callback_query(F.data.startswith("order:close:"))
-async def close_order_card(callback: CallbackQuery):
+
+
+async def render_order_summary(order_id: int, tick: int = 0, paused: bool = False) -> tuple[str, InlineKeyboardMarkup]:
+    order = await db.get_order(order_id)
+    if not order:
+        return "❌ Order not found.", None
+
+    order = dict(order)
+    status_text, stage = STATUS_MAP.get(order["status"], (order["status"], 1))
+
+    # Vendor info
+    vendor = await db.get_vendor(order["vendor_id"]) if order.get("vendor_id") else None
+    vendor_name = vendor.get("name") if vendor else "Vendor"
+    vendor_line = f"🏪 {vendor_name}"
+    if vendor and vendor.get("rating_avg") is not None:
+        vendor_line += f" • ★ {round(vendor.get('rating_avg',0),1)} ({vendor.get('rating_count',0)})"
+
+    # DG info
+    dg_text = ""
+    has_dg = False
+    dg_user_id = None
+    dg_phone = None
+    last_lat = order.get("last_lat")
+    last_lon = order.get("last_lon")
+    if order.get("delivery_guy_id"):
+        dg = await db.get_delivery_guy(order["delivery_guy_id"])
+        if dg:
+            has_dg = True
+            dg_user_id = dg.get("user_id")
+            dg_phone = dg.get("phone") or None
+            dg_name = dg.get("name", "Delivery Partner")
+            dg_rating = dg.get("rating", None) or dg.get("rating_avg", None)
+            dg_campus = dg.get("campus", "")
+            dg_text = f"🚴 {dg_name} ({dg_campus})"
+            if dg_rating is not None:
+                dg_text += f" • ★ {round(dg_rating,1)}"
+            last_lat = last_lat or dg.get("last_lat")
+            last_lon = last_lon or dg.get("last_lon")
+
+    # breakdown / coords
+    breakdown = {}
+    drop_lat = drop_lon = None
     try:
-        await callback.message.delete()
+        breakdown = json.loads(order.get("breakdown_json") or "{}")
+        drop_lat = breakdown.get("drop_lat")
+        drop_lon = breakdown.get("drop_lon")
     except Exception:
+        pass
+
+    # ETA & map
+    if last_lat and last_lon and drop_lat and drop_lon:
         try:
-            await callback.message.edit_text("Closed.")
+            eta_text, map_url = await _compute_eta_and_map(last_lat, last_lon, drop_lat, drop_lon)
         except Exception:
-            pass
-    await callback.answer()
+            eta_text, map_url = "⏱ ETA: unavailable", None
+    else:
+        eta_text = "⌛ Waiting for live location..." if has_dg else "⌛ Waiting for a delivery partner..."
+        map_url = None
+
+    # timestamps
+    created = time_ago(order.get("created_at"))
+    accepted = time_ago(order.get("accepted_at"))
+    delivered = time_ago(order.get("delivered_at"))
+
+    # items summary
+    breakdown_items = breakdown.get("items") or []
+    if isinstance(breakdown_items, list):
+        names = [str(i) if isinstance(i, str) else i.get("name", "") for i in breakdown_items]
+        counts = Counter(names)
+        items_preview = "\n".join(
+            f"• {name} x{count}" if count > 1 else f"• {name}"
+            for name, count in list(counts.items())[:6]
+        ) or "Items"
+    else:
+        items_preview = str(breakdown_items or "Items")
+
+    text = (
+        f"{animated_dot(stage, tick)} {status_text}\n\n"
+        f"{render_progress(stage)}\n\n"
+        f"{vendor_line}\n"
+        f"{dg_text + chr(10) if dg_text else ''}"
+        f"{eta_text + chr(10) if eta_text else ''}"
+        f"\n🛒 Items:\n{items_preview}\n"
+        f"💰 Total:{order.get('food_subtotal',0) + order.get('delivery_fee',0)} Birr\n"
+        f"⏱ Created {created} • Accepted {accepted} \n • Delivered {delivered}\n\n"
+        "✨ Hang tight — your campus meal is on its way!"
+    )
+
+    kb = build_track_keyboard(
+        order["id"],
+        has_dg=has_dg,
+        dg_user_id=dg_user_id,
+        dg_phone=dg_phone,
+        is_ready=(order.get("status") == "ready"),
+        map_url=map_url,
+        paused=paused
+    )
+
+    return text, kb

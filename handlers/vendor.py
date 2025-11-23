@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
+from collections import Counter
 import json
 import math
 import datetime
+from datetime import date
 from typing import Optional, List, Dict, Any
 
 from aiogram import Router, F
@@ -32,7 +34,7 @@ from utils.db_helpers import (
 router = Router()
 
 # You can inject db and bot from your app bootstrap
-db = Database(settings.DB_PATH)
+from app_context import db
 ADMIN_GROUP_ID = settings.ADMIN_GROUP_ID
 
 # -------------------------------------------------
@@ -84,13 +86,35 @@ async def show_vendor_dashboard(message: Message):
         await message.answer("⚠️ እባክዎ ከአስተዳዳሪ ጋር ይነጋገሩ።", reply_markup=ReplyKeyboardRemove())
         return
 
+    # Build rating text only if rating_avg > 0
+    rating_avg = float(vendor.get("rating_avg") or 0.0)
+    rating_count = int(vendor.get("rating_count") or 0)
+    rating_text = ""
+    if rating_avg > 0:
+        rating_text = f"⭐ አማካይ ደረጃ: {rating_avg:.1f} ({rating_count} አስተያየት)\n"
+        
+    today = datetime.date.today()
+    async with db._open_connection() as conn:
+        today_orders = await conn.fetchval(
+            """
+            SELECT COUNT(*) 
+            FROM orders 
+            WHERE vendor_id = $1 AND DATE(created_at) = $2
+            """,
+            vendor["id"], today
+        )
+        today_orders = int(today_orders or 0)
+
     text = (
         f"🏪 <b>{vendor['name']}</b>\n"
-        f"⭐ አማካይ ደረጃ: {float(vendor.get('rating_avg', 0.0)):.1f} "
-        f"({int(vendor.get('rating_count', 0))} አስተያየት)\n\n"
-        "ወደ ዳሽቦርድ እንኳን በደህና መጡ!"
+        f"{rating_text}\n"
+        f"📦 ዛሬ ትዕዛዞች: {today_orders}\n\n"
+        "✨ ወደ ዳሽቦርድ እንኳን በደህና መጡ!\n"
+        "📊 ከዚህ ቦታ የትዕዛዝ እይታዎችን፣ የሳምንት አፈጻጸምን እና የገቢ ሪፖርቶችን ማየት ትችላላችሁ።"
     )
+
     await message.answer(text, parse_mode="HTML", reply_markup=vendor_dashboard_keyboard())
+
 
 # -------------------------------------------------
 # 📋 Menu Management (simple inline actions)
@@ -105,10 +129,10 @@ async def vendor_menu(message: Message):
     menu = json.loads(vendor.get("menu_json") or "[]")
     if not menu:
         await message.answer(
-            "📭ሜኑዎ ባዶ ነው።\n➕ አዲስ አክል ይጫኑ።",
+            "📭ሜኑዎ ባዶ ነው።\n➕ አዲስ ምግብ ይጫኑ።",
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[
-                    [InlineKeyboardButton(text="➕ አዲስ አክል", callback_data=f"menu:add:{vendor['id']}")]
+                    [InlineKeyboardButton(text="➕ አዲስ ምግብ", callback_data=f"menu:add:{vendor['id']}")]
                 ]
             )
         )
@@ -328,7 +352,8 @@ async def vendor_accept_order(cb: CallbackQuery, bot: Bot):
 
     await db.update_order_status(order_id, "preparing")
     await cb.message.edit_reply_markup(reply_markup=None)
-    await cb.message.answer("✅ ትዕዛዙ ተቀበለ።")
+    await cb.message.edit_text(f"✅ ትዕዛዝ #{order_id} ተቀብያለው።")
+
 
     # Notify student
     student_chat_id = await db.get_student_chat_id(order)
@@ -356,8 +381,14 @@ async def vendor_reject_order(cb: CallbackQuery, bot: Bot):
     # Notify student
     student_chat_id = await db.get_student_chat_id(order)
     if student_chat_id:
-        await cb.bot.send_message(student_chat_id, f"❌ ትዕዛዝዎ #{order_id} አልተቀበለም።")
-
+            await cb.bot.send_message(
+                student_chat_id,
+                f"❌ Sorry, your order #{order_id} could not be accepted.\n\n"
+                "This may happen if:\n"
+                "• The vendor was unavailable or closed\n"
+                "• The item is out of stock\n"
+                "• A delivery partner could not be assigned in time\n\n"
+                "Please try again later or choose another option.")
     # Admin log
     vendor = await db.get_vendor(order["vendor_id"])
     await notify_admin_log(bot, ADMIN_GROUP_ID, f"⚠️ Vendor {vendor['name']} rejected Order #{order_id}.")
@@ -368,7 +399,7 @@ def vendor_orders_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="🆕 አዲስ ትዕዛዞች"), KeyboardButton(text="⚙️ በመዘጋጀት ላይ ያሉ")],
-            [KeyboardButton(text="✅ ዝግጁ ለመውሰድ"), KeyboardButton(text="⬅️ ወደ ዳሽቦርድ")],
+            [KeyboardButton(text="✅ ዝግጁ ትዕዛዞች"), KeyboardButton(text="⬅️ ወደ ዳሽቦርድ")],
         ],
         resize_keyboard=True
     )
@@ -392,16 +423,32 @@ def paginate_kb(page: int, pages: int, scope: str) -> InlineKeyboardMarkup:
 # -----------------------------
 # Helpers: render one order line (Amharic)
 # -----------------------------
+
 def render_order_line(o: dict, include_dg: bool = False) -> str:
-    items = ", ".join(i.get("name", "") for i in json.loads(o.get("items_json") or "[]"))
+    try:
+        raw_items = json.loads(o.get("items_json") or "[]")
+    except Exception:
+        raw_items = []
+
+    names = [i.get("name", "") if isinstance(i, dict) else str(i) for i in raw_items]
+    counts = Counter(names)
+
+    # Vertical list instead of horizontal
+    items_str = "\n".join(
+        f"✔️ {name} x{count}" if count > 1 else f"• {name}"
+        for name, count in counts.items()
+    ) or "—"
+
     parts = [
-        f"📦 ትዕዛዝ #{o['id']}",
-        f"🛒 እቃዎች: {items}",
+        f"📦 ትዕዛዝ #{o['id']}\n",
+        f"🛒 ምግቦች:\n{items_str}\n",
         f"💵 ዋጋ: {int(o.get('food_subtotal', 0))} ብር",
     ]
     if include_dg and o.get("delivery_guy_id"):
-        parts.append("🚴 የሚያውሰዱት: " + (o.get("dg_name") or "—"))
+        parts.append("🚴 ዴሊቬሪ ማን: " + (o.get("dg_name") or "—"))
+
     return "\n".join(parts)
+
 
 # -----------------------------
 # 🆕 New Orders (pending/assigned) + pagination
@@ -423,7 +470,7 @@ async def vendor_new_orders(message: Message):
         await message.answer("⚠️ ሱቅ አልተገኘም። እባክዎ አስተዳዳሪን አግኙ።")
         return
 
-    page_size = 10
+    page_size = 5
     total = await db.count_orders_for_vendor(vendor["id"], status_filter=["pending", "assigned"])
     if total == 0:
         await message.answer("📭 አዲስ ትዕዛዝ የለም።", reply_markup=vendor_orders_keyboard())
@@ -434,10 +481,12 @@ async def vendor_new_orders(message: Message):
 
     for o in orders:
         text = render_order_line(o)
+        text +=  f"\n\n ⚡ እባክዎት ትዕዛዙን ይቀበሉ ወይም ይከለክሉ....።"
+
         kb = InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="✅ ተቀበል", callback_data=f"vendor:accept:{o['id']}")],
-                [InlineKeyboardButton(text="❌ አልተቀበለም", callback_data=f"vendor:reject:{o['id']}")]
+                [InlineKeyboardButton(text="✅ ተቀበል", callback_data=f"vendor:accept:{o['id']}"),
+                 InlineKeyboardButton(text="❌ አይ", callback_data=f"vendor:reject:{o['id']}")]
             ]
         )
         await message.answer(text, reply_markup=kb)
@@ -454,7 +503,7 @@ async def vendor_new_orders_page(cb: CallbackQuery):
         await cb.message.answer("⚠️ ሱቅ አልተገኘም።")
         return
 
-    page_size = 10
+    page_size = 5
     total = await db.count_orders_for_vendor(vendor["id"], status_filter=["pending", "assigned"])
     pages = max(1, math.ceil(total / page_size))
     page = max(1, min(page, pages))
@@ -496,6 +545,7 @@ async def vendor_accept_order(cb: CallbackQuery, bot: Bot):
     # helper must exist: sets accepted_at = CURRENT_TIMESTAMP (implement in db layer)
     try:
         await db.set_order_timestamp(order_id, "accepted_at")
+      
     except Exception:
         pass
 
@@ -503,8 +553,10 @@ async def vendor_accept_order(cb: CallbackQuery, bot: Bot):
     vendor_name = vendor["name"] if vendor else "Vendor"
 
     # Vendor sees Amharic
-    await cb.message.edit_reply_markup(reply_markup=None)
-    await cb.message.answer("⚙️ ትዕዛዙ በመዘጋጀት ላይ ነው።")
+    await cb.message.edit_text(
+        f"⚙️ ትዕዛዙ በመዘጋጀት ላይ ነው።\n\n⬅️ ወደ ዳሽቦርድ",
+        reply_markup=vendor_dashboard_keyboard()
+    )
 
     # Notify student (English short message; you can localize)
     student_chat_id = await db.get_student_chat_id(order)
@@ -528,8 +580,7 @@ async def vendor_reject_order(cb: CallbackQuery, bot: Bot):
     vendor = await db.get_vendor(order["vendor_id"])
     vendor_name = vendor["name"] if vendor else "Vendor"
 
-    await cb.message.edit_reply_markup(reply_markup=None)
-    await cb.message.answer("❌ ትዕዛዙ ተሰርዘዋል።")
+    await cb.message.edit_text(f"❌ ትዕዛዝ #{order_id} ተሰርዘዋል።")
 
     # Student notify
     student_chat_id = await db.get_student_chat_id(order)
@@ -555,7 +606,7 @@ async def vendor_preparing_orders(message: Message):
         await message.answer("⚠️ ሱቅ አልተገኘም።")
         return
 
-    page_size = 10
+    page_size = 5
     total = await db.count_orders_for_vendor(vendor["id"], status_filter=["preparing"])
     if total == 0:
         await message.answer("📭 በመዘጋጀት ላይ ያለ ትዕዛዝ የለም።", reply_markup=vendor_orders_keyboard())
@@ -567,7 +618,7 @@ async def vendor_preparing_orders(message: Message):
         text = render_order_line(o)
         kb = InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="✅ ዝግጁ ለመውሰድ", callback_data=f"order:ready:{o['id']}")],
+                [InlineKeyboardButton(text="✅ ደርሷል (ለመውስድ ዝግጁ ነው)", callback_data=f"ord:ready:{o['id']}")],
                 [InlineKeyboardButton(text="❌ ተሰርዘዋል", callback_data=f"order:cancel:{o['id']}")]
             ]
         )
@@ -585,7 +636,7 @@ async def vendor_preparing_orders_page(cb: CallbackQuery):
         await cb.message.answer("⚠️ ሱቅ አልተገኘም።")
         return
 
-    page_size = 10
+    page_size = 5
     total = await db.count_orders_for_vendor(vendor["id"], status_filter=["preparing"])
     pages = max(1, math.ceil(total / page_size))
     page = max(1, min(page, pages))
@@ -601,7 +652,7 @@ async def vendor_preparing_orders_page(cb: CallbackQuery):
             text = render_order_line(o)
             kb = InlineKeyboardMarkup(
                 inline_keyboard=[
-                    [InlineKeyboardButton(text="✅ ዝግጁ ለመውሰድ", callback_data=f"order:ready:{o['id']}")],
+                    [InlineKeyboardButton(text="✅ ደርሷል (ለመውስድ ዝግጁ ነው)", callback_data=f"ord:ready:{o['id']}")],
                     [InlineKeyboardButton(text="❌ ተሰርዘዋል", callback_data=f"order:cancel:{o['id']}")]
                 ]
             )
@@ -613,14 +664,14 @@ async def vendor_preparing_orders_page(cb: CallbackQuery):
 # -----------------------------
 # ✅ Ready for Pickup (ready) + pagination
 # -----------------------------
-@router.message(F.text == "✅ ዝግጁ ለመውሰድ")
+@router.message(F.text == "✅ ዝግጁ ትዕዛዞች")
 async def vendor_ready_orders(message: Message):
     vendor = await db.get_vendor_by_telegram(message.from_user.id)
     if not vendor:
         await message.answer("⚠️ ሱቅ አልተገኘም።")
         return
 
-    page_size = 10
+    page_size = 5
     total = await db.count_orders_for_vendor(vendor["id"], status_filter=["ready"])
     if total == 0:
         await message.answer("📭 ዝግጁ የሆነ ትዕዛዝ የለም።", reply_markup=vendor_orders_keyboard())
@@ -636,6 +687,7 @@ async def vendor_ready_orders(message: Message):
             if dg:
                 dg_name = dg.get("name", "")
         line = render_order_line({**o, "dg_name": dg_name}, include_dg=True)
+
         await message.answer(line)
 
     await message.answer("📄 ገጽ 1", reply_markup=paginate_kb(1, pages, "ready"))
@@ -650,7 +702,7 @@ async def vendor_ready_orders_page(cb: CallbackQuery):
         await cb.message.answer("⚠️ ሱቅ አልተገኘም።")
         return
 
-    page_size = 10
+    page_size = 5
     total = await db.count_orders_for_vendor(vendor["id"], status_filter=["ready"])
     pages = max(1, math.ceil(total / page_size))
     page = max(1, min(page, pages))
@@ -677,7 +729,7 @@ async def vendor_ready_orders_page(cb: CallbackQuery):
 # -----------------------------
 # 📦 Mark Ready (notify DG in English)
 # -----------------------------
-@router.callback_query(F.data.startswith("order:ready:"))
+@router.callback_query(F.data.startswith("ord:ready:"))
 async def order_mark_ready(cb: CallbackQuery, bot: Bot):
     await cb.answer()
     order_id = int(cb.data.split(":")[-1])
@@ -689,19 +741,32 @@ async def order_mark_ready(cb: CallbackQuery, bot: Bot):
     # Update status and optionally set a timestamp (if you track)
     await db.update_order_status(order_id, "ready")
 
-    await cb.message.edit_reply_markup(reply_markup=None)
-    await cb.message.answer("✅ ትዕዛዙ ዝግጁ ለመውሰድ ነው።")
+    await cb.message.edit_text(f"✅ ትዕዛዝ #{order_id} ደርሷል ለመወሰድ ዝግጁ ነው።"
+)
 
     # Notify DG (English, eye-catching, include essential info)
     if order.get("delivery_guy_id"):
         dg = await db.get_delivery_guy(order["delivery_guy_id"])
+        print('here is the dg', dg)
         if dg:
             vendor = await db.get_vendor(order["vendor_id"])
             vendor_name = vendor["name"] if vendor else "Vendor"
             pickup = order.get("pickup") or "Vendor location"
             dropoff = order.get("dropoff") or "Student location"
             try:
-                items = json.loads(order.get("items_json", "[]")) or []
+                    items = json.loads(order.get("items_json", "[]")) or []
+
+                    # Extract names (if items are dicts with "name")
+                    names = [i.get("name", "") if isinstance(i, dict) else str(i) for i in items]
+
+                    # Count duplicates
+                    counts = Counter(names)
+
+                    # Format string like "Tea x2, Burger"
+                    items_str = ", ".join(
+                        f"{name} x{count}" if count > 1 else name
+                        for name, count in counts.items()
+                    )            
             except Exception:
                 items = []
             item_list = ", ".join([i.get("name", "") for i in items]) or "Items"
@@ -713,11 +778,25 @@ async def order_mark_ready(cb: CallbackQuery, bot: Bot):
                 f"📦 Order #{order_id} is READY\n"
                 f"📍 Pickup: {pickup}\n"
                 f"🎯 Dropoff: {dropoff}\n"
-                f"🛒 Items: {item_list}\n"
+                f"🛒 Items: {items_str}\n"
                 f"💵 Total: {total_food} Birr + Delivery Fee: {delivery_fee} Birr\n\n"
                 f"👉 GO NOW to collect this order."
             )
-            await safe_send(bot, dg["user_id"], dg_msg)
+            buttons = [
+            InlineKeyboardButton(text="▶️ Start Delivery", callback_data=f"start_order_{order_id}"),
+            InlineKeyboardButton(text="📦 Mark Delivered", callback_data=f"delivered_{order_id}")
+            ]
+            action_row = [
+            InlineKeyboardButton(text="💬 Contact User", callback_data=f"contact_user_{order_id}")
+        ]
+
+        # Only include buttons row if not empty
+            inline_keyboard = [buttons] if buttons else []
+            inline_keyboard.append(action_row)
+            kb = InlineKeyboardMarkup(inline_keyboard=inline_keyboard)
+
+        
+            await safe_send(bot, dg["telegram_id"], dg_msg, reply_markup=kb)
     else:
         vendor = await db.get_vendor(order["vendor_id"])
         vendor_name = vendor["name"] if vendor else "Vendor"
@@ -726,7 +805,9 @@ async def order_mark_ready(cb: CallbackQuery, bot: Bot):
     # Notify student
     student_chat_id = await db.get_student_chat_id(order)
     if student_chat_id:
-        await safe_send(bot, student_chat_id, f"📦 Your order #{order_id} is ready and will be picked up soon.")
+        from handlers.student_track_order import notify_student
+        await notify_student(bot, student_chat_id, order_id)
+
 
     # Admin log
     vendor = await db.get_vendor(order["vendor_id"])
@@ -776,7 +857,7 @@ async def vendor_performance(message: Message):
         return
 
     # Fresh daily summary
-    s = await calc_vendor_day_summary(db.db_path, vendor["id"], date=datetime.date.today().strftime("%Y-%m-%d"))
+    s = await calc_vendor_day_summary(db, vendor["id"], date_str=datetime.date.today().strftime("%Y-%m-%d"))
     text = (
         "📊 የአፈጻጸም ሪፖርት\n"
         f"📦 ትዕዛዞች: {s['delivered'] + s['cancelled']} (✅ {s['delivered']} | ❌ {s['cancelled']})\n"
@@ -794,9 +875,9 @@ async def performance_today_orders(message: Message):
         await message.answer("⚠️ ሱቅ አልተገኘም።")
         return
 
-    today = datetime.date.today().strftime("%Y-%m-%d")
+    today = date.today()
     total = await db.count_orders_for_vendor(vendor["id"], date=today)
-    page_size = 10
+    page_size = 5
     pages = max(1, math.ceil(total / page_size))
 
     # Fetch page 1
@@ -809,7 +890,7 @@ async def performance_today_orders(message: Message):
         items = ", ".join(i.get("name","") for i in json.loads(o.get("items_json") or "[]"))
         await message.answer(
             f"📦 ትዕዛዝ #{o['id']} — {o['status']}\n"
-            f"🛒 እቃዎች: {items}\n"
+            f"🛒 ምግቦች: {items}\n\n"
             f"💵 ክፍያ: {int(o.get('delivery_fee', 0))} ብር\n"
             f"📍 መድረሻ: {o.get('dropoff','')}"
         )
@@ -828,7 +909,7 @@ async def perf_daily_page(cb: CallbackQuery):
         await cb.message.answer("⚠️ ሱቅ አልተገኘም።")
         return
 
-    page_size = 10
+    page_size = 5
     total = await db.count_orders_for_vendor(vendor["id"], date=date)
     pages = max(1, math.ceil(total / page_size))
     page = max(1, min(page, pages))
@@ -845,14 +926,13 @@ async def perf_daily_page(cb: CallbackQuery):
         items = ", ".join(i.get("name","") for i in json.loads(o.get("items_json") or "[]"))
         await cb.message.answer(
             f"📦 ትዕዛዝ #{o['id']} — {o['status']}\n"
-            f"🛒 እቃዎች: {items}\n"
+            f"🛒 ምግቦች: {items}\n\n"
             f"💵 ክፍያ: {int(o.get('delivery_fee', 0))} ብር\n"
             f"📍 መድረሻ: {o.get('dropoff','')}"
         )
 
     kb = paginate_orders_kb(page=page, pages=pages, scope="daily", extra_payload=date)
     await cb.message.answer(f"📄 ገጽ {page}/{pages}", reply_markup=kb)
-
 @router.message(F.text == "📅 የሳምንቱ ትዕዛዞች")
 async def performance_week_orders(message: Message):
     vendor = await db.get_vendor_by_telegram(message.from_user.id)
@@ -861,29 +941,36 @@ async def performance_week_orders(message: Message):
         return
 
     today = datetime.date.today()
-    start = today - datetime.timedelta(days=today.weekday())
-    end = start + datetime.timedelta(days=6)
-    start_date = start.strftime("%Y-%m-%d")
-    end_date = end.strftime("%Y-%m-%d")
+    start = today - datetime.timedelta(days=today.weekday())   # Monday
+    end = start + datetime.timedelta(days=6)                   # Sunday
 
     # total across range
     async with db._open_connection() as conn:
-        async with conn.execute(
-            "SELECT COUNT(*) FROM orders WHERE vendor_id = ? AND DATE(created_at) BETWEEN ? AND ?",
-            (vendor["id"], start_date, end_date)
-        ) as cur:
-            row = await cur.fetchone()
-            total = int(row[0])
+        total = await conn.fetchval(
+            """
+            SELECT COUNT(*) 
+            FROM orders 
+            WHERE vendor_id = $1 
+              AND DATE(created_at) BETWEEN $2 AND $3
+            """,
+            vendor["id"], start, end   # pass date objects, not strings
+        )
+        total = int(total or 0)
 
-    page_size = 10
+    page_size = 5
     pages = max(1, math.ceil(total / page_size))
-    orders = await db.get_orders_for_vendor(vendor["id"], limit=page_size, offset=0)  # compact page 1
+    orders = await db.get_orders_for_vendor(vendor["id"], limit=page_size, offset=0)
+
     if not orders:
         await message.answer("📭 በዚህ ሳምንት ትዕዛዝ የለም።", reply_markup=performance_keyboard())
         return
 
+    # format for display only
+    start_str = start.strftime("%Y-%m-%d")
+    end_str = end.strftime("%Y-%m-%d")
+
     await message.answer(
-        f"📅 የሳምንቱ ትዕዛዞች\n🗓 ከ{start_date} እስከ {end_date}\n"
+        f"📅 የሳምንቱ ትዕዛዞች\n🗓 ከ{start_str} እስከ {end_str}\n"
         f"📦 ጠቅላላ ትዕዛዞች: {total}"
     )
 
@@ -891,12 +978,12 @@ async def performance_week_orders(message: Message):
         items = ", ".join(i.get("name","") for i in json.loads(o.get("items_json") or "[]"))
         await message.answer(
             f"📦 ትዕዛዝ #{o['id']} — {o['status']}\n"
-            f"🛒 እቃዎች: {items}\n"
+            f"🛒 ምግቦች: {items}\n\n"
             f"💵 ክፍያ: {int(o.get('delivery_fee', 0))} ብር\n"
             f"📍 መድረሻ: {o.get('dropoff','')}"
         )
 
-    payload = f"{start_date}:{end_date}"
+    payload = f"{start_str}:{end_str}"
     kb = paginate_orders_kb(page=1, pages=pages, scope="weekly", extra_payload=payload)
     await message.answer("📄 ገጽ 1", reply_markup=kb)
 
@@ -921,7 +1008,7 @@ async def perf_weekly_page(cb: CallbackQuery):
             row = await cur.fetchone()
             total = int(row[0])
 
-    page_size = 10
+    page_size = 5
     pages = max(1, math.ceil(total / page_size))
     page = max(1, min(page, pages))
     offset = (page - 1) * page_size
@@ -938,7 +1025,7 @@ async def perf_weekly_page(cb: CallbackQuery):
         items = ", ".join(i.get("name","") for i in json.loads(o.get("items_json") or "[]"))
         await cb.message.answer(
             f"📦 ትዕዛዝ #{o['id']} — {o['status']}\n"
-            f"🛒 እቃዎች: {items}\n"
+            f"🛒 ምግቦች: {items}\n\n"
             f"💵 ክፍያ: {int(o.get('delivery_fee', 0))} ብር\n"
             f"📍 መድረሻ: {o.get('dropoff','')}"
         )
@@ -969,7 +1056,7 @@ async def vendor_today_summary(message: Message):
     if not vendor:
         await message.answer("⚠️ ሱቅ አልተገኘም።")
         return
-    s = await calc_vendor_day_summary(db.db_path, vendor["id"])
+    s = await calc_vendor_day_summary(db, vendor["id"])
     await message.answer(
         "📊 የዕለቱ ሪፖርት\n"
         f"📦 ትዕዛዞች: {s['delivered'] + s['cancelled']} (✅ {s['delivered']} | ❌ {s['cancelled']})\n"
@@ -984,7 +1071,7 @@ async def vendor_week_summary(message: Message):
     if not vendor:
         await message.answer("⚠️ ሱቅ አልተገኘም።")
         return
-    ws = await calc_vendor_week_summary(db.db_path, vendor["id"])
+    ws = await calc_vendor_week_summary(db, vendor["id"])
     await message.answer(
         f"📅 የሳምንቱ ሪፖርት\n"
         f"🗓 ከ{ws['start_date']} እስከ {ws['end_date']}\n"
