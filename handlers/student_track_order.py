@@ -965,7 +965,7 @@ async def render_order_summary(order_id: int, tick: int = 0, paused: bool = Fals
         f"{vendor_line}\n"
         f"{dg_text + chr(10) if dg_text else ''}"
         f"{eta_text + chr(10) if eta_text else ''}"
-        f"\n🛒 Items:\n{items_preview}\n"
+        f"\n🛒 Items:\n{items_preview}\n\n"
         f"💰 Total:{order.get('food_subtotal',0) + order.get('delivery_fee',0)} Birr\n"
         f"⏱ Created {created} • Accepted {accepted} \n • Delivered {delivered}\n\n"
         "✨ Hang tight — your campus meal is on its way!"
