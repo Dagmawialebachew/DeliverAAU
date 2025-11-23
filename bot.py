@@ -96,9 +96,8 @@ async def lifespan(app: FastAPI):
         BotCommand(command="dashboard", description="Delivery Guy Dashboard"),
     ])
 
-    # Set webhook
-    # webhook_url = f"{os.getenv('WEBHOOK_BASE_URL')}/bot/{settings.BOT_TOKEN}"
-    # await bot.set_webhook(webhook_url)
+    webhook_url = f"{os.getenv('WEBHOOK_BASE_URL')}/bot/{settings.BOT_TOKEN}"
+    await bot.set_webhook(webhook_url)
 
 
 
