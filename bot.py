@@ -30,7 +30,7 @@ from handlers.delivery_guy import router as delivery_guy_router
 from handlers.vendor import router as vendor_router
 from handlers.rating import router as rating_router
 from handlers.help import router as help_router
-from handlers.settings import router as setting_router
+from handlers.settings import router as settings_router
 from middlewares.gracefull_fallback_middleware import GracefulFallbackMiddleware
 
 # --- Logging ---
@@ -67,7 +67,7 @@ dp.include_router(delivery_guy_router)
 dp.include_router(vendor_router)
 dp.include_router(rating_router)
 dp.include_router(help_router)
-dp.include_router(setting_router)
+dp.include_router(settings_router)
 
 # --- DB + Scheduler ---
 scheduler = BotScheduler(db=db, bot=bot)

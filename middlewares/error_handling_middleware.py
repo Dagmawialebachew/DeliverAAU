@@ -3,6 +3,7 @@ import logging
 from aiogram import BaseMiddleware
 from typing import Callable, Dict, Any, Awaitable
 from aiogram.types import TelegramObject
+from config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -16,10 +17,9 @@ class ErrorHandlingMiddleware(BaseMiddleware):
             # Notify user gracefully
             bot = data.get("bot")
             if bot and hasattr(event, "message") and event.message:
-                await event.message.answer("⚠️ Sorry, something went wrong. Please try again later.")
+                pass
 
-            # Optional: notify admins
-            # if settings.ADMIN_GROUP_ID and bot:
-            #     await bot.send_message(settings.ADMIN_GROUP_ID, f"❌ Exception: {e}")
+            if settings.ADMIN_GROUP_ID and bot:
+                await bot.send_message(settings.ADMIN_GROUP_ID, f"❌ Exception: {e}")
 
             return None
