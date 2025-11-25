@@ -513,6 +513,7 @@ async def vendor_accept_order(cb: CallbackQuery, bot: Bot):
         return
     
     expires_at = order.get("expires_at")
+    from datetime import datetime
     if expires_at and expires_at < datetime.utcnow():
         await cb.message.answer("❌ ይህ ትዕዛዝ አልተቀበለም፣ ጊዜው አልፎበታል።")
         await notify_admin_log(bot, ADMIN_GROUP_ID, f"⚠️ Vendor tried to accept expired Order #{order_id}")
