@@ -768,9 +768,9 @@ class Database:
         breakdown_json: str,
         delivery_guy_id: Optional[int] = None,
     ) -> int:
-        now = datetime.utcnow()
-        expires_at = now + datetime.timedelta(minutes=30)  # auto‑cancel window
-
+        from datetime import datetime, timedelta, timezone
+        now = datetime.utcnow()  # naive UTC
+        expires_at = now + timedelta(minutes=30)
         async with self._open_connection() as conn:
             order_id = await conn.fetchval(
                 """
