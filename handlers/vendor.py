@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
+import asyncio
 from collections import Counter
+import contextlib
 import json
+import logging
 import math
 import datetime
 from datetime import date
@@ -324,8 +327,8 @@ async def vendor_orders(message: Message):
         return
 
     # Count orders in each category
-    new_count = await db.count_orders_for_vendor(vendor["id"], status_filter=["pending","assigned"])
-    preparing_count = await db.count_orders_for_vendor(vendor["id"], status_filter=["preparing"])
+    new_count = await db.count_orders_for_vendor(vendor["id"], status_filter=["pending"])
+    preparing_count = await db.count_orders_for_vendor(vendor["id"], status_filter=["preparing","assigned"])
     ready_count = await db.count_orders_for_vendor(vendor["id"], status_filter=["ready"])  # same status, but shown separately
 
     # Simple Amharic summary
@@ -339,59 +342,6 @@ async def vendor_orders(message: Message):
 
     await message.answer(summary_text, reply_markup=vendor_orders_keyboard())
 
-
-
-@router.callback_query(F.data.startswith("vendor:accept:"))
-async def vendor_accept_order(cb: CallbackQuery, bot: Bot):
-    await cb.answer()
-    order_id = int(cb.data.split(":")[-1])
-    order = await db.get_order(order_id)
-    if not order:
-        await cb.message.answer("⚠️ ትዕዛዝ አልተገኘም።")
-        return
-
-    await db.update_order_status(order_id, "preparing")
-    await cb.message.edit_reply_markup(reply_markup=None)
-    await cb.message.edit_text(f"✅ ትዕዛዝ #{order_id} ተቀብያለው።")
-
-
-    # Notify student
-    student_chat_id = await db.get_student_chat_id(order)
-    # if student_chat_id:
-    #     await cb.bot.send_message(student_chat_id, f"✅ ትዕዛዝዎ #{order_id} ተቀበለ።")
-
-    # Admin log
-    vendor = await db.get_vendor(order["vendor_id"])
-    await notify_admin_log(bot, ADMIN_GROUP_ID, f"✅ Vendor {vendor['name']} accepted Order #{order_id}.")
-
-
-@router.callback_query(F.data.startswith("vendor:reject:"))
-async def vendor_reject_order(cb: CallbackQuery, bot: Bot):
-    await cb.answer()
-    order_id = int(cb.data.split(":")[-1])
-    order = await db.get_order(order_id)
-    if not order:
-        await cb.message.answer("⚠️ ትዕዛዝ አልተገኘም።")
-        return
-
-    await db.update_order_status(order_id, "cancelled")
-    await cb.message.edit_reply_markup(reply_markup=None)
-    await cb.message.answer("❌ ትዕዛዙ አልተቀበለም።")
-
-    # Notify student
-    student_chat_id = await db.get_student_chat_id(order)
-    if student_chat_id:
-            await cb.bot.send_message(
-                student_chat_id,
-                f"❌ Sorry, your order #{order_id} could not be accepted.\n\n"
-                "This may happen if:\n"
-                "• The vendor was unavailable or closed\n"
-                "• The item is out of stock\n"
-                "• A delivery partner could not be assigned in time\n\n"
-                "Please try again later or choose another option.")
-    # Admin log
-    vendor = await db.get_vendor(order["vendor_id"])
-    await notify_admin_log(bot, ADMIN_GROUP_ID, f"⚠️ Vendor {vendor['name']} rejected Order #{order_id}.")
 
 
 
@@ -432,6 +382,10 @@ def render_order_line(o: dict, include_dg: bool = False) -> str:
 
     names = [i.get("name", "") if isinstance(i, dict) else str(i) for i in raw_items]
     counts = Counter(names)
+    created_at = o.get("created_at")
+    from utils.helpers import time_ago_am
+    created_line = f"⏱ የታዘዘበት ጊዜ: {time_ago_am(created_at)}" if created_at else "⏱ የታዘዘበት ጊዜ: —"
+    
 
     # Vertical list instead of horizontal
     items_str = "\n".join(
@@ -442,7 +396,8 @@ def render_order_line(o: dict, include_dg: bool = False) -> str:
     parts = [
         f"📦 ትዕዛዝ #{o['id']}\n",
         f"🛒 ምግቦች:\n{items_str}\n",
-        f"💵 ዋጋ: {int(o.get('food_subtotal', 0))} ብር",
+        f"💵 ዋጋ: {int(o.get('food_subtotal', 0))} ብር\n",
+        created_line,
     ]
     if include_dg and o.get("delivery_guy_id"):
         parts.append("🚴 ዴሊቬሪ ማን: " + (o.get("dg_name") or "—"))
@@ -453,13 +408,30 @@ def render_order_line(o: dict, include_dg: bool = False) -> str:
 # -----------------------------
 # 🆕 New Orders (pending/assigned) + pagination
 # -----------------------------
-async def safe_send(bot: Bot, chat_id: int, text: str):
+async def safe_send(
+    bot: Bot,
+    chat_id: int,
+    text: str,
+    reply_markup: InlineKeyboardMarkup | None = None,
+    parse_mode: str = "Markdown"
+):
+    """
+    Safely send a message to a chat.
+    Supports reply_markup and parse_mode.
+    Logs errors instead of swallowing silently.
+    """
     try:
-        await bot.send_message(chat_id, text)
-    except Exception:
-        # swallow; consider logging to DB or Sentry
-        pass
-
+        return await bot.send_message(
+            chat_id,
+            text,
+            reply_markup=reply_markup,
+            parse_mode=parse_mode
+        )
+    except Exception as e:
+        logging.getLogger(__name__).warning(
+            f"safe_send failed for chat_id={chat_id}, text={text[:30]}...: {e}"
+        )
+        
 # -----------------------------
 # 🆕 New Orders (pending/assigned) + pagination
 # -----------------------------
@@ -471,13 +443,13 @@ async def vendor_new_orders(message: Message):
         return
 
     page_size = 5
-    total = await db.count_orders_for_vendor(vendor["id"], status_filter=["pending", "assigned"])
+    total = await db.count_orders_for_vendor(vendor["id"], status_filter=["pending"])
     if total == 0:
         await message.answer("📭 አዲስ ትዕዛዝ የለም።", reply_markup=vendor_orders_keyboard())
         return
 
     pages = max(1, math.ceil(total / page_size))
-    orders = await db.get_orders_for_vendor(vendor["id"], status_filter=["pending", "assigned"], limit=page_size, offset=0)
+    orders = await db.get_orders_for_vendor(vendor["id"], status_filter=["pending"], limit=page_size, offset=0)
 
     for o in orders:
         text = render_order_line(o)
@@ -539,34 +511,84 @@ async def vendor_accept_order(cb: CallbackQuery, bot: Bot):
     if not order:
         await cb.message.answer("⚠️ ትዕዛዝ አልተገኘም።")
         return
+    
+    expires_at = order.get("expires_at")
+    if expires_at and expires_at < datetime.utcnow():
+        await cb.message.answer("❌ ይህ ትዕዛዝ አልተቀበለም፣ ጊዜው አልፎበታል።")
+        await notify_admin_log(bot, ADMIN_GROUP_ID, f"⚠️ Vendor tried to accept expired Order #{order_id}")
+        return
 
-    # Status -> preparing, record accepted_at
+    # Update status and timestamp
     await db.update_order_status(order_id, "preparing")
-    # helper must exist: sets accepted_at = CURRENT_TIMESTAMP (implement in db layer)
     try:
         await db.set_order_timestamp(order_id, "accepted_at")
-      
     except Exception:
-        pass
+        import logging
+        logging.getLogger(__name__).error(f"Failed to set accepted_at for order #{order_id}")
 
     vendor = await db.get_vendor(order["vendor_id"])
     vendor_name = vendor["name"] if vendor else "Vendor"
 
-    # Vendor sees Amharic
+    # Vendor sees confirmation in Amharic
     await cb.message.edit_text(
-        f"⚙️ ትዕዛዙ በመዘጋጀት ላይ ነው።\n\n⬅️ ወደ ዳሽቦርድ",
-        reply_markup=vendor_dashboard_keyboard()
+        "⚙️ ትዕዛዙ በመዘጋጀት ላይ ነው።\n\n⬅️ ወደ ዳሽቦርድ"
     )
 
-    # Notify student (English short message; you can localize)
+    # Student cinematic progress
     student_chat_id = await db.get_student_chat_id(order)
+   
+    # Assign delivery guy
+    from utils.helpers import assign_delivery_guy, render_cart
+    chosen = await assign_delivery_guy(
+            db=db,
+            order_id=order_id,
+            bot=bot,
+            notify_student=False  # scheduler must NOT notify student
+        )
+    # Build final preview for student
+    cart_text, subtotal = render_cart(order.get("cart_counts", {}), order.get("menu", []))
+    total_payable = order.get("food_subtotal", 0) + order.get("delivery_fee", 0)
+
+    final_preview = (
+    f"🎉 *Order #{order_id} Confirmed by {vendor_name}!* \n"
+    "──────────────────────\n"
+    "👨‍🍳 Your meal is now being prepared with care...\n"
+)
+    final_preview += (
+        "\n🚴 A delivery partner will be assigned soon.\n"
+    )
+
+    preview_kb = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="📍 Track", callback_data=f"order:track:{order_id}")]]
+    )
+
     if student_chat_id:
-        await safe_send(bot, student_chat_id, f"✅ Your order #{order_id} is being prepared by {vendor_name}.")
+        await safe_send(bot, student_chat_id, final_preview, reply_markup=preview_kb)
+
+    # Notify delivery guy if assigned
+    # if chosen and chosen.get("telegram_id"):
+    #     await safe_send(
+    #         bot,
+    #         chosen["telegram_id"],
+    #         f"📦 New pickup assigned!\nOrder #{order_id} from {vendor_name} is preparing.\nGet ready for pickup soon!"
+    #     )
 
     # Admin log
-    await notify_admin_log(bot, ADMIN_GROUP_ID, f"✅ Vendor {vendor_name} accepted Order #{order_id} (status: preparing).")
+    if ADMIN_GROUP_ID:
+        if chosen:
+            admin_msg = (
+                f"✅ Vendor {vendor_name} accepted Order #{order_id}\n"
+                f"👤 Delivery Guy: {chosen['name']} ({chosen['campus']})"
+            )
+        else:
+            admin_msg = (
+                f"⚠️ Vendor {vendor_name} accepted Order #{order_id}, "
+                "but no delivery guy was assigned."
+            )
+        await notify_admin_log(bot, ADMIN_GROUP_ID, admin_msg)
 
 
+# 🚫 Vendor Reject Handler
 @router.callback_query(F.data.startswith("vendor:reject:"))
 async def vendor_reject_order(cb: CallbackQuery, bot: Bot):
     await cb.answer()
@@ -576,25 +598,50 @@ async def vendor_reject_order(cb: CallbackQuery, bot: Bot):
         await cb.message.answer("⚠️ ትዕዛዝ አልተገኘም።")
         return
 
+    # Update status
     await db.update_order_status(order_id, "cancelled")
+
     vendor = await db.get_vendor(order["vendor_id"])
     vendor_name = vendor["name"] if vendor else "Vendor"
 
+    # Vendor sees cancellation confirmation
     await cb.message.edit_text(f"❌ ትዕዛዝ #{order_id} ተሰርዘዋል።")
 
-    # Student notify
+    # Notify student
     student_chat_id = await db.get_student_chat_id(order)
     if student_chat_id:
-        await safe_send(bot, student_chat_id, f"❌ Your order #{order_id} was cancelled by {vendor_name}.")
+            await cb.bot.send_message(
+                student_chat_id,
+                f"❌ Sorry, your order #{order_id} could not be accepted.\n\n"
+                "This may happen if:\n"
+                "• The vendor was unavailable or closed\n"
+                "• The item is out of stock\n"
+                "• A delivery partner could not be assigned in time\n\n"
+                "Please try again later or choose another option.")
 
-    # Notify assigned DG (if any) in English
+    # Notify delivery guy if one was already assigned
     if order.get("delivery_guy_id"):
         dg = await db.get_delivery_guy(order["delivery_guy_id"])
         if dg:
-            await safe_send(bot, dg["user_id"], f"⚠️ Order #{order_id} was cancelled by {vendor_name}.")
+            await safe_send(
+                bot,
+                dg["telegram_id"],  # use telegram_id not user_id for consistency
+                f"⚠️ Order #{order_id} was cancelled by {vendor_name}. Please return to dashboard."
+            )
 
-    await notify_admin_log(bot, ADMIN_GROUP_ID, f"⚠️ Vendor {vendor_name} cancelled Order #{order_id}.")
-
+    # Notify admin group
+    if ADMIN_GROUP_ID:
+        admin_msg = (
+            f"⚠️ *Order Cancelled by Vendor*\n"
+            f"📦 Order ID: #{order_id}\n"
+            f"🍴 Vendor: {vendor_name}\n"
+            f"👤 Customer: {order.get('customer_name','N/A')} ({order.get('customer_phone','N/A')})\n"
+            f"🏛 Campus: {order.get('campus','N/A')}\n"
+            f"📍 Drop-off: {order.get('dropoff','')}\n"
+            f"💵 Total: {order.get('food_subtotal',0) + order.get('delivery_fee',0):.2f} birr\n\n"
+            "Status: Cancelled by vendor."
+        )
+        await notify_admin_log(bot, ADMIN_GROUP_ID, admin_msg)
 
 # -----------------------------
 # ⚙️ Preparing Orders (preparing) + pagination
@@ -607,13 +654,13 @@ async def vendor_preparing_orders(message: Message):
         return
 
     page_size = 5
-    total = await db.count_orders_for_vendor(vendor["id"], status_filter=["preparing"])
+    total = await db.count_orders_for_vendor(vendor["id"], status_filter=["preparing", "assigned"])
     if total == 0:
         await message.answer("📭 በመዘጋጀት ላይ ያለ ትዕዛዝ የለም።", reply_markup=vendor_orders_keyboard())
         return
 
     pages = max(1, math.ceil(total / page_size))
-    orders = await db.get_orders_for_vendor(vendor["id"], status_filter=["preparing"], limit=page_size, offset=0)
+    orders = await db.get_orders_for_vendor(vendor["id"], status_filter=["preparing", "assigned"], limit=page_size, offset=0)
     for o in orders:
         text = render_order_line(o)
         kb = InlineKeyboardMarkup(
@@ -783,8 +830,7 @@ async def order_mark_ready(cb: CallbackQuery, bot: Bot):
                 f"👉 GO NOW to collect this order."
             )
             buttons = [
-            InlineKeyboardButton(text="▶️ Start Delivery", callback_data=f"start_order_{order_id}"),
-            InlineKeyboardButton(text="📦 Mark Delivered", callback_data=f"delivered_{order_id}")
+            InlineKeyboardButton(text="▶️ Start Delivery", callback_data=f"start_order_{order_id}")
             ]
             action_row = [
             InlineKeyboardButton(text="💬 Contact User", callback_data=f"contact_user_{order_id}")
@@ -796,7 +842,15 @@ async def order_mark_ready(cb: CallbackQuery, bot: Bot):
             kb = InlineKeyboardMarkup(inline_keyboard=inline_keyboard)
 
         
+            async def safe_send(bot, chat_id, text, reply_markup=None, parse_mode="HTML"):
+                try:
+                    await bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
+                except Exception as e:
+                    # log or ignore
+                    print(f"safe_send error: {e}")  
+                    
             await safe_send(bot, dg["telegram_id"], dg_msg, reply_markup=kb)
+ 
     else:
         vendor = await db.get_vendor(order["vendor_id"])
         vendor_name = vendor["name"] if vendor else "Vendor"

@@ -167,21 +167,46 @@ async def eta_and_distance(lat1: float, lon1: float, lat2: float, lon2: float, s
 logging.basicConfig(level=logging.INFO)
 
 
+def render_cart(cart_counts: dict, menu: list) -> tuple[str, float]:
+    """
+    Build a human-readable cart summary and compute subtotal.
+    Returns (cart_text, subtotal).
+    """
+    lines = []
+    subtotal = 0
+    for item_id, qty in cart_counts.items():
+        item = next((m for m in menu if m["id"] == item_id), None)
+        if not item:
+            continue
+        subtotal += item["price"] * qty
+        if qty > 1:
+            lines.append(f"• {item['name']} x{qty}")
+        else:
+            lines.append(f"• {item['name']}")
+    cart_text = "\n".join(lines) or "—"
+    return cart_text, subtotal
+
 
 async def assign_delivery_guy(
     db,
     order_id: int,
     bot=None,
     current_order_data: Optional[Dict[str, Any]] = None,
-    max_active_orders: int = 5
+    max_active_orders: int = 5,
+    notify_student: bool = False   # <-- IMPORTANT FLAG
 ) -> Optional[Dict[str, Any]]:
     """
-    Assigns the best available delivery guy to an order using PostgreSQL.
+    Assigns the best available delivery guy to an order.
+    Safe for scheduler. Does NOT notify student unless explicitly asked.
     """
+
     logging.info(f"[START] Assigning delivery guy for Order ID: {order_id}")
 
     async with db._open_connection() as conn:
-        # --- Fetch Order Data ---
+
+        # -----------------------------
+        # 1. Fetch Order
+        # -----------------------------
         if current_order_data:
             order = current_order_data
         else:
@@ -189,28 +214,182 @@ async def assign_delivery_guy(
             if not row:
                 logging.warning(f"[ABORT] Order ID {order_id} not found")
                 return None
-            order = dict(row)   # replace self._row_to_dict with dict()
+            order = dict(row)
 
-        logging.info(f"[ORDER] Fetched order: {order}")
+        logging.info(f"[ORDER] {order}")
 
-        # --- Identify DGs who have rejected this order (Blacklist) ---
-        rejected_dg_ids: List[int] = []
-        breakdown: Dict[str, Any] = {}
+        # -----------------------------
+        # 2. Parse blacklist (DGs who rejected this order)
+        # -----------------------------
         try:
             breakdown = order.get("breakdown_json") or {}
             if isinstance(breakdown, str):
                 breakdown = json.loads(breakdown)
             rejected_dg_ids = breakdown.get("rejected_by_dg_ids", [])
-            logging.info(f"[BLACKLIST] Order {order_id} rejected by DGs: {rejected_dg_ids}")
         except Exception:
-            logging.error(f"[ERROR] Failed to parse breakdown_json for blacklist: {order_id}")
-            breakdown = {}
+            logging.error(f"[ERROR] breakdown_json corrupted for order {order_id}")
+            rejected_dg_ids = []
 
-        # --- Fetch and Filter Active Delivery Guys ---
+        logging.info(f"[BLACKLIST] Rejected DGs: {rejected_dg_ids}")
+
+        # -----------------------------
+        # 3. Fetch eligible delivery guys
+        # -----------------------------
         query = """
         WITH dg_active_counts AS (
             SELECT 
-                delivery_guy_id AS dg_id, 
+                delivery_guy_id AS dg_id,
+                COUNT(*) FILTER (WHERE status IN 
+                    ('assigned','preparing','ready','in_progress')
+                ) AS active_count,
+                COUNT(*) FILTER (WHERE status = 'in_progress') AS in_progress_count
+            FROM orders
+            GROUP BY delivery_guy_id
+        )
+        SELECT 
+            dg.*,
+            COALESCE(dac.active_count, 0) AS active_orders,
+            COALESCE(dac.in_progress_count, 0) AS in_progress_orders
+        FROM delivery_guys dg
+        LEFT JOIN dg_active_counts dac ON dg.id = dac.dg_id
+        WHERE 
+            dg.active = TRUE
+            AND dg.blocked = FALSE
+            AND (COALESCE(array_length($1::int[], 1),0) = 0 OR dg.id != ALL($1::int[]))
+            AND COALESCE(dac.active_count,0) < $2
+            AND COALESCE(dac.in_progress_count,0) = 0
+        """
+        candidates = [dict(r) for r in await conn.fetch(query, rejected_dg_ids, max_active_orders)]
+
+        if not candidates:
+            logging.warning(f"[NO CANDIDATES] Order {order_id}")
+            return None
+
+        logging.info(f"[CANDIDATES] {len(candidates)} DGs available")
+
+        # -----------------------------
+        # 4. Match Logic
+        # -----------------------------
+        chosen = None
+        breakdown = breakdown or {}
+        drop_lat, drop_lon = breakdown.get("drop_lat"), breakdown.get("drop_lon")
+
+        # ---- If GPS exists → use distance ranking ----
+        if drop_lat and drop_lon:
+            logging.info("[MATCH] Using distance")
+            best_dist = float("inf")
+            for dg in candidates:
+                if dg.get("last_lat") and dg.get("last_lon"):
+                    d = await haversine(dg["last_lat"], dg["last_lon"], drop_lat, drop_lon)
+                    if d < best_dist:
+                        best_dist = d
+                        chosen = dg
+
+            if not chosen:
+                chosen = candidates[0]
+
+        # ---- No GPS → Campus match ----
+        else:
+            logging.info("[MATCH] Campus fallback")
+
+            student = await db.get_user_by_id(order["user_id"])
+            student_campus = student.get("campus")
+
+            for dg in candidates:
+                if dg.get("campus") == student_campus:
+                    chosen = dg
+                    break
+
+            if not chosen:
+                chosen = candidates[0]
+
+        if not chosen:
+            logging.warning(f"[ABORT] No DG chosen for order {order_id}")
+            return None
+
+        dg_id = chosen["id"]
+
+        # -----------------------------
+        # 5. Assign DG to order
+        # -----------------------------
+        await conn.execute(
+            "UPDATE orders SET delivery_guy_id = $1 WHERE id = $2",
+            dg_id, order_id
+        )
+        await conn.execute(
+            "UPDATE delivery_guys SET total_requests = total_requests + 1 WHERE id = $1",
+            dg_id
+        )
+
+        today = datetime.date.today().strftime("%Y-%m-%d")
+        await conn.execute(
+            """
+            INSERT INTO daily_stats (dg_id, date, assigned, updated_at)
+            VALUES ($1, $2, 1, CURRENT_TIMESTAMP)
+            ON CONFLICT (dg_id, date)
+            DO UPDATE SET assigned = daily_stats.assigned + 1,
+                          updated_at = CURRENT_TIMESTAMP
+            """,
+            dg_id, today
+        )
+
+        logging.info(f"[ASSIGNED] DG {chosen['name']} → Order {order_id}")
+
+        chosen.update({
+            "order_id": order_id,
+            "pickup": order.get("pickup"),
+            "dropoff": order.get("dropoff"),
+            "user_id": order.get("user_id"),
+            "food_subtotal": order.get("food_subtotal"),
+            "delivery_fee": order.get("delivery_fee"),
+        })
+
+    # -----------------------------
+    # 6. SEND NOTIFICATIONS  
+    # -----------------------------
+    if bot:
+        try:
+            # DG ALWAYS gets offer
+            await delivery_guy.send_new_order_offer(bot, chosen, order)
+
+            # Student ONLY if explicitly asked (vendor_accept_order)
+            if notify_student:
+                await delivery_guy.notify_student(bot, order, status="assigned")
+
+        except Exception:
+            logging.exception(f"[ERROR] Notification failure for order {order_id}")
+
+    logging.info(f"[END] Assignment for order {order_id}")
+    return chosen
+
+
+
+async def find_next_candidate(db, order_id: int, order: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Returns the next eligible delivery guy dict to offer the order to,
+    excluding those in the order's rejected_by_dg_ids list and respecting
+    active order limits. Does NOT assign the DG.
+    """
+    async with db._open_connection() as conn:
+        # Load blacklist from order
+        row = await conn.fetchrow("SELECT breakdown_json FROM orders WHERE id = $1", order_id)
+        breakdown = {}
+        if row:
+            raw = row.get("breakdown_json") or {}
+            if isinstance(raw, str):
+                try:
+                    breakdown = json.loads(raw)
+                except Exception:
+                    breakdown = {}
+            elif isinstance(raw, dict):
+                breakdown = raw
+        rejected = breakdown.get("rejected_by_dg_ids", [])
+
+        # Query candidates similar to assign_delivery_guy but do not update DB
+        query = """
+        WITH dg_active_counts AS (
+            SELECT 
+                delivery_guy_id AS dg_id,
                 COUNT(*) FILTER (WHERE status IN ('assigned','preparing','ready','in_progress')) AS active_count,
                 COUNT(*) FILTER (WHERE status = 'in_progress') AS in_progress_count
             FROM orders
@@ -222,103 +401,48 @@ async def assign_delivery_guy(
             COALESCE(dac.in_progress_count, 0) AS in_progress_orders
         FROM delivery_guys dg
         LEFT JOIN dg_active_counts dac ON dg.id = dac.dg_id
-       WHERE 
-        dg.active = TRUE
-        AND dg.blocked = FALSE
-        AND (
-            COALESCE(array_length($1::int[], 1), 0) = 0
-            OR dg.id != ALL($1::int[])
-        )
-        AND COALESCE(dac.active_count, 0) < $2
-        AND COALESCE(dac.in_progress_count, 0) = 0;
+        WHERE 
+            dg.active = TRUE
+            AND dg.blocked = FALSE
+            AND (COALESCE(array_length($1::int[], 1),0) = 0 OR dg.id != ALL($1::int[]))
+            AND COALESCE(dac.active_count,0) < $2
+            AND COALESCE(dac.in_progress_count,0) = 0
         """
-
-        candidates = [dict(r) for r in await conn.fetch(query, rejected_dg_ids, max_active_orders)]
+        candidates = [dict(r) for r in await conn.fetch(query, rejected, 5)]
 
         if not candidates:
-            logging.warning("[ABORT] No delivery guy is eligible after filtering.")
-            return None
-        logging.info(f"[CANDIDATES] {len(candidates)} eligible delivery guys found")
-
-        # --- Choose best DG ---
-        drop_lat, drop_lon = breakdown.get("drop_lat"), breakdown.get("drop_lon")
-        chosen: Optional[Dict[str, Any]] = None
-
-        if drop_lat and drop_lon:
-            logging.info("[MATCH] Ranking by distance")
-            min_dist = float("inf")
-            for dg in candidates:
-                if dg.get("last_lat") and dg.get("last_lon"):
-                    dist = await haversine(dg["last_lat"], dg["last_lon"], drop_lat, drop_lon)
-                    if dist < min_dist:
-                        min_dist = dist
-                        chosen = dg
-            if not chosen:
-                chosen = candidates[0]
-                logging.info(f"[FALLBACK] No distance data, picked first eligible: {chosen['name']}")
-        else:
-            logging.info("[MATCH] Campus fallback")
-            student = await db.get_user_by_id(order["user_id"])
-            student_campus = student.get("campus")
-
-            logging.info("[MATCH] Campus fallback")
-            for dg in candidates:
-                if dg.get("campus") == student_campus:
-                    chosen = dg
-                    logging.info(f"[MATCH] Campus match: {chosen['name']} for campus {student_campus}")
-                    break
-
-            if not chosen and candidates:
-                chosen = candidates[0]
-                logging.info(f"[FALLBACK] No campus match, picked first eligible: {chosen['name']}")
-        if not chosen:
-            logging.warning("[ABORT] No delivery guy chosen after filtering and matching.")
             return None
 
-        dg_id = chosen["id"]
-
-        # --- Assign DG to order & Update metrics ---
-        await conn.execute(
-            "UPDATE orders SET delivery_guy_id = $1, status = 'assigned' WHERE id = $2",
-            dg_id, order_id
-        )
-        await conn.execute(
-            "UPDATE delivery_guys SET total_requests = total_requests + 1 WHERE id = $1",
-            dg_id
-        )
-        today_str = datetime.date.today().strftime('%Y-%m-%d')
-        await conn.execute(
-            """
-            INSERT INTO daily_stats (dg_id, date, assigned, updated_at)
-            VALUES ($1, $2, 1, CURRENT_TIMESTAMP)
-            ON CONFLICT(dg_id, date) DO UPDATE SET
-                assigned = daily_stats.assigned + 1,
-                updated_at = CURRENT_TIMESTAMP
-            """,
-            dg_id, today_str
-        )
-
-        logging.info(f"[ASSIGN] Assigned DG {chosen['name']} (ID: {chosen['id']}) to order {order_id}")
-
-        chosen.update({
-            "order_id": order_id,
-            "pickup": order.get("pickup"),
-            "dropoff": order.get("dropoff"),
-            "food_subtotal": order.get("food_subtotal"),
-            "delivery_fee": order.get("delivery_fee"),
-            "user_id": order.get("user_id")
-        })
-
-    if bot:
-        logging.info("[NOTIFY] Sending notifications...")
+        # Matching logic: prefer distance if coords exist, else campus match
         try:
-            await delivery_guy.send_new_order_offer(bot, chosen, order)
-            await delivery_guy.notify_student(bot, order, status="assigned")
+            breakdown = breakdown or {}
+            drop_lat, drop_lon = breakdown.get("drop_lat"), breakdown.get("drop_lon")
+            chosen = None
+            if drop_lat and drop_lon:
+                best_dist = float("inf")
+                for dg in candidates:
+                    if dg.get("last_lat") and dg.get("last_lon"):
+                        d = await haversine(dg["last_lat"], dg["last_lon"], drop_lat, drop_lon)
+                        if d < best_dist:
+                            best_dist = d
+                            chosen = dg
+                if not chosen:
+                    chosen = candidates[0]
+            else:
+                # campus fallback
+                student = await db.get_user_by_id(order["user_id"])
+                student_campus = student.get("campus") if student else None
+                for dg in candidates:
+                    if dg.get("campus") == student_campus:
+                        chosen = dg
+                        break
+                if not chosen:
+                    chosen = candidates[0]
+            return chosen
         except Exception:
-            logging.exception("[ERROR] Notification failed for order %s", order_id)
+            log.exception("[FIND_CANDIDATE] Error selecting candidate for order %s", order_id)
+            return candidates[0] if candidates else None
 
-    logging.info("[END] Assignment complete")
-    return chosen
 # Global tracker for student notifications
 STUDENT_NOTIFICATIONS: Dict[int, Dict[str, Any]] = {}
 
@@ -397,3 +521,36 @@ def time_ago(dt: datetime.datetime) -> str:
         return "yesterday"
     else:
         return f"{days}d ago"
+
+
+
+
+def time_ago_am(dt: datetime.datetime) -> str:
+    if not dt:
+        return "—"
+
+    # Normalize: if dt has no tzinfo, assume UTC
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    diff = now - dt
+
+    seconds = int(diff.total_seconds())
+    if seconds < 0:
+        return "አሁን"
+
+    minutes = seconds // 60
+    hours = seconds // 3600
+    days = seconds // 86400
+
+    if seconds < 60:
+        return f"{seconds} ሰከንድ በፊት"
+    elif minutes < 60:
+        return f"{minutes} ደቂቃ በፊት"
+    elif hours < 24:
+        return f"{hours} ሰአት በፊት"
+    elif days == 1:
+        return "ትናንትና"
+    else:
+        return f"{days} ቀን በፊት"

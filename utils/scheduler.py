@@ -31,10 +31,6 @@ class BotScheduler:
     # 🆕 NEW: Live Offer Countdown Job (Phase 2)
     # -----------------------------------------------
     async def update_order_offers(self) -> None:
-        """
-        Periodically checks PENDING_OFFERS, updates countdown in the message,
-        and automatically cancels/reassigns expired or blocked offers.
-        """
         offers_to_check = list(PENDING_OFFERS.items())
         log.debug("[DEBUG] Checking %d pending offers", len(offers_to_check))
 
@@ -51,7 +47,6 @@ class BotScheduler:
 
             log.debug("[DEBUG] Order %s for DG %s: remaining=%s (%s)", order_id, chat_id, remaining_seconds, countdown)
 
-            # Emoji urgency levels
             if remaining_seconds > 120:
                 icon = "⏳"
             elif remaining_seconds > 30:
@@ -59,12 +54,12 @@ class BotScheduler:
             else:
                 icon = "❌"
 
-            from handlers.delivery_guy import order_offer_keyboard
-            from utils.helpers import assign_delivery_guy, notify_student_reassignment
+            from handlers.delivery_guy import order_offer_keyboard, send_new_order_offer
+            from utils.helpers import find_next_candidate
             from utils.db_helpers import add_dg_to_blacklist
 
             try:
-                # --- Case 1: Offer expired ---
+                # --- Offer expired ---
                 if remaining_seconds <= 0:
                     log.warning("Order offer %s expired for DG %s.", order_id, chat_id)
 
@@ -72,40 +67,51 @@ class BotScheduler:
                         "⏰ **Offer Expired!**\n\n"
                         f"📦 Order #{order_id} has been automatically returned to the pool."
                     )
-                    await self.bot.edit_message_text(
-                        chat_id=chat_id,
-                        message_id=message_id,
-                        text=expired_text,
-                        reply_markup=None,
-                        parse_mode="Markdown"
-                    )
+                    # Update the offer message to expired
+                    try:
+                        await self.bot.edit_message_text(
+                            chat_id=chat_id,
+                            message_id=message_id,
+                            text=expired_text,
+                            reply_markup=None,
+                            parse_mode="Markdown"
+                        )
+                    except Exception:
+                        log.debug("Failed to edit expired message for order %s to DG chat %s", order_id, chat_id)
 
-                    # Reset order
-                    async with self.db._open_connection() as conn: 
+                    # Clear DB assignment and mark pending
+                    async with self.db._open_connection() as conn:
                         await conn.execute(
-                            # Use positional parameters ($1, $2, etc.) for PostgreSQL
-                            # NULL is handled the same way, but the parameter must be explicitly passed or hardcoded.
                             "UPDATE orders SET status = $1, delivery_guy_id = $2 WHERE id = $3",
-                            'pending', None, order_id
+                            "pending", None, order_id
                         )
 
                     # Persist rejection using DG internal ID
                     dg = await _db_get_delivery_guy_by_user(chat_id)
                     if dg:
-                        await add_dg_to_blacklist(self.db.db_path, order_id, dg["id"])
+                        try:
+                            await add_dg_to_blacklist(self.db, order_id, dg["id"])
+                        except Exception:
+                            log.exception("[BLACKLIST] Failed to add DG %s to blacklist for order %s", dg["id"], order_id)
 
-                    PENDING_OFFERS.pop(order_id, None)  # stop scheduler tracking
+                    # Stop tracking this offer
+                    PENDING_OFFERS.pop(order_id, None)
 
-                    # 🔄 Immediate reassignment
+                    # Re-offer to next candidate (do not assign)
                     order = await self.db.get_order(order_id)
                     if order:
-                        log.debug("[DEBUG] Reassigning expired order %s", order_id)
-                        chosen = await assign_delivery_guy(self.db.db_path, order_id, bot=self.bot, current_order_data=order)
-                        if chosen:
-                            log.debug("[DEBUG] Order %s reassigned to DG %s", order_id, chosen["id"])
-                            await notify_student_reassignment(self.bot, self.db, order, chosen)
+                        log.debug("[REOFFER] Finding next candidate for order %s", order_id)
+                        next_dg = await find_next_candidate(self.db, order_id, order)
+                        if next_dg:
+                            try:
+                                await send_new_order_offer(self.bot, next_dg, order)
+                                log.info("[REOFFER] Offered order %s to DG %s", order_id, next_dg["id"])
+                            except Exception:
+                                log.exception("[REOFFER] Failed to send offer for order %s to DG %s", order_id, next_dg.get("id"))
+                        else:
+                            log.warning("[REOFFER] No eligible DG found for order %s", order_id)
 
-                # --- Case 2: Offer active ---
+                # --- Offer still active: update countdown display ---
                 else:
                     if countdown == offer.get("last_countdown"):
                         continue
@@ -139,14 +145,19 @@ class BotScheduler:
 
                     kb = order_offer_keyboard(order_id, expiry_min=expiry_seconds // 60)
 
-                    await self.bot.edit_message_text(
-                        chat_id=chat_id,
-                        message_id=message_id,
-                        text=new_message_text,
-                        reply_markup=kb,
-                        parse_mode="Markdown"
-                    )
-                    log.debug("[DEBUG] Countdown updated for order %s", order_id)
+                    try:
+                        await self.bot.edit_message_text(
+                            chat_id=chat_id,
+                            message_id=message_id,
+                            text=new_message_text,
+                            reply_markup=kb,
+                            parse_mode="Markdown"
+                        )
+                        log.debug("[DEBUG] Countdown updated for order %s", order_id)
+                    except TelegramBadRequest as e:
+                        if "message is not modified" not in str(e):
+                            log.warning("Offer message for order %s failed to edit: %s", order_id, e)
+                        PENDING_OFFERS.pop(order_id, None)
 
             except TelegramForbiddenError:
                 log.warning("DG %s blocked the bot. Removing offer %s.", chat_id, order_id)
@@ -155,21 +166,21 @@ class BotScheduler:
                 # Persist rejection using DG internal ID
                 dg = await _db_get_delivery_guy_by_user(chat_id)
                 if dg:
-                    await add_dg_to_blacklist(self.db.db_path, order_id, dg["id"])
+                    try:
+                        await add_dg_to_blacklist(self.db, order_id, dg["id"])
+                    except Exception:
+                        log.exception("[BLACKLIST] Failed to add DG %s to blacklist for order %s", dg["id"], order_id)
 
-                # 🔄 Immediate reassignment
+                # Re-offer to next candidate
                 order = await self.db.get_order(order_id)
                 if order:
-                    log.debug("[DEBUG] Reassigning blocked order %s", order_id)
-                    chosen = await assign_delivery_guy(self.db.db_path, order_id, bot=self.bot, current_order_data=order)
-                    if chosen:
-                        log.debug("[DEBUG] Order %s reassigned to DG %s", order_id, chosen["id"])
-                        await notify_student_reassignment(self.bot, self.db, order, chosen)
-
-            except TelegramBadRequest as e:
-                if "message is not modified" not in str(e):
-                    log.warning("Offer message for order %s failed to edit: %s", order_id, e)
-                PENDING_OFFERS.pop(order_id, None)
+                    next_dg = await find_next_candidate(self.db, order_id, order)
+                    if next_dg:
+                        try:
+                            await send_new_order_offer(self.bot, next_dg, order)
+                            log.info("[REOFFER] Offered order %s to DG %s after block", order_id, next_dg["id"])
+                        except Exception:
+                            log.exception("[REOFFER] Failed to send offer for order %s to DG %s", order_id, next_dg.get("id"))
 
             except Exception:
                 log.exception("Unexpected error updating offer %s", order_id)
@@ -178,6 +189,72 @@ class BotScheduler:
     #----------------------------------
     # 🆕 NEW: Core System Jobs (Section 7)
     # -----------------------------------------------
+    
+        
+        
+    async def expire_stale_orders(self):
+        """Auto-cancel orders that expired without vendor acceptance."""
+        try:
+            async with self.db._open_connection() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT id, user_id, vendor_id
+                    FROM orders
+                    WHERE status = 'pending'
+                    AND expires_at IS NOT NULL
+                    AND expires_at < NOW()
+                    """
+                )
+
+            for r in rows:
+                order_id = r["id"]
+
+                # Cancel order
+                async with self.db._open_connection() as conn:
+                    await conn.execute(
+                        """
+                        UPDATE orders
+                        SET status = 'cancelled',
+                            cancel_reason = 'expired_vendor_no_accept',
+                            updated_at = NOW()
+                        WHERE id = $1
+                        """,
+                        order_id
+                    )
+
+                # Notify student
+                student = await self.db.get_user_by_id(r["user_id"])
+                if student and student.get("telegram_id"):
+                    try:
+                        await self.bot.send_message(
+                            student["telegram_id"],
+                            "❌ **Order Expired**\n"
+                            "──────────────────────\n"
+                            "⏱ Vendor did not accept in time.\n"
+                            "💵 No charges applied.\n"
+                            "✨ Please place a new order."
+                        )
+                    except (TelegramBadRequest, TelegramForbiddenError):
+                        pass
+
+                # Notify vendor
+                vendor = await self.db.get_vendor(r["vendor_id"])
+                if vendor and vendor.get("telegram_id"):
+                    try:
+                        await self.bot.send_message(
+                            vendor["telegram_id"],
+                            f"⚠️ Order #{order_id} auto‑cancelled due to inactivity.\n"
+                            "Please accept promptly to avoid expiry."
+                        )
+                    except (TelegramBadRequest, TelegramForbiddenError):
+                        pass
+
+            if rows:
+                log.info("Expired %d stale orders", len(rows))
+
+        except Exception as e:
+            log.exception("Failed to expire stale orders: %s", e)
+        
         
     async def auto_reassign_unaccepted_orders(self) -> None:
         """
@@ -321,8 +398,15 @@ class BotScheduler:
         self.scheduler.add_job(
             self.update_order_offers,
             'interval',
-            seconds=180,
+            seconds=30,
             id='update_order_offers'
+        )
+        
+        self.scheduler.add_job(
+            self.expire_stale_orders,
+            'interval',
+            minutes=5,
+            id='expire_stale_orders'
         )
 
         # Admin summary at 23:00 daily

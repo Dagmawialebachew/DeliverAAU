@@ -139,7 +139,7 @@ if __name__ == "__main__":
         await db.init_pool()
 
         # 3. Seed data
-        await seed_vendors(db)
+        # await seed_vendors(db)
         # await seed_delivery_guys(db)
 
         # 4. Start scheduler
@@ -152,6 +152,7 @@ if __name__ == "__main__":
             BotCommand(command="dashboard", description="Delivery Guy Dashboard"),
         ])
         await bot.delete_webhook(drop_pending_updates=True)
+
 
         # 6. Start polling
         await dp.start_polling(bot)

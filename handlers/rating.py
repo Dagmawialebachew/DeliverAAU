@@ -65,13 +65,14 @@ async def rate_delivery(cb: CallbackQuery, state: FSMContext):
     await cb.answer("✅ Thanks for rating the delivery!")
 
     # Notify delivery guy
-    dg_chat_id = await db.get_delivery_guy_telegram_id(delivery_guy_id)
-    if dg_chat_id:
-        await cb.bot.send_message(
-            dg_chat_id,
-            f"⭐ You received a {stars}-star rating for Order #{order_id}!\n🔥 +10 XP awarded!"
-            if stars == 5 else f"⭐ You received a {stars}-star rating for Order #{order_id}."
-        )
+    if delivery_guy_id:
+        dg_chat_id = await db.get_delivery_guy_telegram_id_by_id(delivery_guy_id)
+        if dg_chat_id:
+            await cb.bot.send_message(
+                dg_chat_id,
+                f"⭐ You received a {stars}-star rating for Order #{order_id}!\n🔥 +10 XP awarded!"
+                if stars == 5 else f"⭐ You received a {stars}-star rating for Order #{order_id}."
+            )
 
     # Notify admin
     if settings.ADMIN_GROUP_ID:

@@ -96,13 +96,27 @@ async def calc_acceptance_rate(self, dg_id: int) -> float:
     # -------------------- Order Retrieval (Postgres/asyncpg) --------------------
 
 async def get_all_active_orders_for_dg(self, dg_id: int) -> List[Dict[str, Any]]:
-        """Fetches all non-delivered orders assigned to the DG."""
-        async with self._open_connection() as conn:
-            rows = await conn.fetch(
-                "SELECT * FROM orders WHERE delivery_guy_id = $1 AND status != 'delivered' ORDER BY created_at DESC",
-                dg_id,
-            )
-            return [self._row_to_dict(r) for r in rows]
+    """Fetches all non-delivered orders assigned to the DG."""
+    async with self._open_connection() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT * 
+            FROM orders 
+            WHERE delivery_guy_id = $1 
+              AND status != 'delivered' 
+            ORDER BY created_at DESC
+            """,
+            dg_id,
+        )
+
+        # Debug print
+        print(f"[DEBUG] get_all_active_orders_for_dg for DG {dg_id}: {rows}")
+
+        # Or use logging for better control
+        import logging
+        logging.getLogger(__name__).debug("Active orders for DG %s: %s", dg_id, rows)
+
+        return [self._row_to_dict(r) for r in rows]
 
 async def get_latest_active_order_for_dg(self, dg_id: int) -> Optional[Dict[str, Any]]:
         """Fetches the latest non-delivered order assigned to the DG."""
@@ -137,30 +151,32 @@ async def record_daily_stat(self, dg_id: int, delivery_fee: float, delivered: in
         # Note: Exception handling should wrap the calling code or rely on the class structure
 
 
-async def check_thresholds_and_notify(self, bot: Any, dg_id: int, admin_group_id: int, max_skips: int = 3):
-        """
-        Checks if the DG hit the skip threshold and notifies the admin.
-        (Database interaction moved inside)
-        """
-        async with self._open_connection() as conn:
-            # PostgreSQL requires positional arguments for query parameters
-            dg_info = await conn.fetchrow("SELECT name, skipped_requests FROM delivery_guys WHERE id = $1", dg_id)
-            
-            if not dg_info:
-                return
+async def check_thresholds_and_notify(
+    self,
+    bot: Bot,
+    dg_id: int,
+    admin_group_id: int,
+    max_skips: int = 3
+):
+    async with self._open_connection() as conn:
+        dg_info = await conn.fetchrow(
+            "SELECT name, skipped_requests FROM delivery_guys WHERE id = $1",
+            dg_id
+        )
+        if not dg_info:
+            return
 
-            name = dg_info["name"]
-            skips = int(dg_info["skipped_requests"] or 0)
-            
-            if skips >= max_skips:
-                admin_message = (
-                    f"🚨 **Reliability Alert!**\n"
-                    f"Delivery Partner **{name}** (ID: `{dg_id}`) has reached the maximum skip threshold ({max_skips} skips today).\n"
-                    f"**ACTION REQUIRED**: Review their performance and block if necessary."
-                )
-                await self.notify_admin(bot, admin_group_id, admin_message)
-                
-    
+        name = dg_info["name"]
+        skips = int(dg_info["skipped_requests"] or 0)
+
+        if skips >= max_skips:
+            admin_message = (
+                f"🚨 **Reliability Alert!**\n"
+                f"Delivery Partner **{name}** (ID: `{dg_id}`) has reached the maximum skip threshold ({max_skips} skips today).\n"
+                f"**ACTION REQUIRED**: Review their performance and block if necessary."
+            )
+            await self.notify_admin(bot, admin_group_id, admin_message)
+
     # NOTE: The original `notify_admin` is a simple wrapper for bot.send_message 
     # and doesn't use the DB, so it should stay as a standalone or a helper method.
     # We include it here for completeness, though it doesn't strictly belong to DB ops.
@@ -183,41 +199,51 @@ async def get_student_chat_id(self, order: Dict[str, Any]) -> Optional[int]:
         return user["telegram_id"] if user and user.get("telegram_id") is not None else None
 
 
+logging
+
 async def add_dg_to_blacklist(self, order_id: int, dg_id: int) -> None:
-        """
-        Add a delivery guy's internal ID to the order's rejection blacklist.
-        Uses PostgreSQL syntax and JSON functionality.
-        """
-        async with self._open_connection() as conn:
-            # 1. Fetch current breakdown_json
-            row = await conn.fetchrow(
-                "SELECT breakdown_json FROM orders WHERE id = $1",
-                order_id
+    """
+    Add a delivery guy's internal ID to the order's rejection blacklist.
+    Ensures breakdown_json is parsed from string to dict before manipulation.
+    """
+    async with self._open_connection() as conn:
+        # 1. Fetch current breakdown_json
+        row = await conn.fetchrow(
+            "SELECT breakdown_json FROM orders WHERE id = $1",
+            order_id
+        )
+        if not row:
+            logging.warning("[BLACKLIST] Order %s not found when adding DG %s", order_id, dg_id)
+            return
+
+        breakdown_raw = row["breakdown_json"]
+
+        # Parse JSON string into dict
+        if isinstance(breakdown_raw, str):
+            try:
+                breakdown = json.loads(breakdown_raw)
+            except Exception:
+                logging.error("[BLACKLIST] Failed to parse breakdown_json for order %s", order_id)
+                breakdown = {}
+        elif isinstance(breakdown_raw, dict):
+            breakdown = breakdown_raw
+        else:
+            breakdown = {}
+
+        # 2. Update rejected list
+        rejected = breakdown.get("rejected_by_dg_ids", [])
+        if dg_id not in rejected:
+            rejected.append(dg_id)
+            breakdown["rejected_by_dg_ids"] = rejected
+
+            # 3. Save back to DB
+            await conn.execute(
+                "UPDATE orders SET breakdown_json = $1 WHERE id = $2",
+                json.dumps(breakdown), order_id
             )
-            
-            if not row:
-                # log.warning("[BLACKLIST] Order %s not found when adding DG %s", order_id, dg_id)
-                return
-
-            # Note: Postgres allows direct JSON manipulation, but for simple append/check 
-            # and aio-sqlite compatibility, we'll keep the python dict manipulation
-            breakdown = row["breakdown_json"] if row["breakdown_json"] else {}
-            rejected = breakdown.get("rejected_by_dg_ids", [])
-
-            if dg_id not in rejected:
-                rejected.append(dg_id)
-                breakdown["rejected_by_dg_ids"] = rejected
-                
-                # 2. Update the JSON
-                await conn.execute(
-                    "UPDATE orders SET breakdown_json = $1 WHERE id = $2",
-                    json.dumps(breakdown), order_id
-                )
-                # log.info("[BLACKLIST] Added DG %s to order %s blacklist.", dg_id, order_id)
-            # else:
-                # log.debug("[BLACKLIST] DG %s already in order %s blacklist", dg_id, order_id)
-
-
+            logging.info("[BLACKLIST] Added DG %s to order %s blacklist.", dg_id, order_id)
+        else:
+            logging.debug("[BLACKLIST] DG %s already in order %s blacklist", dg_id, order_id)
     # -------------------- Vendor Summaries (Postgres/asyncpg) --------------------
 async def calc_vendor_day_summary(self, vendor_id: int, date_str: Optional[str] = None) -> Dict[str, Any]:
         """

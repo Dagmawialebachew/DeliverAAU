@@ -20,6 +20,6 @@ class ErrorHandlingMiddleware(BaseMiddleware):
                 pass
 
             if settings.ADMIN_GROUP_ID and bot:
-                await bot.send_message(settings.ADMIN_GROUP_ID, f"❌ Exception: {e}")
+                await bot.send_message(settings.ADMIN_GROUP_ID, f"❌ Exception:\n{e}", parse_mode=None)
 
             return None

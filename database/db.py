@@ -100,10 +100,17 @@ CREATE TABLE IF NOT EXISTS daily_stats (
 
 CREATE TABLE IF NOT EXISTS ratings (
     id SERIAL PRIMARY KEY,
-    order_id INTEGER,
-    stars INTEGER,
-    comment TEXT
+    order_id INTEGER NOT NULL,
+    delivery_guy_id INTEGER,
+    vendor_id INTEGER,
+    stars INTEGER NOT NULL,
+    comment TEXT,
+    type TEXT NOT NULL CHECK (type IN ('delivery','vendor')),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT unique_order_type UNIQUE (order_id, type)
 );
+
+
 
 CREATE TABLE IF NOT EXISTS media (
     id SERIAL PRIMARY KEY,
@@ -160,8 +167,18 @@ CREATE INDEX IF NOT EXISTS idx_vendors_name ON vendors(name);
 ALTER TABLE orders ALTER COLUMN user_id TYPE BIGINT;
 ALTER TABLE orders ALTER COLUMN delivery_guy_id TYPE BIGINT;
 ALTER TABLE orders ALTER COLUMN vendor_id TYPE BIGINT;
+
 -- Make sure dg_id is BIGINT
 ALTER TABLE daily_stats ALTER COLUMN dg_id TYPE BIGINT;
+
+
+ALTER TABLE orders
+ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP NULL,
+ADD COLUMN IF NOT EXISTS vendor_confirmed_at TIMESTAMP NULL,
+ADD COLUMN IF NOT EXISTS cancel_reason TEXT NULL;
+
+-- Optional: index to speed up expiry checks
+CREATE INDEX IF NOT EXISTS idx_orders_expires ON orders(expires_at);
 
 
 """
@@ -521,6 +538,29 @@ class Database:
         if row is None:
             raise ValueError(f"Delivery guy with user_id={user_id} not found in DB")
         return dict(row)
+    
+    
+    async def get_delivery_guy_by_id(self, dg_id: int):
+        """
+        Fetch a delivery guy by primary key id and return the row.
+        Raises ValueError if not found.
+        """
+        async with self._open_connection() as conn:
+            row = await conn.fetchrow(
+                "SELECT id, user_id, telegram_id, name FROM delivery_guys WHERE id=$1",
+                dg_id
+            )
+        if row is None:
+            raise ValueError(f"Delivery guy with id={dg_id} not found in DB")
+        return dict(row)
+
+
+    async def get_delivery_guy_telegram_id_by_id(self, dg_id: int) -> int:
+        """
+        Convenience helper: return just the telegram_id for a given delivery_guy_id.
+        """
+        guy = await self.get_delivery_guy_by_id(dg_id)
+        return guy["telegram_id"]
 
     async def get_delivery_guy_telegram_id(self, user_id: int) -> int:
         """
@@ -588,6 +628,94 @@ class Database:
                     "SELECT * FROM delivery_guys WHERE telegram_id=$1", telegram_id
                 )
 
+
+    async def get_daily_stats_for_dg(self, dg_id: int, date: str) -> Dict[str, Any]:
+        """
+        Returns stats for a delivery guy on a given date.
+        Includes deliveries, earnings, xp, coins.
+        """
+        async with self._open_connection() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT 
+                    COALESCE(SUM(delivery_fee), 0) AS earnings,
+                    COUNT(*) AS deliveries
+                FROM orders
+                WHERE delivery_guy_id = $1 AND DATE(updated_at) = $2
+                """,
+                dg_id, date
+            )
+        if not row:
+            return {"earnings": 0, "deliveries": 0}
+        
+        # XP and coins can be derived here
+        xp = row["deliveries"] * 10
+        coins = row["earnings"] * 0.05
+        return {
+            "earnings": row["earnings"],
+            "deliveries": row["deliveries"],
+            "xp": xp,
+            "coins": coins
+        }
+    async def get_weekly_earnings_for_dg(self, dg_id: int, week_start: str, week_end: str) -> List[Dict[str, Any]]:
+        """
+        Returns day-by-day breakdown for the week.
+        Each entry: {date, deliveries, earnings, xp, coins}
+        """
+        async with self._open_connection() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT 
+                    DATE(updated_at) AS day,
+                    COALESCE(SUM(delivery_fee), 0) AS earnings,
+                    COUNT(*) AS deliveries
+                FROM orders
+                WHERE delivery_guy_id = $1 AND DATE(updated_at) BETWEEN $2 AND $3
+                GROUP BY day
+                ORDER BY day ASC
+                """,
+                dg_id, week_start, week_end
+            )
+        
+        stats = []
+        for r in rows:
+            xp = r["deliveries"] * 10
+            coins = r["earnings"] * 0.05
+            stats.append({
+                "date": r["day"],
+                "deliveries": r["deliveries"],
+                "earnings": r["earnings"],
+                "xp": xp,
+                "coins": coins
+            })
+        return stats
+    async def get_weekly_totals_for_dg(self, dg_id: int, week_start: str, week_end: str) -> Dict[str, Any]:
+        """
+        Returns total deliveries, earnings, xp, coins for the week.
+        """
+        async with self._open_connection() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT 
+                    COALESCE(SUM(delivery_fee), 0) AS earnings,
+                    COUNT(*) AS deliveries
+                FROM orders
+                WHERE delivery_guy_id = $1 AND DATE(updated_at) BETWEEN $2 AND $3
+                """,
+                dg_id, week_start, week_end
+            )
+        if not row:
+            return {"earnings": 0, "deliveries": 0, "xp": 0, "coins": 0}
+        
+        xp = row["deliveries"] * 10
+        coins = row["earnings"] * 0.05
+        return {
+            "earnings": row["earnings"],
+            "deliveries": row["deliveries"],
+            "xp": xp,
+            "coins": coins
+        }
+
     async def update_delivery_guy_coords(self, dg_id: int, lat: float, lon: float):
         """
         Update the last known coordinates of a delivery guy.
@@ -640,21 +768,25 @@ class Database:
         breakdown_json: str,
         delivery_guy_id: Optional[int] = None,
     ) -> int:
+        now = datetime.utcnow()
+        expires_at = now + datetime.timedelta(minutes=30)  # auto‑cancel window
+
         async with self._open_connection() as conn:
             order_id = await conn.fetchval(
                 """
                 INSERT INTO orders
                 (user_id, delivery_guy_id, vendor_id, pickup, dropoff, items_json,
                 food_subtotal, delivery_fee, status, payment_method, payment_status,
-                receipt_id, breakdown_json)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                receipt_id, breakdown_json, created_at, updated_at, expires_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $14, $15)
                 RETURNING id
                 """,
                 user_id, delivery_guy_id, vendor_id, pickup, dropoff, items_json,
                 food_subtotal, delivery_fee, status, payment_method, payment_status,
-                receipt_id, breakdown_json,
+                receipt_id, breakdown_json, now, expires_at,
             )
             return int(order_id) if order_id is not None else 0
+
             
     async def get_order(self, order_id: int) -> Optional[Dict[str, Any]]:
         async with self._open_connection() as conn:

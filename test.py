@@ -336,3 +336,52 @@ async def find_student_by_order(order_id: int):
 
 if __name__ == "__main__":
     asyncio.run(find_student_by_order(ORDER_ID))
+
+
+
+
+import asyncio
+import asyncpg
+from datetime import datetime
+
+async def show_current_orders(dsn: str):
+    """Prints current (non-delivered) orders from the database."""
+    try:
+        conn = await asyncpg.connect(dsn)
+
+        query = """
+        SELECT *
+        FROM orders
+        WHERE status != 'delivered'
+        ORDER BY created_at DESC
+        """
+
+        rows = await conn.fetch(query)
+
+        if not rows:
+            print("No current orders found.")
+            return
+
+        print("--- Current Orders ---")
+        for row in rows:
+            print("===================================")
+            print(f"Order ID: {row['id']}")
+            print(f"User ID: {row['user_id']}")
+            print(f"Delivery Guy ID: {row['delivery_guy_id']}")
+            print(f"Vendor ID: {row['vendor_id']}")
+            print(f"Pickup: {row['pickup']}")
+            print(f"Dropoff: {row['dropoff']}")
+            print(f"Status: {row['status']}")
+            print(f"Payment Status: {row['payment_status']}")
+            print(f"Created At: {row['created_at']}")
+            print(f"Updated At: {row['updated_at']}")
+            print("===================================\n")
+
+        await conn.close()
+
+    except Exception as e:
+        print(f"Error fetching current orders: {e}")
+
+if __name__ == "__main__":
+    DB_DSN = "postgresql://neondb_owner:npg_gTKxHQ7qdtC0@ep-soft-glitter-ad6vxp8t-pooler.c-2.us-east-1.aws.neon.tech/deliveryaau?sslmode=require&channel_binding=require"
+    asyncio.run(show_current_orders(DB_DSN))

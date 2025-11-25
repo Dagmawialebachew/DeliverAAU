@@ -33,6 +33,7 @@ class OrderStates(StatesGroup):
     live_choice = State()
     dropoff_choice = State()
     dropoff_other = State()
+    campus_choice = State()   # <-- add this
     notes = State()
     confirm = State()
 
@@ -107,9 +108,9 @@ def cart_keyboard() -> InlineKeyboardMarkup:
 
 def dropoff_keyboard(campus: str) -> InlineKeyboardMarkup:
     presets_map = {
-        "4kilo": ["Dorm", "Library", "Main Gate", "Engineering Block"],
-        "5kilo": ["Dorm", "Library", "Main Gate", "Addis Hall"],
-        "6kilo": ["Dorm", "Library", "Main Gate", "Science Block"],
+        "4kilo": ["Dorm", "Library", "Main Gate"],
+        "5kilo": ["Dorm", "Library", "Main Gate"],
+        "6kilo": ["Dorm", "Kennedy", "Main Gate", "False Gate"],
     }
     presets = presets_map.get(campus, ["Dorm", "Library", "Main Gate"])
     rows: List[List[InlineKeyboardButton]] = []
@@ -125,9 +126,12 @@ def dropoff_keyboard(campus: str) -> InlineKeyboardMarkup:
 
 def live_choice_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📡 Share Live Location (Telegram)", callback_data="live:request")],
-        [InlineKeyboardButton(text="🏛 Use Preset Spot", callback_data="live:preset")],
-        [InlineKeyboardButton(text="✍️ Other (type)", callback_data="live:other")],
+        [InlineKeyboardButton(text="📡 Share Live Location", callback_data="live:request")],
+        [
+            InlineKeyboardButton(text="🏛 Preset Spot", callback_data="live:preset"),
+            InlineKeyboardButton(text="🏫 Change Campus", callback_data="live:campus")
+        ],
+        [InlineKeyboardButton(text="✍️ Type Other", callback_data="live:other"), InlineKeyboardButton(text="❌ Cancel", callback_data="live:cancel")]
     ])
 
 
@@ -136,6 +140,31 @@ def notes_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="➕ Add Notes", callback_data="notes:add"),
          InlineKeyboardButton(text="⏭ Skip", callback_data="notes:skip")],
     ])
+
+
+@router.callback_query(OrderStates.live_choice, F.data == "live:campus")
+async def live_change_campus(cb: CallbackQuery, state: FSMContext):
+    await cb.answer()
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🏛 4 Kilo", callback_data="campus:4kilo"), InlineKeyboardButton(text="📚 5 Kilo", callback_data="campus:5kilo"), InlineKeyboardButton(text="🎓 6 Kilo", callback_data="campus:6kilo")],
+        [InlineKeyboardButton(text="⬅️ Back", callback_data="live:change")]
+    ])
+    await cb.message.edit_text("🏫 Choose a campus for this order:", reply_markup=kb)
+    await state.set_state(OrderStates.campus_choice)
+
+
+@router.callback_query(OrderStates.campus_choice, F.data.startswith("campus:"))
+async def campus_selected(cb: CallbackQuery, state: FSMContext):
+    await cb.answer()
+    campus_code = cb.data.split(":")[1]
+    await state.update_data(override_campus=campus_code)
+
+    await cb.message.edit_text(
+        f"✅ Campus temporarily set to {campus_code} for this order.\n"
+        "Now choose a preset spot:",
+        reply_markup=dropoff_keyboard(campus_code)
+    )
+    await state.set_state(OrderStates.dropoff_choice)
 
 
 def final_confirm_keyboard() -> InlineKeyboardMarkup:
@@ -352,7 +381,6 @@ async def order_cancel(cb: CallbackQuery, state: FSMContext):
     except: pass
     await state.clear()
     await cb.message.answer("Order cancelled. Start again from the main menu.", reply_markup=main_menu())
-
 @router.callback_query(OrderStates.menu, F.data == "cart:confirm")
 async def cart_confirm(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
@@ -373,19 +401,25 @@ async def cart_confirm(cb: CallbackQuery, state: FSMContext):
         if not item:
             continue
         subtotal += item["price"] * qty
-        # replicate item in list for compatibility with downstream code
         cart_items.extend([item] * qty)
 
-    # Save the full cart items list and subtotal
     await state.update_data(cart=cart_items, food_subtotal=subtotal)
 
-    # Ask live vs preset
+    # Fetch the student’s campus from DB
+    user = await db.get_user(cb.from_user.id)
+    campus = user["campus"] if user else "your campus"
+
+    # Tell them clearly which campus is active
     await cb.message.edit_text(
-        "📍 Share your live location for faster delivery, or choose a preset spot.",
-        reply_markup=live_choice_keyboard()
+        f"📍 Your meal will be delivered to **{campus} campus** (your home base).\n\n"
+        "• If you’re at this campus, choose a preset spot or share live location.\n"
+        "• If you need this order delivered to another campus, tap **Change Campus (temporary)**.\n"
+        "• To permanently update your home base, go to ⚙️ Settings later.\n\n"
+        "Choose how you want to set your drop‑off:",
+        reply_markup=live_choice_keyboard(),
+        parse_mode="Markdown"
     )
     await state.set_state(OrderStates.live_choice)
-
 
 # --- Live Location / Drop-off Flow ---
 
@@ -477,16 +511,18 @@ async def location_flow_cancel_and_return(cb: CallbackQuery, state: FSMContext):
 @router.callback_query(OrderStates.live_choice, F.data == "live:preset")
 async def live_preset(cb: CallbackQuery, state: FSMContext):
     await cb.answer("Switched to Preset input.")
-    user = await db.get_user(cb.from_user.id)
-    
-    # DELETE the message that showed the location button
-    await _cleanup_location_prompt(cb, state)
-    
-    kb = dropoff_keyboard(user["campus"])
-    kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Go Back (Drop-off Method)", callback_data="drop:cancel")])
-    
+    data = await state.get_data()
+    campus = data.get("override_campus")
+
+    if not campus:
+        user = await db.get_user(cb.from_user.id)
+        campus = user["campus"]
+
+    kb = dropoff_keyboard(campus)
+    kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Back", callback_data="drop:cancel")])
+
     await cb.message.edit_text(
-        "🏛 **Choose a preset spot for drop-off**:",
+        f"🏛 **Choose a preset spot for {campus} campus:**",
         reply_markup=kb,
         parse_mode="Markdown"
     )
@@ -760,8 +796,7 @@ async def ask_final_confirmation(message: Message, state: FSMContext):
     await state.update_data(food_subtotal=subtotal, delivery_fee=delivery_fee)
     await state.set_state(OrderStates.confirm)
 
-    
-# 🎯 Step 2: Handle Final Confirmation (removes inline buttons, shows main menu during placement)
+    # 🎯 Step 2: Handle Final Confirmation (removes inline buttons, shows main menu during placement)
 @router.callback_query(OrderStates.confirm, F.data == "final:confirm")
 async def final_confirm(cb: CallbackQuery, state: FSMContext):
     await cb.answer("🕓 Placing your order...")
@@ -791,8 +826,7 @@ async def final_confirm(cb: CallbackQuery, state: FSMContext):
         return
 
     # ✅ Build cart_items fresh from cart_counts for consistency
-    cart_items = []
-    subtotal = 0
+    cart_items, subtotal = [], 0
     for item_id, qty in cart_counts.items():
         item = next((m for m in menu if m["id"] == item_id), None)
         if not item:
@@ -810,8 +844,6 @@ async def final_confirm(cb: CallbackQuery, state: FSMContext):
         "drop_lat": float(live_coords["lat"]) if live_coords and live_coords.get("lat") else None,
         "drop_lon": float(live_coords["lon"]) if live_coords and live_coords.get("lon") else None,
     }
-    breakdown_json = json.dumps(breakdown)
-    items_json = json.dumps(cart_items)
 
     # Vendor details
     vendor = data.get("vendor") or {}
@@ -823,79 +855,52 @@ async def final_confirm(cb: CallbackQuery, state: FSMContext):
     # Create order entry in DB
     order_id = await db.create_order(
         user_id=user["id"],
-        delivery_guy_id=None,
+        delivery_guy_id=None,  # not assigned yet
         vendor_id=vendor_id,
         pickup=vendor_name,
         dropoff=data.get("dropoff", ""),
-        items_json=items_json,
+        items_json=json.dumps(cart_items),
         food_subtotal=subtotal,
         delivery_fee=float(data.get("delivery_fee", 0.0)),
         status="pending",
         payment_method="cod",
         payment_status="unpaid",
         receipt_id=0,
-        breakdown_json=breakdown_json,
+        breakdown_json=json.dumps(breakdown),
     )
 
     # Notify vendor
     vendor_chat_id = vendor.get("telegram_id")
     if vendor_chat_id:
-        names = [i.get("name", "") for i in cart_items if isinstance(i, dict)]
-
-        # Count duplicates
-        counts = Counter(names)
-
-        # Build string like "Tea x2, Burger"
-        # Vertical list with dot bullets
+        counts = Counter([i.get("name", "") for i in cart_items if isinstance(i, dict)])
         items = "\n".join(
             f"• {name} x{count}" if count > 1 else f"• {name}"
             for name, count in counts.items()
         ) or "—"
 
         vendor_text = (
-    f"📦 አዲስ ትዕዛዝ #{order_id}\n"
-    f"🛒 ምግቦች: \n{items}\n\n"
-    f"💵 ዋጋ: {int(subtotal)} ብር\n"
-    f"📍 መድረሻ: {data.get('dropoff','')}\n\n"
-    f"⚡ እባክዎት ትዕዛዙን ይቀበሉ ወይም ይከለክሉ....።"
-)
-
+            f"📦 አዲስ ትዕዛዝ #{order_id}\n"
+            f"🛒 ምግቦች:\n{items}\n\n"
+            f"💵 ዋጋ: {int(subtotal)} ብር\n"
+            f"📍 መድረሻ: {data.get('dropoff','')}\n\n"
+            f"⚡ እባክዎት ትዕዛዙን ይቀበሉ ወይም ይከለክሉ።"
+        )
         kb = InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="✅ ተቀበል", callback_data=f"vendor:accept:{order_id}"), InlineKeyboardButton(text="❌ አይ", callback_data=f"vendor:reject:{order_id}")]
+                [
+                    InlineKeyboardButton(text="✅ ተቀበል", callback_data=f"vendor:accept:{order_id}"),
+                    InlineKeyboardButton(text="❌ አይ", callback_data=f"vendor:reject:{order_id}")
+                ]
             ]
         )
         await cb.bot.send_message(vendor_chat_id, vendor_text, reply_markup=kb)
 
     # 🎬 Cinematic progress sequence
-    progress_steps = [
-        "🍳 Coordinating with kitchen...",
-        "🚴 Searching for a nearby delivery guy...",
-        "⚡ Optimizing fastest route..."
-    ]
-    cinematic_msg = await cb.message.answer(progress_steps[0])
-    for step in progress_steps[1:]:
-        await asyncio.sleep(1.3)
-        with contextlib.suppress(Exception):
-            await cinematic_msg.edit_text(step)
+    cinematic_msg = await cb.message.answer("🍳 Coordinating with kitchen...")
+    await asyncio.sleep(1.3)
+    await cinematic_msg.edit_text("🚴 Waiting for vendor acceptance...")
 
-    # Try assigning a delivery guy
-    chosen = await assign_delivery_guy(db, order_id, bot=cb.bot)
-
-    # Compute ETA if assigned
-    eta_info: Optional[Dict[str, Any]] = None
-    if chosen:
-        vendor_coords = data.get("vendor_coords")
-        drop_coords = live_coords or {"lat": None, "lon": None}
-        if vendor_coords and drop_coords.get("lat") and drop_coords.get("lon"):
-            eta_info = await eta_and_distance(
-                vendor_coords["lat"], vendor_coords["lon"],
-                drop_coords["lat"], drop_coords["lon"]
-            )
-            await db.update_order_live(order_id, live_shared=True,
-                                       lat=vendor_coords["lat"], lon=vendor_coords["lon"])
-
-    # 🧾 Build order summary preview
+    # 🧾 Build order summary preview for student
     cart_text, subtotal = render_cart(cart_counts, menu)
     final_preview = (
         f"🎉 *Order #{order_id} Confirmed!*\n"
@@ -904,60 +909,33 @@ async def final_confirm(cb: CallbackQuery, state: FSMContext):
         f"🚚 Delivery fee: *{data.get('delivery_fee', 20.0):.2f} birr*\n"
         f"💵 Total: *{total_payable:.2f} birr*\n\n"
         f"📍 Drop-off: *{data.get('dropoff', '')}*\n"
-        f"{('📝 Notes: ' + data.get('notes', '')) if data.get('notes') else ''}\n"
+        f"{('📝 Notes: ' + data.get('notes', '')) if data.get('notes') else ''}\n\n"
+        "✅ Your order has been sent to the vendor.\n"
+        "👨‍🍳 Once the vendor confirms, a delivery guy will be assigned to bring your meal.\n"
+        "\n🧭 Track your order anytime in *📍 Track Order*."
     )
 
-    if chosen:
-        final_preview += (
-            f"\n👤 Delivery Guy: {chosen['name']} ({chosen['campus']})\n"
-            f"🚶 Heading from: {vendor_name}\n"
-            "🧭 Track your order anytime in *📍 Track Order*."
-        )
-        if eta_info:
-            final_preview += (
-                f"\n🕓 ETA: ~{eta_info['eta_min']} min "
-                f"({eta_info['distance_km']:.2f} km) from pickup to drop-off."
-            )
-    else:
-        final_preview += "\n⌛ No delivery guy available yet. Admin will assign one soon."
-
-    # Replace cinematic message with final preview
     with contextlib.suppress(Exception):
         await cinematic_msg.delete()
-        
-    preview_kb = InlineKeyboardMarkup(
-    inline_keyboard=[
-        [InlineKeyboardButton(text="📍 Track", callback_data=f"order:track:{order_id}")],
-    ]
-)
 
-# Send the final preview with inline button
+    preview_kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📍 Track", callback_data=f"order:track:{order_id}")]
+        ]
+    )
+
     await cb.message.answer(final_preview, parse_mode="Markdown", reply_markup=preview_kb)
+
     # 🎞️ Finishing animation + XP reward
     status_msg = await cb.message.answer("🎬 Wrapping things up...")
     await asyncio.sleep(1.5)
     with contextlib.suppress(Exception):
         await status_msg.delete()
     await cb.message.answer("🔥 +10 XP will be added after delivery!", parse_mode="Markdown", reply_markup=main_menu())
-        
-    
+
+    # Admin log: order placed, waiting for vendor
     if settings.ADMIN_GROUP_ID:
         try:
-            async with db._open_connection() as conn:
-                available_count = await conn.fetchval(
-                    "SELECT COUNT(*) FROM delivery_guys WHERE active = TRUE"
-                ) or 0
-
-            assigned_text = (
-                f"Assigned Delivery Guy: {chosen['name']} ({chosen['campus']})"
-                if chosen else "No delivery guy assigned yet"
-            )
-            reason = (
-                "No active delivery guys available right now."
-                if available_count == 0 else
-                "No delivery guy matches campus or location."
-            ) if not chosen else "Delivery guy successfully assigned"
-
             admin_msg = (
                 f"📢 *New Order Placed: #{order_id}*\n"
                 f"👤 Customer: {user['first_name']} ({user.get('phone', 'N/A')})\n"
@@ -965,47 +943,13 @@ async def final_confirm(cb: CallbackQuery, state: FSMContext):
                 f"🍴 Vendor: {vendor_name}\n"
                 f"📍 Drop-off: {data.get('dropoff', '')}\n"
                 f"💵 Total: {total_payable:.2f} birr (COD)\n"
-                f"⚡ {assigned_text}\n"
-                f"ℹ️ Status: {reason}"
+                f"⚡ Status: Waiting for vendor acceptance"
             )
             await cb.bot.send_message(settings.ADMIN_GROUP_ID, admin_msg, parse_mode="Markdown")
         except Exception:
             pass
 
-    # 🚨 Send explicit alert if no delivery guy assigned
-    if not chosen and settings.ADMIN_GROUP_ID:
-        try:
-            async with db._open_connection() as conn:
-                available_count = await conn.fetchval(
-                    "SELECT COUNT(*) FROM delivery_guys WHERE active = TRUE"
-                ) or 0
-
-            reason = (
-                "No active delivery guys available right now."
-                if available_count == 0 else
-                "No delivery guy matches campus or location."
-            )
-
-            admin_msg = (
-                f"⚠️ *No Delivery Guy Assigned for Order #{order_id}*\n"
-                f"👤 Customer: {user['first_name']} ({user.get('phone', 'N/A')})\n"
-                f"🏛 Campus: {user.get('campus', 'N/A')}\n"
-                f"🍴 Vendor: {vendor_name}\n"
-                f"📍 Drop-off: {data.get('dropoff', '')}\n"
-                f"💵 Total: {total_payable:.2f} birr (COD)\n\n"
-                f"Reason: {reason}\n"
-                "Please assign a delivery guy manually."
-            )
-            await cb.bot.send_message(settings.ADMIN_GROUP_ID, admin_msg, parse_mode="Markdown")
-        except Exception:
-            pass
-
-    # Notify admin (same as your original logic)...
-
-    # ✅ Clear FSM state
     await state.clear()
-
-
 
 
 # Optional: handle cancel from confirmation gracefully (if you keep a cancel button)

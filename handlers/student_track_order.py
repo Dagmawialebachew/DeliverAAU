@@ -533,6 +533,7 @@ async def send_orders_page(message_or_callback, user_id: int, page: int):
                     "data": f"order:view:{single['id']}",
                     "message": message_or_callback,
                     "answer": lambda *a, **k: None,
+                    "from_user": type("User", (), {"id": message_or_callback.from_user.id})(),
                 },
             )
             await back_to_summary(fake_cb)
@@ -684,7 +685,7 @@ async def order_track_long(cb: CallbackQuery):
     paused = False
 
     try:
-        await cb.message.answer("🔎 Tracking your order — live updates will refresh here.", reply_markup=track_reply_keyboard())
+        await cb.message.answer("🔎 Tracking your order — live updates will refresh here.", reply_markup=track_menu_keyboard())
     except Exception:
         pass
 
