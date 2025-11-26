@@ -12,12 +12,13 @@ from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.fsm.context import FSMContext
 from config import settings
-
+from aiogram.filters import Command
 router = Router()
 
 ADMIN_IDS = settings.ADMIN_IDS
 
 # Step 1: Entry point — Need Help button
+@router.message(Command("help"))
 @router.message(F.text == "🧑‍🍳 Need Help")
 async def need_help(message: Message):
     kb = InlineKeyboardMarkup(inline_keyboard=[

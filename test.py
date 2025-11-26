@@ -385,3 +385,28 @@ async def show_current_orders(dsn: str):
 if __name__ == "__main__":
     DB_DSN = "postgresql://neondb_owner:npg_gTKxHQ7qdtC0@ep-soft-glitter-ad6vxp8t-pooler.c-2.us-east-1.aws.neon.tech/deliveryaau?sslmode=require&channel_binding=require"
     asyncio.run(show_current_orders(DB_DSN))
+
+
+
+
+from aiogram import Bot, Dispatcher, Router
+from aiogram.filters import Command
+from aiogram.types import Message
+import asyncio
+
+bot = Bot(token="8334775133:AAFqHaeqRdf4D4YX6-Rth1jBGf1V_1W_OVA")
+dp = Dispatcher()
+router = Router()
+
+@router.message(Command("id"))
+async def show_id(message: Message):
+    await message.answer(f"Your Telegram ID is: {message.from_user.id}")
+
+dp.include_router(router)
+
+async def main():
+    await bot.delete_webhook(drop_pending_updates=True)
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())

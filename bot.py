@@ -11,7 +11,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
-from aiogram.types import Update, BotCommand
+from aiogram.types import Update, BotCommand, BotCommandScopeDefault, BotCommandScopeChat
 
 from config import settings
 from database.db import Database, seed_delivery_guys, seed_vendors
@@ -31,6 +31,7 @@ from handlers.vendor import router as vendor_router
 from handlers.rating import router as rating_router
 from handlers.help import router as help_router
 from handlers.settings import router as settings_router
+from handlers.admin import router as admin_router
 from middlewares.gracefull_fallback_middleware import GracefulFallbackMiddleware
 
 # --- Logging ---
@@ -38,27 +39,27 @@ logging.basicConfig(level=logging.INFO)
 
 # --- Bot & Dispatcher ---
 
-# Middlewares
-# Throttling: register separately for messages and callbacks
-dp.message.middleware(ThrottlingMiddleware(
-    message_interval=1.5,   # silently drop spammy messages
-    callback_interval=0.5   # polite popup for fast button clicks
-))
-dp.callback_query.middleware(ThrottlingMiddleware(
-    message_interval=1.5,
-    callback_interval=0.5
-))
+# # Middlewares
+# # Throttling: register separately for messages and callbacks
+# dp.message.middleware(ThrottlingMiddleware(
+#     message_interval=1.5,   # silently drop spammy messages
+#     callback_interval=0.5   # polite popup for fast button clicks
+# ))
+# dp.callback_query.middleware(ThrottlingMiddleware(
+#     message_interval=1.5,
+#     callback_interval=0.5
+# ))
 
-#Gracefull fall back middleware registeration
+# #Gracefull fall back middleware registeration
 
 
-dp.message.middleware(GracefulFallbackMiddleware())
-dp.callback_query.middleware(GracefulFallbackMiddleware())
-# Routers
+# dp.message.middleware(GracefulFallbackMiddleware())
+# dp.callback_query.middleware(GracefulFallbackMiddleware())
+# # Routers
 
-# Error handling: also register per-event
-dp.message.middleware(ErrorHandlingMiddleware())
-dp.callback_query.middleware(ErrorHandlingMiddleware())
+# # Error handling: also register per-event
+# dp.message.middleware(ErrorHandlingMiddleware())
+# dp.callback_query.middleware(ErrorHandlingMiddleware())
 
 dp.include_router(onboarding_router)
 dp.include_router(student_router)
@@ -68,6 +69,8 @@ dp.include_router(vendor_router)
 dp.include_router(rating_router)
 dp.include_router(help_router)
 dp.include_router(settings_router)
+# dp.include_router(admin_router)
+logging.info(f"Included admin router id: {id(admin_router)}")
 
 # --- DB + Scheduler ---
 scheduler = BotScheduler(db=db, bot=bot)
@@ -90,11 +93,7 @@ async def lifespan(app: FastAPI):
     logging.info("✅ Scheduler started")
 
     # Set bot commands
-    await bot.set_my_commands([
-        BotCommand(command="start", description="Start Deliver AAU"),
-        BotCommand(command="help", description="Help & contact"),
-        BotCommand(command="dashboard", description="Delivery Guy Dashboard"),
-    ])
+    await set_commands(bot, settings.ADMIN_IDS)
 
     webhook_url = f"{os.getenv('WEBHOOK_BASE_URL')}/bot/{settings.BOT_TOKEN}"
     await bot.set_webhook(webhook_url)
@@ -117,6 +116,25 @@ async def telegram_webhook(request: Request):
     update = Update(**data)
     await dp.feed_update(bot, update)
     return {"ok": True}
+
+
+
+async def set_commands(bot, admin_ids: list[int]):
+    # Commands for everyone
+    user_commands = [
+        BotCommand(command="start", description="🚀 Start Deliver AAU"),
+        BotCommand(command="help", description="❓ Help & Contact"),
+    ]
+    await bot.set_my_commands(user_commands, scope=BotCommandScopeDefault())
+
+    # Commands only for admins
+    admin_commands = user_commands + [
+        BotCommand(command="admin", description="🔐 Admin Command Center"),
+    ]
+    for admin_id in admin_ids:
+        await bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=admin_id))
+
+
 
 @app.get("/")
 async def health_check():
@@ -144,14 +162,14 @@ if __name__ == "__main__":
 
         # 4. Start scheduler
         scheduler.start()
+        await set_commands(bot, settings.ADMIN_IDS)   # <-- call here
 
         # 5. Bot commands
-        await bot.set_my_commands([
-            BotCommand(command="start", description="Start Deliver AAU"),
-            BotCommand(command="help", description="Help & contact"),
-            BotCommand(command="dashboard", description="Delivery Guy Dashboard"),
-        ])
+      
+
         await bot.delete_webhook(drop_pending_updates=True)
+        logging.info(f"Dispatcher id: {id(dp)}")
+        logging.info("Webhook deleted, starting polling with dp id: %s", id(dp))
 
 
         # 6. Start polling
