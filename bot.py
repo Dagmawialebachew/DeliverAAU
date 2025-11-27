@@ -148,7 +148,7 @@ if __name__ == "__main__":
         await db.init_pool()
 
         # 2. Reset schema (drop/recreate tables)
-        # await db.reset_schema()
+        await db.reset_schema()
         await db.init_schema()
         logging.info("✅ Database initialized")
         
@@ -157,8 +157,8 @@ if __name__ == "__main__":
         await db.init_pool()
 
         # 3. Seed data
-        # await seed_vendors(db)
-        # await seed_delivery_guys(db)
+        await seed_vendors(db)
+        await seed_delivery_guys(db)
 
         # 4. Start scheduler
         scheduler.start()
