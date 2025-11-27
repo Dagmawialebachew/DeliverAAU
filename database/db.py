@@ -898,8 +898,8 @@ class Database:
             return self._row_to_dict(row) if row else None
 
     async def update_order_status(self, order_id: int, status: str, dg_id: Optional[int] = None) -> None:
-        """Updates the order status and handles time-based fields."""
-        
+          """Updates the order status and handles time-based fields."""
+
         sql_parts = ["status = $1", "updated_at = CURRENT_TIMESTAMP"]
         params = [status]
         param_counter = 2
@@ -908,29 +908,23 @@ class Database:
             sql_parts.append(f"delivery_guy_id = ${param_counter}")
             params.append(dg_id)
             param_counter += 1
-        
-        if status in ('accepted', 'preparing', 'ready'):
+
+        # Handle time-based fields
+        if status in ("accepted", "preparing", "ready"):
             sql_parts.append("accepted_at = CURRENT_TIMESTAMP")
             if status == "ready":
-                await conn.execute(
-                    """
-                    UPDATE orders
-                    SET status = $1,
-                        ready_at = NOW(),
-                        updated_at = NOW()
-                    WHERE id = $2
-                    """,
-                    status, order_id
-                )
-        elif status == 'delivered':
+                sql_parts.append("ready_at = CURRENT_TIMESTAMP")
+        elif status == "delivered":
             sql_parts.append("delivered_at = CURRENT_TIMESTAMP")
 
+        # Build final SQL
         sql = f"UPDATE orders SET {', '.join(sql_parts)} WHERE id = ${param_counter}"
         params.append(order_id)
-        
+
+        # Execute inside connection context
         async with self._open_connection() as conn:
             await conn.execute(sql, *params)
-            
+     
     # -------------------- Daily Stats & Gamification --------------------
 
     async def record_daily_stat_assignment(self, dg_id: int, date_str: str) -> None:
