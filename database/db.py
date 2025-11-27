@@ -898,7 +898,7 @@ class Database:
             return self._row_to_dict(row) if row else None
 
     async def update_order_status(self, order_id: int, status: str, dg_id: Optional[int] = None) -> None:
-          """Updates the order status and handles time-based fields."""
+        """Updates the order status and handles time-based fields."""
 
         sql_parts = ["status = $1", "updated_at = CURRENT_TIMESTAMP"]
         params = [status]
