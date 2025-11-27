@@ -1,6 +1,7 @@
 # handlers/student_track_order.py
 import asyncio
 from collections import Counter
+import inspect
 import json
 from typing import Optional, Dict, Any, List, Tuple
 from aiogram.fsm.context import FSMContext
@@ -522,22 +523,25 @@ async def send_orders_page(message_or_callback, user_id: int, page: int):
     # If only one order, open it immediately
     if len(orders) == 1:
         single = orders[0]
-        cb_like = message_or_callback if isinstance(message_or_callback, CallbackQuery) else None
-        if cb_like:
-            await back_to_summary(cb_like)
+        if isinstance(message_or_callback, CallbackQuery):
+            await back_to_summary(message_or_callback)
         else:
+            async def fake_answer(*a, **k):
+                return True
+
             fake_cb = type(
                 "Fake",
                 (),
                 {
                     "data": f"order:view:{single['id']}",
                     "message": message_or_callback,
-                    "answer": lambda *a, **k: None,
+                    "answer": fake_answer,
                     "from_user": type("User", (), {"id": message_or_callback.from_user.id})(),
                 },
-            )
+            )()
             await back_to_summary(fake_cb)
         return
+
 
     total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
     lines = [f"📊 <b>Active Orders Dashboard</b> — Page {page + 1}/{total_pages}", "──────────────────────────"]
@@ -851,7 +855,9 @@ async def show_order_detail(callback: CallbackQuery):
         await callback.message.answer(text, reply_markup=kb, parse_mode="Markdown")
     await callback.answer()
 
-# 
+# import inspect
+from aiogram.types import CallbackQuery
+
 @router.callback_query(F.data.startswith("order:back:") | F.data.startswith("order:refresh:") | F.data.startswith("order:"))
 async def back_to_summary(callback: CallbackQuery):
     parts = callback.data.split(":")
@@ -867,16 +873,35 @@ async def back_to_summary(callback: CallbackQuery):
                 await callback.message.edit_text("Closed.")
             except Exception:
                 pass
-        await callback.answer()
+        # Safe answer
+        if hasattr(callback, "answer"):
+            maybe = callback.answer()
+            if inspect.isawaitable(maybe):
+                await maybe
         return
 
     text, kb = await render_order_summary(order_id)
     if kb:
         try:
-            await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
+            await callback.message.edit_text(
+                text,
+                reply_markup=kb,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
         except Exception:
-            await callback.message.answer(text, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
-    await callback.answer()
+            await callback.message.answer(
+                text,
+                reply_markup=kb,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+
+    # Safe answer again
+    if hasattr(callback, "answer"):
+        maybe = callback.answer()
+        if inspect.isawaitable(maybe):
+            await maybe
 
 # --- Inline Refresh / Close passthrough ---
 @router.callback_query(F.data.startswith("order:refresh:"))
