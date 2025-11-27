@@ -778,17 +778,33 @@ async def reply_back_to_menu(message: Message):
 # --- Full Order Detail Handler (receipt style) ---
 @router.callback_query(F.data.startswith("order:detail:"))
 async def show_order_detail(callback: CallbackQuery):
-    order_id = int(callback.data.split(":")[2])
+    # 1) Acknowledge immediately to avoid "query is too old"
+    try:
+        await callback.answer()
+    except Exception:
+        pass  # ignore expired queries
+
+    # 2) Parse order id safely
+    parts = callback.data.split(":")
+    if len(parts) < 3 or not parts[2].isdigit():
+        # Fallback UX: edit or answer message
+        try:
+            await callback.message.edit_text("❌ Invalid order reference.")
+        except Exception:
+            await callback.message.answer("❌ Invalid order reference.")
+        return
+    order_id = int(parts[2])
+
+    # 3) Fetch order
     order = await db.get_order(order_id)
     if not order:
-        await callback.answer()
         try:
             await callback.message.edit_text("❌ Order not found.")
         except Exception:
             await callback.message.answer("❌ Order not found.")
         return
 
-    # Parse breakdown JSON
+    # 4) Breakdown parsing
     try:
         breakdown = json.loads(order.get("breakdown_json") or "{}")
     except Exception:
@@ -796,21 +812,20 @@ async def show_order_detail(callback: CallbackQuery):
     items_list = breakdown.get("items", [])
     if isinstance(items_list, list):
         counts = Counter(items_list)
-        # Show up to 10 unique items with counts
         items_str = "\n".join(
             f"• {name} x{count}" if count > 1 else f"• {name}"
             for name, count in list(counts.items())[:10]
         )
+        if not items_str:
+            items_str = "• N/A"
     else:
         items_str = str(items_list or "N/A")
-    # ETA
+
+    # 5) ETA computation: wrap to prevent crash
     last_lat = order.get("last_lat")
     last_lon = order.get("last_lon")
     drop_lat = breakdown.get("drop_lat")
     drop_lon = breakdown.get("drop_lon")
-    created = time_ago(order.get("created_at"))
-    accepted = time_ago(order.get("accepted_at"))
-    delivered = time_ago(order.get("delivered_at"))
     eta_text = ""
     if last_lat and last_lon and drop_lat and drop_lon:
         try:
@@ -818,28 +833,38 @@ async def show_order_detail(callback: CallbackQuery):
         except Exception:
             eta_text = "⏱ ETA: unavailable"
 
-    # Receipt‑style text
+    # 6) Time stamps (defensive against None)
+    created = time_ago(order.get("created_at")) if order.get("created_at") else "N/A"
+    accepted = time_ago(order.get("accepted_at")) if order.get("accepted_at") else "N/A"
+    delivered = time_ago(order.get("delivered_at")) if order.get("delivered_at") else "N/A"
+
+    # 7) Totals: ensure numeric
+    food_subtotal = order.get("food_subtotal") or 0
+    delivery_fee = order.get("delivery_fee") or 0
+    try:
+        total_birr = (float(food_subtotal) if not isinstance(food_subtotal, (int, float)) else food_subtotal) + \
+                     (float(delivery_fee) if not isinstance(delivery_fee, (int, float)) else delivery_fee)
+    except Exception:
+        total_birr = food_subtotal if isinstance(food_subtotal, (int, float)) else 0
+
+    # 8) Use consistent parse_mode (Markdown vs HTML)
+    # Your other screens use HTML; stick to HTML to avoid bold/underscore conflicts.
     text = (
-        f"🧾 **Order Receipt #{order['id']}**\n"
+        f"🧾 <b>Order Receipt #{order['id']}</b>\n"
         f"──────────────────────────\n"
-        f"{eta_text + chr(10) if eta_text else ''}"
+        f"{(eta_text + '\\n') if eta_text else ''}"
         f"🏠 Pickup: {order.get('pickup','N/A')}\n"
         f"📍 Drop‑off: {order.get('dropoff','N/A')}\n\n"
         f"🍴 Items:\n{items_str}\n\n"
-        f"💰 Subtotal: {order.get('food_subtotal','0')} birr\n"
-        f"🚚 Delivery Fee: {order.get('delivery_fee','0')} birr\n"
+        f"💰 Subtotal: {food_subtotal} birr\n"
+        f"🚚 Delivery Fee: {delivery_fee} birr\n"
         f"──────────────────────────\n"
-
-        f"💰 **Total:** {order.get('food_subtotal','0') + order.get('delivery_fee','0')} birr\n"
-
+        f"💰 <b>Total:</b> {total_birr} birr\n"
         f"💳 Payment: {order.get('payment_method','N/A')} ({order.get('payment_status','N/A')})\n\n"
-        
         f"⏱ Created: {created}  •  Accepted: {accepted}  •  Delivered: {delivered}\n\n"
-
         "✨ Thanks for ordering with UniBites Delivery!"
     )
 
-    # Inline keyboard: Back + Refresh in one row, Close in another
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -849,11 +874,21 @@ async def show_order_detail(callback: CallbackQuery):
         ]
     )
 
+    # 9) Edit message first, fallback to answer
     try:
-        await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+        await callback.message.edit_text(
+            text,
+            reply_markup=kb,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
     except Exception:
-        await callback.message.answer(text, reply_markup=kb, parse_mode="Markdown")
-    await callback.answer()
+        await callback.message.answer(
+            text,
+            reply_markup=kb,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
 
 # import inspect
 from aiogram.types import CallbackQuery

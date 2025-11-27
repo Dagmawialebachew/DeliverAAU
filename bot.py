@@ -39,27 +39,27 @@ logging.basicConfig(level=logging.INFO)
 
 # --- Bot & Dispatcher ---
 
-# # Middlewares
-# # Throttling: register separately for messages and callbacks
-# dp.message.middleware(ThrottlingMiddleware(
-#     message_interval=1.5,   # silently drop spammy messages
-#     callback_interval=0.5   # polite popup for fast button clicks
-# ))
-# dp.callback_query.middleware(ThrottlingMiddleware(
-#     message_interval=1.5,
-#     callback_interval=0.5
-# ))
+# Middlewares
+# Throttling: register separately for messages and callbacks
+dp.message.middleware(ThrottlingMiddleware(
+    message_interval=1.5,   # silently drop spammy messages
+    callback_interval=0.5   # polite popup for fast button clicks
+))
+dp.callback_query.middleware(ThrottlingMiddleware(
+    message_interval=1.5,
+    callback_interval=0.5
+))
 
-# #Gracefull fall back middleware registeration
+#Gracefull fall back middleware registeration
 
 
-# dp.message.middleware(GracefulFallbackMiddleware())
-# dp.callback_query.middleware(GracefulFallbackMiddleware())
-# # Routers
+dp.message.middleware(GracefulFallbackMiddleware())
+dp.callback_query.middleware(GracefulFallbackMiddleware())
+# Routers
 
-# # Error handling: also register per-event
-# dp.message.middleware(ErrorHandlingMiddleware())
-# dp.callback_query.middleware(ErrorHandlingMiddleware())
+# Error handling: also register per-event
+dp.message.middleware(ErrorHandlingMiddleware())
+dp.callback_query.middleware(ErrorHandlingMiddleware())
 
 dp.include_router(onboarding_router)
 dp.include_router(student_router)
