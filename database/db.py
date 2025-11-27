@@ -874,7 +874,7 @@ class Database:
     ) -> int:
         from datetime import datetime, timedelta, timezone
         now = datetime.utcnow()  # naive UTC
-        expires_at = now + timedelta(minutes=30)
+        expires_at = now + timedelta(minutes=45)
         async with self._open_connection() as conn:
             order_id = await conn.fetchval(
                 """

@@ -244,8 +244,8 @@ class BotScheduler:
                     try:
                         await self.bot.send_message(
                             vendor["telegram_id"],
-                            f"⚠️ Order #{order_id} auto‑cancelled due to inactivity.\n"
-                            "Please accept promptly to avoid expiry."
+                            f"⚠️ ትዕዛዝ #{order_id} በ 45 ደቂቃ ውስጥ ተቀባይነት ሳላላገኘ ከትእዛዞች ተወግዷል።\n"
+                            "እባክዎ ትዕዛዞችን በፍጥነት ይቀበሉ ወይም ይሰርዙ።"
                         )
                     except (TelegramBadRequest, TelegramForbiddenError):
                         pass
