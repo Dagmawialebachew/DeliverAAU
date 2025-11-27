@@ -78,7 +78,7 @@ def more_menu() -> ReplyKeyboardMarkup:
 @router.message(F.text == "🎁 Redeem Coins")
 async def redeem_coins(message: Message):
     await message.answer(
-        "🎬 Welcome to Deliver AAU Rewards!\n\n"
+        "🎬 Welcome to UniBites Delivery Rewards!\n\n"
         "✨ Redeem Coins feature is coming soon...\n"
         "Stay tuned for campus-first perks and surprises!"
     )
@@ -91,7 +91,23 @@ async def subscriptions(message: Message):
         "You’ll be able to unlock premium campus delivery perks."
     )
     
-    
+
+
+import random
+
+STUDENT_TIPS = [
+    "🍔 Order anytime: Tap your favorite café and get food delivered fast.",
+    "🛵 Track live: Watch your delivery guy move in real‑time on campus.",
+    "🎉 Keep streaks alive: Daily orders = more XP, coins & badges.",
+    "💰 Earn rewards: Coins unlock perks — save them for special treats.",
+    "🏆 Level up: Higher levels = cooler badges & bragging rights.",
+    "📊 Check progress: Your dashboard shows coins, XP & level at a glance.",
+    "🤝 Support local: Every order helps student vendors & cafés grow.",
+    "✨ Stay playful: Emojis, streaks & badges make ordering fun, not boring.",
+    "📱 Quick actions: Use the menu buttons to jump straight to vendors or status.",
+    "🎓 Campus ritual: UniBites isn’t just delivery — it’s part of student life."
+]
+
 
 def build_profile_card(user: dict, role: str = "student") -> str:
     """Reusable profile card for all roles."""
@@ -100,6 +116,7 @@ def build_profile_card(user: dict, role: str = "student") -> str:
     level = user.get("level", 1)
     filled = int((xp % 100) / 10)
     progress_bar = "▰" * filled + "▱" * (10 - filled)
+    tip = random.choice(STUDENT_TIPS)
 
     if role == "delivery_guy":
         return (
@@ -121,7 +138,7 @@ def build_profile_card(user: dict, role: str = "student") -> str:
         f"🎓 Role: {role.capitalize()}\n\n"
         f"💰 Coins: {coins} • 🏆 XP: {xp} • 🔰 Level: {level}\n"
         f"{progress_bar}\n\n"
-        "✨ Every order, every streak, every badge grows your impact!"
+        f"💡 Tip: {tip}"
     )
 
 
@@ -178,7 +195,7 @@ async def start(message: Message, state: FSMContext):
 
     # --- RETURNING STUDENT EXPERIENCE ---
     if user:
-        await typing_pause(message, "👋 Welcome back to **Deliver AAU** 🎉")
+        await typing_pause(message, "👋 Welcome back to **UniBites Delivery** 🎓🍔")        
         await asyncio.sleep(0.3)
         await typing_pause(message, "Fuel your day, support your peers — fast, easy, right from your campus 🏛")
 
@@ -188,7 +205,7 @@ async def start(message: Message, state: FSMContext):
         return
 
     # --- NEW STUDENT ONBOARDING ---
-    await typing_pause(message, "🌟 Welcome to **Deliver AAU** — where campus life meets effortless delivery.")
+    await typing_pause(message, "🌟 Welcome to **UniBites Delivery** — where campus life meets effortless delivery.")
     await asyncio.sleep(0.6)
     await typing_pause(message, "Let’s build your profile together 🚀")
 
@@ -236,10 +253,10 @@ async def handle_campus(cb: CallbackQuery, state: FSMContext):
     )
 
     try:
-        if settings.ADMIN_GROUP_ID:
+        if settings.ADMIN_DAILY_GROUP_ID:
             await cb.bot.send_message(
-                settings.ADMIN_GROUP_ID,
-                f"📢 New student joined Deliver AAU!\n\n"
+                settings.ADMIN_DAILY_GROUP_ID,
+                f"📢 New student joined UniBites Delivery!\n\n"
                 f"👤 Name: {cb.from_user.first_name}\n"
                 f"📱 Phone: {phone}\n"
                 f"🏛 Campus: {campus}",

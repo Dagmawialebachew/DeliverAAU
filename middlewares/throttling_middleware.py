@@ -22,7 +22,7 @@ class ThrottlingMiddleware(BaseMiddleware):
             last = self._last_seen_msg.get(user_id, 0.0)
             if (now - last) < self.message_interval:
                 try:
-                    msg = await event.answer("🍲 Too many messages — Deliver AAU got it, no need to flood.")
+                    msg = await event.answer("🍲 Too many messages — UniBites Delivery got it, no need to flood.")
                     await asyncio.sleep(1)
                     await msg.delete()
                 except Exception:
@@ -34,7 +34,7 @@ class ThrottlingMiddleware(BaseMiddleware):
             last = self._last_seen_cb.get(user_id, 0.0)
             if (now - last) < self.callback_interval:
                 try:
-                    await event.answer("⏳ Deliver AAU is updating — please don’t tap so fast.", show_alert=False)
+                    await event.answer("⏳ UniBites is updating — please don’t tap so fast.", show_alert=False)
                 except Exception:
                     pass
                 return None

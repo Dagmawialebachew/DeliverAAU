@@ -14,7 +14,7 @@ from utils.db_helpers import (
 )
 
 log = logging.getLogger(__name__)
-ADMIN_GROUP_ID = settings.ADMIN_GROUP_ID
+ADMIN_GROUP_ID = settings.ADMIN_DAILY_GROUP_ID
 
 class VendorJobs:
     def __init__(self, db: Database, bot: Bot):

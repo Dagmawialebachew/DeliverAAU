@@ -26,12 +26,13 @@ async def need_help(message: Message):
         [InlineKeyboardButton(text="❌ Cancel", callback_data="help:cancel")]
     ])
     await message.answer(
-        "👋 Welcome to Deliver AAU Support!\n\n"
-        "Deliver AAU is your campus-first meal delivery service — "
-        "connecting students, vendors, and delivery partners with soul.\n\n"
-        "✨ If you’re facing an issue or want to give feedback, tap below:",
-        reply_markup=kb
-    )
+    "👋 Welcome to **UniBites Delivery Support** 🎓🍔\n\n"
+    "UniBites is your campus‑first food delivery service — "
+    "connecting students, vendors & delivery partners with ease and soul.\n\n"
+    "✨ Need help or want to share feedback? Tap below to get support:",
+    reply_markup=kb
+)
+
 
 # Step 2: Handle inline button clicks
 @router.callback_query(F.data == "help:send")
@@ -70,7 +71,7 @@ async def forward_help(message: Message, state: FSMContext):
                 f"User ID: {message.from_user.id}\n\n"
                 f"Message:\n{message.text}"
             )
-        await message.answer("✅ Your message has been sent to Deliver AAU support. Our team will reply soon!")
+        await message.answer("✅ Your message has been sent to UniBites Delivery support. Our team will reply soon!")
     except Exception:
         await message.answer("⚠️ Could not send your request. Please try again later.")
     finally:

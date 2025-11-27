@@ -1,5 +1,5 @@
 """
-Deliver AAU Bot - FastAPI Webhook entry point.
+UniBites Delivery Bot - FastAPI Webhook entry point.
 """
 
 import logging
@@ -78,7 +78,7 @@ scheduler = BotScheduler(db=db, bot=bot)
 # --- Lifespan handler ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logging.info("🚀 Starting Deliver AAU Bot (Webhook mode)...")
+    logging.info("🚀 Starting UniBites Delivery Bot (Webhook mode)...")
 
     # Init DB + seed
     await db.init_pool()
@@ -103,7 +103,7 @@ async def lifespan(app: FastAPI):
     yield   # <-- app runs here
 
     # Shutdown
-    logging.info("🛑 Shutting down Deliver AAU Bot...")
+    logging.info("🛑 Shutting down UniBites Delivery Bot...")
     scheduler.shutdown()
     await bot.session.close()
 
@@ -122,7 +122,7 @@ async def telegram_webhook(request: Request):
 async def set_commands(bot, admin_ids: list[int]):
     # Commands for everyone
     user_commands = [
-        BotCommand(command="start", description="🚀 Start Deliver AAU"),
+        BotCommand(command="start", description="🚀 Start UniBites Delivery"),
         BotCommand(command="help", description="❓ Help & Contact"),
     ]
     await bot.set_my_commands(user_commands, scope=BotCommandScopeDefault())
@@ -138,7 +138,7 @@ async def set_commands(bot, admin_ids: list[int]):
 
 @app.get("/")
 async def health_check():
-    return {"status": "ok", "service": "Deliver AAU Bot"}
+    return {"status": "ok", "service": "UniBites Delivery Bot"}
 
 if __name__ == "__main__":
     import asyncio

@@ -7,7 +7,7 @@ from typing import Dict, Any
 MESSAGES: Dict[str, Dict[str, str]] = {
     "en": {
         # Welcome & Onboarding
-        "welcome": "🎉 Welcome to **Deliver AAU**!\n\nYour campus delivery companion 📦\n\nLet's get you started! 🚀",
+        "welcome": "🎉 Welcome to **UniBites Delivery**!\n\nYour campus delivery companion 📦\n\nLet's get you started! 🚀",
         "select_language": "🌍 Please select your preferred language:",
         "language_set": "✅ Language set to English!",
         "phone_request": "📱 Please share your phone number to continue.\n\nWe'll use this to coordinate deliveries.",
@@ -62,7 +62,7 @@ MESSAGES: Dict[str, Dict[str, str]] = {
 
     "am": {
         # Welcome & Onboarding
-        "welcome": "🎉 እንኳን ወደ **Deliver AAU** በደህና መጡ!\n\nየካምፓስ ማድረሻ አጋርዎ 📦\n\nእንጀምር! 🚀",
+        "welcome": "🎉 እንኳን ወደ **UniBites Delivery** በደህና መጡ!\n\nየካምፓስ ማድረሻ አጋርዎ 📦\n\nእንጀምር! 🚀",
         "select_language": "🌍 እባክዎን ቋንቋዎን ይምረጡ:",
         "language_set": "✅ ቋንቋ ወደ አማርኛ ተቀየረ!",
         "phone_request": "📱 እባክዎን ስልክ ቁጥርዎን ያጋሩ።\n\nይህንን ለማድረሻ ማስተባበር እንጠቀማለን።",

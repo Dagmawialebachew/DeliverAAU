@@ -33,6 +33,10 @@ class Settings:
     LOCATION_PING_INTERVAL_ACTIVE: int = int(os.getenv("LOCATION_PING_INTERVAL_ACTIVE", "15"))
     LOCATION_PING_INTERVAL_IDLE: int = int(os.getenv("LOCATION_PING_INTERVAL_IDLE", "90"))
     ADMIN_GROUP_ID: int = int(os.getenv("ADMIN_GROUP_ID", "0"))
+    ADMIN_SUMMRY_GROUP_ID: int = int(os.getenv("ADMIN_SUMMRY_GROUP_ID", "0"))
+    ADMIN_ERROR_GROUP_ID: int = int(os.getenv("ADMIN_ERROR_GROUP_ID", "0"))
+    ADMIN_DAILY_GROUP_ID: int = int(os.getenv("ADMIN_DAILY_GROUP_ID", "0")) 
+    
 
 
     # Subscriptions

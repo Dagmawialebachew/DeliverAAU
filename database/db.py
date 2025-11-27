@@ -167,6 +167,9 @@ CREATE INDEX IF NOT EXISTS idx_vendors_name ON vendors(name);
 ALTER TABLE orders ALTER COLUMN user_id TYPE BIGINT;
 ALTER TABLE orders ALTER COLUMN delivery_guy_id TYPE BIGINT;
 ALTER TABLE orders ALTER COLUMN vendor_id TYPE BIGINT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS ready_at TIMESTAMP NULL;
 
 -- Make sure dg_id is BIGINT
 ALTER TABLE daily_stats ALTER COLUMN dg_id TYPE BIGINT;
@@ -270,6 +273,107 @@ class Database:
             
             # The result is already the integer ID or None if the user was somehow deleted
             return int(result) if result is not None else 0 # Return 0 or raise if insertion/lookup fails
+        
+    
+    async def count_new_users(self, date: str) -> int:
+        """Count users who signed up on a given date."""
+        async with self._open_connection() as conn:
+            return await conn.fetchval(
+                "SELECT COUNT(*) FROM users WHERE DATE(created_at) = $1",
+                date
+            )
+            
+    
+    
+    async def summarize_orders_day(self, date: str) -> Dict[str, Any]:
+        async with self._open_connection() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT COUNT(*) AS total,
+                    SUM(CASE WHEN status='delivered' THEN 1 ELSE 0 END) AS delivered,
+                    SUM(CASE WHEN status='cancelled' THEN 1 ELSE 0 END) AS cancelled,
+                    COALESCE(SUM(food_subtotal),0) AS food_revenue,
+                    COALESCE(SUM(delivery_fee),0) AS delivery_fees
+                FROM orders
+                WHERE created_at::DATE = $1
+                """,
+                date
+            )
+            delivered = row["delivered"] or 0
+            cancelled = row["cancelled"] or 0
+            denom = delivered + cancelled
+            reliability_pct = 0 if denom == 0 else round(100.0 * delivered / denom)
+            return {
+                "total": int(row["total"]),
+                "delivered": int(delivered),
+                "cancelled": int(cancelled),
+                "food_revenue": float(row["food_revenue"]),
+                "delivery_fees": float(row["delivery_fees"]),
+                "reliability_pct": reliability_pct,
+            }
+            
+    
+    
+    async def summarize_vendors_day(self, date: str) -> Dict[str, Any]:
+        async with self._open_connection() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT COUNT(*) AS active,
+                    AVG(rating_avg) AS avg_rating
+                FROM vendors
+                WHERE status = 'active'
+                """,
+            )
+            return {
+                "active": int(row["active"] or 0),
+                "avg_rating": float(row["avg_rating"] or 0.0),
+            }
+            
+    
+    async def summarize_delivery_day(self, date: str) -> Dict[str, Any]:
+        async with self._open_connection() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT COUNT(*) AS active,
+                    SUM(total_deliveries) AS deliveries,
+                    AVG(
+                        CASE WHEN total_requests > 0
+                                THEN accepted_requests::float / total_requests
+                                ELSE NULL END
+                    ) AS acceptance_rate
+                FROM delivery_guys
+                WHERE active = TRUE
+                """,
+            )
+            return {
+                "active": int(row["active"] or 0),
+                "deliveries": int(row["deliveries"] or 0),
+                "acceptance_rate": float(row["acceptance_rate"] or 0.0) * 100,
+            }
+            
+    
+    async def top_campus_day(self, date: str) -> Tuple[str, int]:
+        async with self._open_connection() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT campus, COUNT(*) AS orders
+                FROM orders o
+                JOIN users u ON o.user_id = u.id
+                WHERE o.created_at::DATE = $1
+                GROUP BY campus
+                ORDER BY orders DESC
+                LIMIT 1
+                """,
+                date
+            )
+            if row:
+                return row["campus"], int(row["orders"])
+            return "N/A", 0
+
+
+
+
+
 
     async def get_orders_for_vendor(self, vendor_id: int, *, date: Optional[str] = None, status_filter: Optional[List[str]] = None, limit: Optional[int] = None, offset: int = 0) -> List[Dict[str, Any]]:
         """
@@ -807,6 +911,17 @@ class Database:
         
         if status in ('accepted', 'preparing', 'ready'):
             sql_parts.append("accepted_at = CURRENT_TIMESTAMP")
+            if status == "ready":
+                await conn.execute(
+                    """
+                    UPDATE orders
+                    SET status = $1,
+                        ready_at = NOW(),
+                        updated_at = NOW()
+                    WHERE id = $2
+                    """,
+                    status, order_id
+                )
         elif status == 'delivered':
             sql_parts.append("delivered_at = CURRENT_TIMESTAMP")
 
@@ -906,7 +1021,23 @@ class Database:
                 dg_id, date_str
             )
             return self._row_to_dict(row) if row else None
-            
+        
+    async def get_leaderboard(self, limit: int = 100) -> List[Dict[str, Any]]:
+            """
+            Return top users by XP for leaderboard display.
+            """
+            async with self._open_connection() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT id, telegram_id, first_name, xp, coins, campus, phone,
+                        updated_at AS last_active
+                    FROM users
+                    ORDER BY xp DESC
+                    LIMIT $1
+                    """,
+                    limit
+                )
+                return [self._row_to_dict(r) for r in rows]
     async def get_stats_for_period(self, dg_id: int, start_date: str, end_date: str) -> List[Dict[str, Any]]:
         """Retrieves stats for a delivery guy over a period."""
         async with self._open_connection() as conn:
@@ -1009,6 +1140,117 @@ class Database:
         assert field in ("accepted_at", "delivered_at")
         async with self._open_connection() as conn:
             await conn.execute(f"UPDATE orders SET {field} = CURRENT_TIMESTAMP WHERE id = $1", order_id)
+
+
+from datetime import datetime, timedelta
+from typing import Dict, Any
+
+class AnalyticsService:
+    def __init__(self, db):
+        self.db = db
+
+    async def summarize_day(self) -> Dict[str, Any]:
+        today = datetime.now().date()
+        cutoff = datetime.now() - timedelta(days=1)
+
+        # --- Users ---
+        users = await self.db.get_leaderboard(limit=100)
+        total_users = len(users)
+        active_count = sum(
+            1 for u in users
+            if isinstance(u.get("last_active"), datetime) and u["last_active"] >= cutoff
+        )
+        new_users = await self.db.count_new_users(date=today)
+
+        # --- Orders ---
+        orders_summary = await self.db.summarize_orders_day(date=today)
+        orders_total = orders_summary["total"]
+        orders_delivered = orders_summary["delivered"]
+        orders_cancelled = orders_summary["cancelled"]
+        food_rev = orders_summary["food_revenue"]
+        delivery_fees = orders_summary["delivery_fees"]
+        total_payout = food_rev + delivery_fees
+
+        # --- Vendors ---
+        vendors_summary = await self.db.summarize_vendors_day(date=today)
+        vendors_active = vendors_summary["active"]
+        avg_vendor_rating = vendors_summary["avg_rating"]
+
+        # --- Delivery Guys ---
+        dg_summary = await self.db.summarize_delivery_day(date=today)
+        dg_active = dg_summary["active"]
+        dg_deliveries = dg_summary["deliveries"]
+        dg_acceptance_rate = dg_summary["acceptance_rate"]
+
+        # --- Reliability ---
+        reliability_pct = orders_summary["reliability_pct"]
+
+        # --- Campus breakdown ---
+        top_campus_name, top_campus_orders = await self.db.top_campus_day(date=today)
+
+        # --- Top Deliverer ---
+        top_deliverer_name = users[0].get("first_name", "N/A") if users else "None"
+        top_deliverer_xp = users[0].get("xp", 0) if users else 0
+
+        return {
+            "date": today,
+            "total_users": total_users,
+            "active_count": active_count,
+            "new_users": new_users,
+            "orders_total": orders_total,
+            "orders_delivered": orders_delivered,
+            "orders_cancelled": orders_cancelled,
+            "food_rev": food_rev,
+            "delivery_fees": delivery_fees,
+            "total_payout": total_payout,
+            "vendors_active": vendors_active,
+            "avg_vendor_rating": avg_vendor_rating,
+            "dg_active": dg_active,
+            "dg_deliveries": dg_deliveries,
+            "dg_acceptance_rate": dg_acceptance_rate,
+            "reliability_pct": reliability_pct,
+            "top_campus_name": top_campus_name,
+            "top_campus_orders": top_campus_orders,
+            "top_deliverer_name": top_deliverer_name,
+            "top_deliverer_xp": top_deliverer_xp,
+        }
+
+    async def summary_text(self) -> str:
+        data = await self.summarize_day()
+        return f"""
+📊 **Daily Summary** - {data['date']}
+
+👥 Total Users: {data['total_users']}
+
+✅ Active (24h): {data['active_count']}
+
+🆕 New Signups: {data['new_users']}
+
+📦 Orders: {data['orders_total']} 
+
+    • ✅ Delivered: {data['orders_delivered']}
+    • ❌ Cancelled: {data['orders_cancelled']}
+
+💰 Revenue: 
+
+     Food {data['food_rev']:.2f} + Delivery {data['delivery_fees']:.2f} = {data['total_payout']:.2f}
+
+🏪 Vendors Active: {data['vendors_active']} • ⭐ Avg Rating: {data['avg_vendor_rating']:.1f}
+
+🛵 Delivery Guys Active: {data['dg_active']} 
+
+    • 🚚 Total Deliveries: {data['dg_deliveries']} 
+
+    • 📈 Acceptance Rate: {data['dg_acceptance_rate']:.0f}%
+
+📈 Reliability: {data['reliability_pct']}%
+
+🎓 Top Campus: {data['top_campus_name']} ({data['top_campus_orders']} orders)
+
+🏆 Top Deliverer: {data['top_deliverer_name']} ({data['top_deliverer_xp']} XP)
+
+🚀 UniBites Delivery Bot
+"""
 
 # -------------------- Seed Functions --------------------
 async def seed_vendors(db: Database) -> None:

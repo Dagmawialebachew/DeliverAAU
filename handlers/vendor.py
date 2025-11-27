@@ -38,7 +38,7 @@ router = Router()
 
 # You can inject db and bot from your app bootstrap
 from app_context import db
-ADMIN_GROUP_ID = settings.ADMIN_GROUP_ID
+ADMIN_GROUP_ID = settings.ADMIN_DAILY_GROUP_ID
 
 # -------------------------------------------------
 # 📌 Central Dashboard (ReplyKeyboard, Amharic UX)

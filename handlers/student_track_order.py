@@ -832,7 +832,7 @@ async def show_order_detail(callback: CallbackQuery):
         
         f"⏱ Created: {created}  •  Accepted: {accepted}  •  Delivered: {delivered}\n\n"
 
-        "✨ Thanks for ordering with Deliver AAU!"
+        "✨ Thanks for ordering with UniBites Delivery!"
     )
 
     # Inline keyboard: Back + Refresh in one row, Close in another

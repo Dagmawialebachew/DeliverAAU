@@ -19,7 +19,7 @@ class ErrorHandlingMiddleware(BaseMiddleware):
             if bot and hasattr(event, "message") and event.message:
                 pass
 
-            if settings.ADMIN_GROUP_ID and bot:
-                await bot.send_message(settings.ADMIN_GROUP_ID, f"❌ Exception:\n{e}", parse_mode=None)
+            if settings.ADMIN_ERROR_GROUP_ID and bot:
+                await bot.send_message(settings.ADMIN_ERROR_GROUP_ID, f"❌ Exception:\n{e}", parse_mode=None)
 
             return None

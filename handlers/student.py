@@ -934,7 +934,7 @@ async def final_confirm(cb: CallbackQuery, state: FSMContext):
     await cb.message.answer("🔥 +10 XP will be added after delivery!", parse_mode="Markdown", reply_markup=main_menu())
 
     # Admin log: order placed, waiting for vendor
-    if settings.ADMIN_GROUP_ID:
+    if settings.ADMIN_DAILY_GROUP_ID:
         try:
             admin_msg = (
                 f"📢 *New Order Placed: #{order_id}*\n"
@@ -945,7 +945,7 @@ async def final_confirm(cb: CallbackQuery, state: FSMContext):
                 f"💵 Total: {total_payable:.2f} birr (COD)\n"
                 f"⚡ Status: Waiting for vendor acceptance"
             )
-            await cb.bot.send_message(settings.ADMIN_GROUP_ID, admin_msg, parse_mode="Markdown")
+            await cb.bot.send_message(settings.ADMIN_DAILY_GROUP_ID, admin_msg, parse_mode="Markdown")
         except Exception:
             pass
 

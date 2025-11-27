@@ -85,9 +85,9 @@ async def rate_delivery(cb: CallbackQuery, state: FSMContext):
             )
 
     # Notify admin
-    if settings.ADMIN_GROUP_ID:
+    if settings.ADMIN_DAILY_GROUP_ID:
         await cb.bot.send_message(
-            settings.ADMIN_GROUP_ID,
+            settings.ADMIN_DAILY_GROUP_ID,
             f"📢 Rating submitted for Order #{order_id}\n"
             f"👤 Delivery Guy ID: {delivery_guy_id}\n"
             f"⭐ Stars: {stars}\n"
@@ -130,9 +130,9 @@ async def rate_vendor(cb: CallbackQuery, state: FSMContext):
     await cb.answer("✅ Thanks for rating your overall experience!")
 
     # Notify admin
-    if settings.ADMIN_GROUP_ID:
+    if settings.ADMIN_DAILY_GROUP_ID:
         await cb.bot.send_message(
-            settings.ADMIN_GROUP_ID,
+            settings.ADMIN_DAILY_GROUP_ID,
             f"📢 Vendor rating submitted for Order #{order_id}\n"
             f"⭐ Stars: {stars}"
         )
@@ -171,9 +171,9 @@ async def rate_comment_save(message: Message, state: FSMContext):
     await message.answer("✅ Thanks for your feedback! 🙏")
 
     # Notify admin group
-    if settings.ADMIN_GROUP_ID:
+    if settings.ADMIN_DAILY_GROUP_ID:
         await message.bot.send_message(
-            settings.ADMIN_GROUP_ID,
+            settings.ADMIN_DAILY_GROUP_ID,
             f"📝 New {rate_type} comment for Order #{order_id}\n"
             f"👤 From User ID: {message.from_user.id}\n"
             f"💬 Comment: {comment}"

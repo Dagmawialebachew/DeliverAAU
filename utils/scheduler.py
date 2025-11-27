@@ -6,13 +6,14 @@ from apscheduler.triggers.cron import CronTrigger
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError 
 
-from database.db import Database
+from database.db import AnalyticsService, Database
 from config import settings
 from handlers.delivery_guy import _db_get_delivery_guy_by_user
 from utils.db_helpers import reset_skips_daily, add_dg_to_blacklist
 from utils.globals import PENDING_OFFERS # IMPORTANT: Ensure utils/globals.py exists
 from utils.vendor_scheduler import VendorJobs
 ADMIN_IDS = settings.ADMIN_IDS
+ADMIN_GROUP_ID = settings.ADMIN_SUMMRY_GROUP_ID
 log = logging.getLogger(__name__)
 
 
@@ -256,6 +257,80 @@ class BotScheduler:
             log.exception("Failed to expire stale orders: %s", e)
         
         
+    async def expire_unpicked_ready_orders(self):
+        """Auto-cancel orders that were ready but not picked up within 3 hours."""
+        try:
+            async with self.db._open_connection() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT id, user_id, vendor_id
+                    FROM orders
+                    WHERE status = 'ready'
+                    AND ready_at IS NOT NULL
+                    AND ready_at < NOW() - INTERVAL '3 hours'
+                    """
+                )
+
+            for r in rows:
+                order_id = r["id"]
+
+                # Cancel order
+                async with self.db._open_connection() as conn:
+                    await conn.execute(
+                        """
+                        UPDATE orders
+                        SET status = 'cancelled',
+                            cancel_reason = 'expired_not_picked_up',
+                            updated_at = NOW()
+                        WHERE id = $1
+                        """,
+                        order_id
+                    )
+
+                # Notify student
+                student = await self.db.get_user_by_id(r["user_id"])
+                if student and student.get("telegram_id"):
+                    try:
+                        await self.bot.send_message(
+                            student["telegram_id"],
+                            f"❌ **Order {order_id} Cancelled**\n"
+                            "──────────────────────\n"
+                            "⏱ Your order was ready but not picked up within 3 hours.\n"
+                            "💵 No charges applied.\n"
+                            "✨ Please place a new order when convenient."
+                        )
+                    except (TelegramBadRequest, TelegramForbiddenError):
+                        pass
+
+                # Notify vendor
+                
+                if settings.ADMIN_DAILY_GROUP_ID:
+                    try:
+                        await self.bot.send_message(
+                            settings.ADMIN_DAILY_GROUP_ID,
+                            f"⚠️ Order #{order_id} auto‑cancelled: student did not pick up within 3 hours."
+                        )
+                    except (TelegramBadRequest, TelegramForbiddenError):
+                        pass
+                    
+                
+                vendor = await self.db.get_vendor(r["vendor_id"])
+                if vendor and vendor.get("telegram_id"):
+                        try:
+                            await self.bot.send_message(
+                                vendor["telegram_id"],
+                                f"⚠️ ትዕዛዝ #{order_id} ተዘርዙዋል: በሶስት ሰአት ውስጥ ወደ አዘዘው ሰው መድረስ አልቻለም"
+                            )
+                        except (TelegramBadRequest, TelegramForbiddenError):
+                            pass
+
+            if rows:
+                log.info("Expired %d unpicked ready orders", len(rows))
+
+        except Exception as e:
+            log.exception("Failed to expire unpicked ready orders: %s", e)
+
+        
     async def auto_reassign_unaccepted_orders(self) -> None:
         """
         Periodically checks for 'assigned' orders that were not accepted
@@ -323,42 +398,25 @@ class BotScheduler:
         """Reset daily leaderboard stats (optional feature)."""
         log.info("Running daily leaderboard reset task")
         # Placeholder for future leaderboard reset logic
-
     async def send_admin_summary(self) -> None:
         """Send daily summary to admins."""
         log.info("Sending admin summary")
 
         try:
-            # Assuming db.get_leaderboard exists
-            users = await self.db.get_leaderboard(limit=100)
-            total_users = len(users)
+            # Use AnalyticsService to compute everything
+            analytics = AnalyticsService(self.db)
+            summary = await analytics.summary_text()
 
-            # Get active users (last 24 hours)
-            cutoff = (datetime.now() - timedelta(days=1)).isoformat()
-            active_count = sum(
-                1 for u in users
-                if u.get("last_active", "") >= cutoff
-            )
-
-            summary = f"""
-📊 **Daily Summary** - {datetime.now().strftime("%Y-%m-%d")}
-
-👥 Total Users: {total_users}
-✅ Active (24h): {active_count}
-🏆 Top Deliverer: {users[0].get('first_name', 'N/A') if users else 'None'} ({users[0].get('xp', 0)} XP)
-
-🚀 Deliver AAU Bot
-"""
-            # Send to all admins
-            for admin_id in ADMIN_IDS:
-                try:
+            # Send to all admins (group or individual IDs)
+            try:
                     await self.bot.send_message(
-                        admin_id,
+                        ADMIN_GROUP_ID,
                         summary,
                         parse_mode="Markdown"
                     )
-                except Exception as e:
-                    log.error(f"Failed to send summary to admin {admin_id}: {e}")
+                    log.info(f"✅ Sent summary to admin {ADMIN_GROUP_ID}")
+            except Exception as e:
+                    log.error(f"❌ Failed to send summary to admin {ADMIN_GROUP_ID}: {e}")
 
         except Exception as e:
             log.error(f"Error in admin summary task: {e}")
@@ -398,7 +456,7 @@ class BotScheduler:
         self.scheduler.add_job(
             self.update_order_offers,
             'interval',
-            seconds=30,
+            seconds=20,
             id='update_order_offers'
         )
         
@@ -408,14 +466,22 @@ class BotScheduler:
             minutes=5,
             id='expire_stale_orders'
         )
+        self.scheduler.add_job(
+            self.expire_unpicked_ready_orders,
+            'interval',
+            hours = 2,
+            id='expire_unpicked_ready_orders'
+        )
 
         # Admin summary at 23:00 daily
-        if ADMIN_IDS:
+        print('Scheduling admin summary job', ADMIN_IDS)
+        if ADMIN_GROUP_ID:
             self.scheduler.add_job(
                 self.send_admin_summary,
                 CronTrigger(hour=23, minute=0),
                 id="admin_summary"
             )
+            # self.scheduler.add_job(self.send_admin_summary, "interval", minutes=0.2)  # run every 1 minute for testing
 
         # Cleanup every 6 hours
         self.scheduler.add_job(
