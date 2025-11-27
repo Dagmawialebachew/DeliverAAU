@@ -852,7 +852,7 @@ async def show_order_detail(callback: CallbackQuery):
     text = (
         f"🧾 <b>Order Receipt #{order['id']}</b>\n"
         f"──────────────────────────\n"
-        f"{f'{eta_text}\n' if eta_text else ''}"
+        f"{eta_text}\n" if eta_text else ""       
         f"🏠 Pickup: {order.get('pickup','N/A')}\n"
         f"📍 Drop‑off: {order.get('dropoff','N/A')}\n\n"
         f"🍴 Items:\n{items_str}\n\n"
