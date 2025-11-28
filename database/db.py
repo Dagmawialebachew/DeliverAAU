@@ -59,30 +59,7 @@ CREATE TABLE IF NOT EXISTS vendors (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS orders (
-    id SERIAL PRIMARY KEY,
-    user_id INTEGER,
-    delivery_guy_id INTEGER NULL, 
-    vendor_id INTEGER,
-    pickup TEXT,
-    dropoff TEXT,
-    items_json TEXT,
-    food_subtotal DOUBLE PRECISION DEFAULT 0.0, -- Changed REAL to DOUBLE PRECISION
-    delivery_fee DOUBLE PRECISION DEFAULT 0.0, -- Changed REAL to DOUBLE PRECISION
-    status TEXT, -- pending / assigned / preparing / ready / in_progress / delivered / cancelled
-    payment_method TEXT,
-    payment_status TEXT,
-    receipt_id INTEGER,
-    breakdown_json TEXT,
-    live_shared BOOLEAN DEFAULT FALSE, -- Changed INTEGER DEFAULT 0 to BOOLEAN DEFAULT FALSE
-    live_expires TIMESTAMP NULL, 
-    last_lat DOUBLE PRECISION NULL, -- Changed REAL to DOUBLE PRECISION
-    last_lon DOUBLE PRECISION NULL, -- Changed REAL to DOUBLE PRECISION
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    accepted_at TIMESTAMP NULL,
-    delivered_at TIMESTAMP NULL,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
+
 
 CREATE TABLE IF NOT EXISTS daily_stats (
     id SERIAL PRIMARY KEY,

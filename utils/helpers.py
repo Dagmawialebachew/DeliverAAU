@@ -312,10 +312,12 @@ async def assign_delivery_guy(
         # -----------------------------
         # 5. Assign DG to order
         # -----------------------------
+        breakdown.setdefault("pending_offer_dg_ids", []).append(dg_id)
+        
         await conn.execute(
-            "UPDATE orders SET delivery_guy_id = $1 WHERE id = $2",
-            dg_id, order_id
-        )
+    "UPDATE orders SET breakdown_json = $1 WHERE id = $2",
+    json.dumps(breakdown), order_id
+)
         await conn.execute(
             "UPDATE delivery_guys SET total_requests = total_requests + 1 WHERE id = $1",
             dg_id

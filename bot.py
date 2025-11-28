@@ -68,7 +68,7 @@ dp.include_router(delivery_guy_router)
 dp.include_router(vendor_router)
 dp.include_router(rating_router)
 dp.include_router(help_router)
-dp.include_router(settings_router)
+# dp.include_router(settings_router)
 # dp.include_router(admin_router)
 logging.info(f"Included admin router id: {id(admin_router)}")
 

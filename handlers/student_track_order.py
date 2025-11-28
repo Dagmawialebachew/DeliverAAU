@@ -648,8 +648,10 @@ async def orders_close(cb: CallbackQuery):
 
 @router.callback_query(F.data == "orders:noop")
 async def orders_noop(cb: CallbackQuery):
-    await cb.answer()  # page indicator noop
-
+    try:
+            await cb.answer()  # acknowledge right away
+    except Exception:
+            pass 
 
 # --- Per-order view (opened from dashboard) ---
 @router.callback_query(F.data.startswith("order:view:"))
@@ -670,6 +672,10 @@ async def order_view_from_dashboard(cb: CallbackQuery):
 # --- Optional: long-running single-order tracker (silent background refresh) ---
 @router.callback_query(F.data.startswith("order:track:"))
 async def order_track_long(cb: CallbackQuery):
+    try:
+        await cb.answer()
+    except Exception:
+        pass  # ignore if already expired
     order_id = int(cb.data.split(":")[2])
     order = await db.get_order(order_id)
     if not order:

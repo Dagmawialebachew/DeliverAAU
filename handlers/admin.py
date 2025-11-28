@@ -72,7 +72,7 @@ async def show_id(message: Message):
 
 # --- ADMIN DASHBOARD ---
 # The primary entry point and menu handler.
-@router.message(Command("admin"), F.user.id.in_(settings.ADMIN_IDS))
+@router.message(Command("admin"))
 async def admin_start_handler(message: Message, state: FSMContext):
     """The Command Center Dashboard (Persistent Menu)."""
     
@@ -83,7 +83,7 @@ async def admin_start_handler(message: Message, state: FSMContext):
     keyboard = [
         ["➕ Add Vendor", "🛵 Add Delivery Guy"], # Tier 1: Onboarding
         ["📢 Broadcast", "💰 Finance"],           # Tier 2: Communications & Finance
-        ["⚙️ Settings", "📈 Analytics"],           # <-- TIER 3 ADDED HERE
+        ["⚙️ Setting", "📈 Analytics"],           # <-- TIER 3 ADDED HERE
         ["📊 System Status", "🚫 Emergency Stop"], # Tier 1/3: Utils
     ]
     
@@ -409,7 +409,7 @@ async def finance_dashboard(message: Message, db: Database):
 # ⚙️ PROTOCOL: SETTINGS DASHBOARD (TIER 3)
 # ==============================================================================
 
-@router.message(F.text == "⚙️ Settings", F.user.id.in_(settings.ADMIN_IDS))
+@router.message(F.text == "⚙️ Setting", F.user.id.in_(settings.ADMIN_IDS))
 async def settings_dashboard(message: Message, state: FSMContext):
     """The Settings Sub-Menu."""
     await state.clear()

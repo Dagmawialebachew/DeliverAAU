@@ -601,19 +601,16 @@ async def handle_location(message: Message):
 # Order Offer & Actions (Inline Callbacks)
 # --------------------------
 
+import logging
+log = logging.getLogger(__name__)
+
 # Helper function to send the NEW order offer message (called by the assignment logic)
 async def send_new_order_offer(bot: Bot, dg: Dict[str, Any], order: Dict[str, Any]) -> None:
-    """
-    Sends the inline order offer message, includes the countdown, 
-    and registers the offer in the global tracker.
-    """
-    
+    order_id = order['id']
     pickup_loc = order.get('pickup')
     dropoff_loc = order.get('dropoff')
     delivery_fee = order.get('delivery_fee', 0.0)
-    order_id = order['id']
-    
-    # Calculate initial countdown display (3:00)
+
     initial_minutes = EXPIRY_SECONDS // 60
     initial_seconds = EXPIRY_SECONDS % 60
 
@@ -630,22 +627,18 @@ async def send_new_order_offer(bot: Bot, dg: Dict[str, Any], order: Dict[str, An
         f"📍 **Pickup**: {pickup_loc}\n"
         f"🏠 **Drop-off**: {dropoff_display}\n"
         f"💰 **Delivery Fee**: {int(delivery_fee)} birr\n"
-        f"⏳ **Expires in**: {initial_minutes:02d}:{initial_seconds:02d} (Live Countdown)\n" # Initial display
+        f"⏳ **Expires in**: {initial_minutes:02d}:{initial_seconds:02d} (Live Countdown)\n"
     )
 
-    kb = order_offer_keyboard(order_id, EXPIRY_SECONDS) # Pass seconds
+    kb = order_offer_keyboard(order_id, EXPIRY_SECONDS)
 
     try:
-        # Capture the message object to get the message_id
-        log.info('here is the telegram id of the delivery we are sending the elivery to %s', dg["user_id"])
         sent_message = await bot.send_message(
             dg["telegram_id"],
             message_text,
             reply_markup=kb,
             parse_mode="Markdown"
         )
-        
-        # --- NEW: Add offer to the global tracker ---
         PENDING_OFFERS[order_id] = {
             "chat_id": dg["telegram_id"],
             "message_id": sent_message.message_id,
@@ -653,20 +646,34 @@ async def send_new_order_offer(bot: Bot, dg: Dict[str, Any], order: Dict[str, An
             "expiry_seconds": EXPIRY_SECONDS,
             "order_id": order_id
         }
+        log.info("[OFFER SENT] Order %s → DG %s (msg_id=%s)", order_id, dg["id"], sent_message.message_id)
 
-        log.info("Sent new order offer %s to DG %s and added to PENDING_OFFERS", order_id, dg["id"])
+        # --- NEW: Notify admin group ---
+        vendor_name = order.get("vendor_name", "Unknown Vendor")
+        admin_text = (
+            f"🚴 Order {order_id} Sent to DG: {dg.get('name','Unknown')}\n"
+        )
+        try:
+            await bot.send_message(settings.ADMIN_DAILY_GROUP_ID, admin_text, parse_mode="Markdown")
+            log.info("[ADMIN NOTIFY] Order %s offer sent to DG %s, notified admin group", order_id, dg["id"])
+        except Exception:
+            log.exception("[ADMIN NOTIFY FAIL] Could not notify admin group for order %s", order_id)
+
     except TelegramBadRequest as e:
         if "chat not found" in str(e):
-            log.warning("DG %s cannot be contacted (chat not found). Skipping.", dg["id"])
+            log.warning("[OFFER FAIL] DG %s cannot be contacted (chat not found) for order %s", dg["id"], order_id)
         else:
-            log.exception("Telegram error sending offer %s to DG %s", order_id, dg["id"])
+            log.exception("[OFFER FAIL] Telegram error sending order %s to DG %s: %s", order_id, dg["id"], str(e))
     except Exception:
-        log.exception("Unexpected error sending offer %s to DG %s", order_id, dg["id"])
-
-
+        log.exception("[OFFER FAIL] Unexpected error sending order %s to DG %s", order_id, dg["id"])
 
 @router.callback_query(F.data.startswith("accept_order_"))
 async def handle_accept_order(call: CallbackQuery):
+    try:
+        await call.answer("Processing acceptance…")
+    except Exception:
+        pass
+
     order_id = int(call.data.split('_')[-1])
     dg = await _db_get_delivery_guy_by_user(call.from_user.id)
     if not dg:

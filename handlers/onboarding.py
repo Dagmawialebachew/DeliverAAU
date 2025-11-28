@@ -90,7 +90,9 @@ async def subscriptions(message: Message):
         "📦 Subscription plans are coming soon!\n"
         "You’ll be able to unlock premium campus delivery perks."
     )
-    
+   
+
+ 
 
 
 import random
@@ -174,7 +176,7 @@ async def start(message: Message, state: FSMContext):
             parse_mode="HTML"
         )
         # Handoff to vendor’s Amharic dashboard
-        await message.answer("ይህን ምናሌ ተጠቀሙ 👇", reply_markup=vendor_handler.vendor_dashboard_keyboard())
+        await message.answer("እነዚን ቁልፎች ይጠቀሙ 👇", reply_markup=vendor_handler.vendor_dashboard_keyboard())
         await state.clear()
         return
 

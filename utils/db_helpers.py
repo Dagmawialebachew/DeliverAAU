@@ -259,8 +259,8 @@ async def calc_vendor_day_summary(self, vendor_id: int, date_str: Optional[str] 
                 SELECT
                     SUM(CASE WHEN status = 'delivered' THEN 1 ELSE 0 END) AS delivered_count,
                     SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled_count,
-                    COALESCE(SUM(food_subtotal), 0.0) AS food_revenue,
-                    COALESCE(SUM(delivery_fee), 0.0) AS delivery_fees,
+                    COALESCE(SUM(CASE WHEN status = 'delivered' THEN food_subtotal ELSE 0 END), 0.0) AS food_revenue,                    
+                    COALESCE(SUM(CASE WHEN status = 'delivered' THEN delivery_fee ELSE 0 END), 0.0) AS delivery_fees,
                     COALESCE(SUM(CASE WHEN status IN ('accepted','in_progress','delivered') THEN 1 ELSE 0 END), 0) AS progressed
                 FROM orders
                 WHERE vendor_id = $1 AND DATE(created_at) = $2

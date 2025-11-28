@@ -226,38 +226,40 @@ class BlockDGState(StatesGroup):
 
 # --- ADMIN DASHBOARD ---
 # The primary entry point and menu handler.
-@router.message(Command("admin"), F.from_user.id.in_(settings.ADMIN_IDS))
+@router.message(Command("admin"))
 async def admin_start_handler(message: Message, state: FSMContext):
-    """The Command Center Dashboard (Persistent Menu)."""
-    
-    # Clear any previous state when entering the main menu
-    await state.clear()
-    
-    # --- COMMAND CENTER LAYOUT ---
+    logging.info("Admin handler triggered by user_id=%s", message.from_user.id)
+    try:
+        await state.clear()
+        logging.info("FSM state cleared")
+    except Exception as e:
+        logging.exception("Failed to clear FSM state: %s", e)
+
     keyboard = [
-        ["➕ Add Vendor", "🛵 Add Delivery Guy"], # Tier 1: Onboarding
-        ["📢 Broadcast", "💰 Finance"],           # Tier 2: Communications & Finance
-        ["⚙️ Configure", "📈 Analytics"],           # <-- TIER 3 ADDED HERE
-        ["📊 System Status", "🚫 Emergency Stop"], # Tier 1/3: Utils
+        ["➕ Add Vendor", "🛵 Add Delivery Guy"],
+        ["📢 Broadcast", "💰 Finance"],
+        ["⚙️ Configure", "📈 Analytics"],
+        ["📊 System Status", "🚫 Emergency Stop"],
     ]
-    
     reply_markup = ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text=btn) for btn in row] for row in keyboard],
-        resize_keyboard=True, 
+        resize_keyboard=True,
         is_persistent=True,
         input_field_placeholder="Select Admin Protocol..."
     )
-    
+    logging.info("Reply markup built successfully")
+
     txt = (
-        "🔐 **ADMINISTRATOR COMMAND CENTER** 🔐\n\n"
-        "**System Status:** 🟢 ONLINE\n"
-        "**Tier 1 Protocols:** ACTIVE\n"
-        "**Tier 2 Protocols:** ACTIVE\n"
-        "**Tier 3 Protocols:** ACTIVE\n\n" # <-- Updated Status
+        "🔐 ADMINISTRATOR COMMAND CENTER 🔐\n\n"
+        "System Status: 🟢 ONLINE\n"
+        "Tier 1 Protocols: ACTIVE\n"
+        "Tier 2 Protocols: ACTIVE\n"
+        "Tier 3 Protocols: ACTIVE\n\n"
         "Select an operation from the control panel below."
     )
-    
-    await message.answer(txt, reply_markup=reply_markup, parse_mode="Markdown")
+
+    await message.answer(txt, reply_markup=reply_markup)
+    logging.info("Admin menu sent to user_id=%s", message.from_user.id)
 
 @router.message(Command("cancel"), F.user.id.in_(settings.ADMIN_IDS))
 async def cancel_op_handler(message: Message, state: FSMContext):
@@ -616,7 +618,7 @@ async def finance_dashboard(message: Message, db: Database):
 # ⚙️ PROTOCOL: SETTINGS DASHBOARD (TIER 3)
 # ==============================================================================
 
-@router.message(F.text == "⚙️ Settings", F.from_user.id.in_(settings.ADMIN_IDS))
+@router.message(F.text == "⚙️ Setting", F.from_user.id.in_(settings.ADMIN_IDS))
 async def settings_dashboard(message: Message, state: FSMContext):
     """The Settings Sub-Menu."""
     await state.clear()
@@ -830,7 +832,7 @@ class SettingsState(StatesGroup):
 
 
 # Step 1: Show profile card + options
-@router.message(F.text == "⚙️ Configure")
+@router.message(F.text == "⚙️ Settings")
 async def settings(message: Message, state: FSMContext):
     user = await db.get_user(message.from_user.id)
     if not user:

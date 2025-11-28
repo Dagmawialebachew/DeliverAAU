@@ -401,6 +401,17 @@ def render_order_line(o: dict, include_dg: bool = False) -> str:
     ]
     if include_dg and o.get("delivery_guy_id"):
         parts.append("🚴 ዴሊቬሪ ማን: " + (o.get("dg_name") or "—"))
+        
+    
+    status = o.get("status")
+    if status == "ready":
+        ready_at = o.get("ready_at")
+        if ready_at:
+            parts.append(f"✅ ዝግጁ የሆነበት ጊዜ: {time_ago_am(ready_at)}")        
+    if status == "delivered":
+        delivered_at = o.get("delivered_at")
+        if delivered_at:
+            parts.append(f"📬 የደረሰበት ጊዜ: {time_ago_am(delivered_at)}")
 
     return "\n".join(parts)
 
@@ -532,7 +543,7 @@ async def vendor_accept_order(cb: CallbackQuery, bot: Bot):
 
     # Vendor sees confirmation in Amharic
     await cb.message.edit_text(
-        "⚙️ ትዕዛዙ በመዘጋጀት ላይ ነው።\n\n⬅️ ወደ ዳሽቦርድ"
+        f"⚙️ ትዕዛዙ {order_id} በመዘጋጀት ላይ ነው።\n\n⬅️ ወደ ዳሽቦርድ"
     )
 
     # Student cinematic progress
@@ -579,7 +590,7 @@ async def vendor_accept_order(cb: CallbackQuery, bot: Bot):
         if chosen:
             admin_msg = (
                 f"✅ Vendor {vendor_name} accepted Order #{order_id}\n"
-                f"👤 Delivery Guy: {chosen['name']} ({chosen['campus']})"
+                f"Start the assigning from --👤 Delivery Guy: {chosen['name']} ({chosen['campus']})"
             )
         else:
             admin_msg = (
@@ -913,11 +924,27 @@ async def vendor_performance(message: Message):
 
     # Fresh daily summary
     s = await calc_vendor_day_summary(db, vendor["id"], date_str=datetime.date.today().strftime("%Y-%m-%d"))
+    today = datetime.date.today()
+    start = today - datetime.timedelta(days=today.weekday())
+    end = start + datetime.timedelta(days=6)
+
+    async with db._open_connection() as conn:
+       weekly_total = await conn.fetchval(
+            """
+            SELECT COALESCE(SUM(food_subtotal),0)
+            FROM orders
+            WHERE vendor_id = $1
+            AND DATE(created_at) BETWEEN $2 AND $3
+            AND status = 'delivered'
+            """,
+            vendor["id"], start, end
+        )
+    weekly_total = int(weekly_total or 0)
     text = (
         "📊 የአፈጻጸም ሪፖርት\n"
         f"📦 ትዕዛዞች: {s['delivered'] + s['cancelled']} (✅ {s['delivered']} | ❌ {s['cancelled']})\n"
-        f"💵 የዛሬ ገቢ: {int(s['total_payout'])} ብር\n"
-        f"💵 የሳምንቱ ገቢ: — በላይ ያለውን ምናሌ ይጠቀሙ\n"
+        f"💵 የዛሬ ገቢ: {int(s['food_revenue'])} ብር\n"
+        f"💵 የሳምንቱ ገቢ: — {weekly_total} ብር\n"
         f"⭐ አማካይ ደረጃ: {float(s['rating_avg']):.1f}\n"
         f"⚡ ታማኝነት: {int(s['reliability_pct'])}%"
     )
@@ -934,6 +961,7 @@ async def performance_today_orders(message: Message):
     total = await db.count_orders_for_vendor(vendor["id"], date=today)
     page_size = 5
     pages = max(1, math.ceil(total / page_size))
+    
 
     # Fetch page 1
     orders = await db.get_orders_for_vendor(vendor["id"], date=today, limit=page_size, offset=0)
@@ -943,10 +971,12 @@ async def performance_today_orders(message: Message):
 
     for o in orders:
         items = ", ".join(i.get("name","") for i in json.loads(o.get("items_json") or "[]"))
+        status_text = STATUS_AMHARIC.get(o.get("status"), o.get("status"))  # fallback to raw if unknown
+
         await message.answer(
-            f"📦 ትዕዛዝ #{o['id']} — {o['status']}\n"
+            f"📦 ትዕዛዝ #{o['id']} — {status_text}\n"
             f"🛒 ምግቦች: {items}\n\n"
-            f"💵 ክፍያ: {int(o.get('delivery_fee', 0))} ብር\n"
+            f"💵 ክፍያ: {int(o.get('food_subtotal', 0))} ብር\n"
             f"📍 መድረሻ: {o.get('dropoff','')}"
         )
 
@@ -982,12 +1012,27 @@ async def perf_daily_page(cb: CallbackQuery):
         await cb.message.answer(
             f"📦 ትዕዛዝ #{o['id']} — {o['status']}\n"
             f"🛒 ምግቦች: {items}\n\n"
-            f"💵 ክፍያ: {int(o.get('delivery_fee', 0))} ብር\n"
+            f"💵 ክፍያ: {int(o.get('food_subtotal', 0))} ብር\n"
             f"📍 መድረሻ: {o.get('dropoff','')}"
         )
 
     kb = paginate_orders_kb(page=page, pages=pages, scope="daily", extra_payload=date)
     await cb.message.answer(f"📄 ገጽ {page}/{pages}", reply_markup=kb)
+    
+
+
+# Define once at top of your handlers file
+STATUS_AMHARIC = {
+    "pending": "በመጠባበቅ ላይ",
+    "assigned": "ለተላኪ ተመድቧል",
+    "preparing": "በማዘጋጀት ላይ",
+    "ready": "ዝግጁ ነው",
+    "in_progress": "በመላክ ላይ",
+    "delivered": "ተልኳል",
+    "cancelled": "ተሰርዟል",
+}
+
+    
 @router.message(F.text == "📅 የሳምንቱ ትዕዛዞች")
 async def performance_week_orders(message: Message):
     vendor = await db.get_vendor_by_telegram(message.from_user.id)
@@ -1031,10 +1076,11 @@ async def performance_week_orders(message: Message):
 
     for o in orders:
         items = ", ".join(i.get("name","") for i in json.loads(o.get("items_json") or "[]"))
+        status_text = STATUS_AMHARIC.get(o.get("status"), o.get("status"))  # fallback to raw if unknown
         await message.answer(
-            f"📦 ትዕዛዝ #{o['id']} — {o['status']}\n"
+            f"📦 ትዕዛዝ #{o['id']} — {status_text}\n"
             f"🛒 ምግቦች: {items}\n\n"
-            f"💵 ክፍያ: {int(o.get('delivery_fee', 0))} ብር\n"
+            f"💵 ክፍያ: {int(o.get('food_subtotal', 0))} ብር\n"
             f"📍 መድረሻ: {o.get('dropoff','')}"
         )
 
@@ -1081,7 +1127,7 @@ async def perf_weekly_page(cb: CallbackQuery):
         await cb.message.answer(
             f"📦 ትዕዛዝ #{o['id']} — {o['status']}\n"
             f"🛒 ምግቦች: {items}\n\n"
-            f"💵 ክፍያ: {int(o.get('delivery_fee', 0))} ብር\n"
+            f"💵 ክፍያ: {int(o.get('food_subtotal', 0))} ብር\n"
             f"📍 መድረሻ: {o.get('dropoff','')}"
         )
 
