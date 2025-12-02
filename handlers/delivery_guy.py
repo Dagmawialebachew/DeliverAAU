@@ -674,27 +674,46 @@ async def handle_accept_order(call: CallbackQuery):
     except Exception:
         pass
 
-    order_id = int(call.data.split('_')[-1])
+    order_id = int(call.data.split("_")[-1])
     dg = await _db_get_delivery_guy_by_user(call.from_user.id)
     if not dg:
         await call.answer("⚠️ Delivery profile not found.", show_alert=True)
         return
 
-    # --- 1. Update order status ---
+    # --- 1. Check current order status before updating ---
+    order = await db.get_order(order_id)
+    if not order:
+        await call.answer("❌ Order not found.", show_alert=True)
+        return
+
     try:
-        # Use Database method instead of raw SQL
-        await db.update_order_status(order_id, "preparing", dg["id"])
+        if order["status"] == "ready":
+            if order.get("delivery_guy_id") is None:
+                # Vendor already prepared, no DG yet → assign DG but keep status = ready
+                await db.update_order_status(order_id, "ready", dg["id"])
+                log.info("DG %s accepted order %s (status stays READY)", dg["id"], order_id)
+            else:
+                # Already assigned → expire this offer
+                await call.answer("❌ Order already assigned to another DG.", show_alert=True)
+                return
+        elif order["status"] == "preparing" and order.get("delivery_guy_id") is None:
+            # Normal flow → assign DG and keep status = preparing
+            await db.update_order_status(order_id, "preparing", dg["id"])
+            log.info("DG %s accepted order %s (status PREPARING)", dg["id"], order_id)
+        else:
+            await call.answer("Order status conflict or already processed.", show_alert=True)
+            return
     except Exception:
         log.exception("Failed to accept order %s for DG %s", order_id, dg["id"])
         await call.answer("❌ Failed to accept order.", show_alert=True)
         return
 
     # --- 2. Stop scheduler countdown for this order ---
-    PENDING_OFFERS.pop(order_id, None)   # 🔥 ensures scheduler stops tracking this order
+    PENDING_OFFERS.pop(order_id, None)
 
-    # --- 3. Edit the offer message to accepted view ---
+    # --- 3. Notify student & update message ---
     order = await db.get_order(order_id)
-    if order and order.get("status") == "preparing":
+    if order:
         subtotal = order.get("food_subtotal", 0)
         delivery_fee = order.get("delivery_fee", 0)
         total_payable = subtotal + delivery_fee
@@ -704,8 +723,8 @@ async def handle_accept_order(call: CallbackQuery):
 
         try:
             items = json.loads(order.get("items_json", "[]")) or []
-            names = [i.get("name", "") if isinstance(i, dict) else str(i) for i in items]
             from collections import Counter
+            names = [i.get("name", "") if isinstance(i, dict) else str(i) for i in items]
             counts = Counter(names)
             items_str = ", ".join(
                 f"{name} x{count}" if count > 1 else name
@@ -716,7 +735,7 @@ async def handle_accept_order(call: CallbackQuery):
 
         message_text = (
             f"📦 Order #{order_id}\n"
-            f"📌 Status: 👨‍🍳 Vendor is preparing.....\n\n"
+            f"📌 Status: {'✅ Ready for pickup' if order['status']=='ready' else '👨‍🍳 Vendor is preparing...'}\n\n"
             "──────────────────────\n"
             f"🏠 Pickup: {order.get('pickup')}\n"
             f"📍 Drop-off: {order.get('dropoff')}\n"
@@ -727,28 +746,35 @@ async def handle_accept_order(call: CallbackQuery):
             f"🛒 Items: {items_str}\n\n"
             "⚡ Manage this order below.\n\n"
             "For robust and fast use My Orders in the dashboard."
-            
         )
+
         try:
+            status = order["status"]
+
+            # For preparing, reuse accepted actions
+            if status == "preparing":
+                action_key = "accepted"
+            elif status == "ready":
+                action_key = "ready"
+            else:
+                action_key = "accepted"  # fallback
+
             await call.message.edit_text(
                 message_text,
-                reply_markup=accepted_order_actions(order_id, "accepted"),
+                reply_markup=accepted_order_actions(order_id, action_key),
                 parse_mode="Markdown"
             )
             await call.answer("Order accepted!")
         except TelegramBadRequest as e:
             if "message is not modified" in str(e):
-                await call.answer("Order already accepted/message already updated. Try to check it on your orders.")
+                await call.answer("Order already accepted/message already updated. Check it in My Orders.")
             else:
                 log.warning("Failed to edit message after acceptance: %s", str(e))
-                # Fallback: send a new message if edit fails
                 await call.message.answer(
                     message_text,
                     reply_markup=accepted_order_actions(order_id, "accepted"),
                     parse_mode="Markdown"
                 )
-    else:
-        await call.answer("Order status conflict or already processed.", show_alert=True)
 
 
 async def get_student_chat_id(db: Database, order: Dict[str, Any]) -> Optional[int]:
@@ -1020,7 +1046,9 @@ async def handle_delivered(call: CallbackQuery):
     await notify_student(call.bot, order, "delivered")
     
     # Daily summary
-    today_stats = await db.get_daily_stats(dg["id"], datetime.now().strftime('%Y-%m-%d')) or {"deliveries": 1, "earnings": delivery_fee}
+    today_stats = await db.get_daily_stats(
+    dg["id"], datetime.now().strftime("%Y-%m-%d")
+) or {"deliveries": 0, "earnings": 0.0, "skipped": 0, "assigned": 0, "acceptance_rate": 0.0}
     deliveries_today = today_stats.get("deliveries", 1)
     earnings_today = today_stats.get("earnings", delivery_fee)
     acceptance_rate = await db.calc_vendor_reliability_for_day(dg["id"])

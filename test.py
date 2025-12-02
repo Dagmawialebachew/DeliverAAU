@@ -297,94 +297,94 @@
 
 
 
-import asyncio
-from database.db import Database
+# import asyncio
+# from database.db import Database
 
-ORDER_ID = 6
+# ORDER_ID = 6
 
-async def find_student_by_order(order_id: int):
-    db = Database()
-    await db.init_pool()
+# async def find_student_by_order(order_id: int):
+#     db = Database()
+#     await db.init_pool()
 
-    async with db._open_connection() as conn:
-        # Step 1: fetch the order
-        order = await conn.fetchrow("SELECT * FROM orders WHERE id=$1", order_id)
-        if not order:
-            print(f"No order found with id={order_id}")
-            return
+#     async with db._open_connection() as conn:
+#         # Step 1: fetch the order
+#         order = await conn.fetchrow("SELECT * FROM orders WHERE id=$1", order_id)
+#         if not order:
+#             print(f"No order found with id={order_id}")
+#             return
 
-        order_dict = dict(order)
-        print(f"Found order: {order_dict}")
+#         order_dict = dict(order)
+#         print(f"Found order: {order_dict}")
 
-        # Step 2: get the user_id from the order
-        internal_user_id = order_dict["user_id"]
-        print(f"Internal user_id from order: {internal_user_id}")
+#         # Step 2: get the user_id from the order
+#         internal_user_id = order_dict["user_id"]
+#         print(f"Internal user_id from order: {internal_user_id}")
 
-        # Step 3: fetch the student by internal id
-        student = await db.get_user_by_id(internal_user_id)
-        if not student:
-            print(f"No student found with id={internal_user_id}")
-            return
+#         # Step 3: fetch the student by internal id
+#         student = await db.get_user_by_id(internal_user_id)
+#         if not student:
+#             print(f"No student found with id={internal_user_id}")
+#             return
 
-        # Step 4: print student details
-        print("Student record:")
-        print(f" - ID: {student['id']}")
-        print(f" - Telegram ID: {student['telegram_id']}")
-        print(f" - Name: {student['first_name']}")
-        print(f" - Phone: {student['phone']}")
-        print(f" - Campus: {student['campus']}")
+#         # Step 4: print student details
+#         print("Student record:")
+#         print(f" - ID: {student['id']}")
+#         print(f" - Telegram ID: {student['telegram_id']}")
+#         print(f" - Name: {student['first_name']}")
+#         print(f" - Phone: {student['phone']}")
+#         print(f" - Campus: {student['campus']}")
 
-if __name__ == "__main__":
-    asyncio.run(find_student_by_order(ORDER_ID))
-
-
+# if __name__ == "__main__":
+#     asyncio.run(find_student_by_order(ORDER_ID))
 
 
-import asyncio
-import asyncpg
-from datetime import datetime
 
-async def show_current_orders(dsn: str):
-    """Prints current (non-delivered) orders from the database."""
-    try:
-        conn = await asyncpg.connect(dsn)
 
-        query = """
-        SELECT *
-        FROM orders
-        WHERE status != 'delivered'
-        ORDER BY created_at DESC
-        """
+# import asyncio
+# import asyncpg
+# from datetime import datetime
 
-        rows = await conn.fetch(query)
+# async def show_current_orders(dsn: str):
+#     """Prints current (non-delivered) orders from the database."""
+#     try:
+#         conn = await asyncpg.connect(dsn)
 
-        if not rows:
-            print("No current orders found.")
-            return
+#         query = """
+#         SELECT *
+#         FROM orders
+#         WHERE status != 'delivered'
+#         ORDER BY created_at DESC
+#         """
 
-        print("--- Current Orders ---")
-        for row in rows:
-            print("===================================")
-            print(f"Order ID: {row['id']}")
-            print(f"User ID: {row['user_id']}")
-            print(f"Delivery Guy ID: {row['delivery_guy_id']}")
-            print(f"Vendor ID: {row['vendor_id']}")
-            print(f"Pickup: {row['pickup']}")
-            print(f"Dropoff: {row['dropoff']}")
-            print(f"Status: {row['status']}")
-            print(f"Payment Status: {row['payment_status']}")
-            print(f"Created At: {row['created_at']}")
-            print(f"Updated At: {row['updated_at']}")
-            print("===================================\n")
+#         rows = await conn.fetch(query)
 
-        await conn.close()
+#         if not rows:
+#             print("No current orders found.")
+#             return
 
-    except Exception as e:
-        print(f"Error fetching current orders: {e}")
+#         print("--- Current Orders ---")
+#         for row in rows:
+#             print("===================================")
+#             print(f"Order ID: {row['id']}")
+#             print(f"User ID: {row['user_id']}")
+#             print(f"Delivery Guy ID: {row['delivery_guy_id']}")
+#             print(f"Vendor ID: {row['vendor_id']}")
+#             print(f"Pickup: {row['pickup']}")
+#             print(f"Dropoff: {row['dropoff']}")
+#             print(f"Status: {row['status']}")
+#             print(f"Payment Status: {row['payment_status']}")
+#             print(f"Created At: {row['created_at']}")
+#             print(f"Updated At: {row['updated_at']}")
+#             print("===================================\n")
 
-if __name__ == "__main__":
-    DB_DSN = "postgresql://neondb_owner:npg_gTKxHQ7qdtC0@ep-soft-glitter-ad6vxp8t-pooler.c-2.us-east-1.aws.neon.tech/deliveryaau?sslmode=require&channel_binding=require"
-    asyncio.run(show_current_orders(DB_DSN))
+#         await conn.close()
+
+#     except Exception as e:
+#         print(f"Error fetching current orders: {e}")
+
+# if __name__ == "__main__":
+#     DB_DSN = "postgresql://neondb_owner:npg_gTKxHQ7qdtC0@ep-soft-glitter-ad6vxp8t-pooler.c-2.us-east-1.aws.neon.tech/deliveryaau?sslmode=require&channel_binding=require"
+#     asyncio.run(show_current_orders(DB_DSN))
 
 
 
@@ -394,19 +394,70 @@ from aiogram.filters import Command
 from aiogram.types import Message
 import asyncio
 
-bot = Bot(token="8334775133:AAFqHaeqRdf4D4YX6-Rth1jBGf1V_1W_OVA")
-dp = Dispatcher()
-router = Router()
 
-@router.message(Command("id"))
-async def show_id(message: Message):
-    await message.answer(f"Your Telegram ID is: {message.from_user.id}")
 
-dp.include_router(router)
+# @router.message(Command("id"))
+# async def show_id(message: Message):
+#     await message.answer(f"Your Telegram ID is: {message.from_user.id}")
 
-async def main():
-    await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(bot)
+# dp.include_router(router)
+
+# async def main():
+#     await bot.delete_webhook(drop_pending_updates=True)
+#     await dp.start_polling(bot)
+
+# if __name__ == "__main__":
+#     asyncio.run(main())
+
+
+import asyncio
+from typing import List, Tuple
+from database.db import Database
+from database import db
+
+async def seed_delivery_guys(db: Database) -> None:
+    """
+    Insert a single delivery guy into the delivery_guys table.
+    Uses ON CONFLICT DO NOTHING so it won't raise if user_id already exists.
+    """
+
+    # (user_id, telegram_id, name, campus, phone, active, blocked,
+    #  total_deliveries, accepted_requests, total_requests,
+    #  coins, xp, level)
+    delivery_guys_data: List[Tuple] = [
+        (
+            1001,            # user_id
+            7112595006,      # telegram_id
+            "Kupachata",     # name
+            "4kilo",         # campus
+            "+251960306801", # phone (example; change as needed)
+            True,            # active
+            False,           # blocked
+            12,              # total_deliveries
+            14,              # accepted_requests
+            16,              # total_requests
+            10,              # coins
+            260,             # xp
+            3                # level
+        )
+    ]
+
+    async with db.open_connection() as conn:
+        insert_sql = """
+            INSERT INTO delivery_guys 
+            (user_id, telegram_id, name, campus, phone, active, blocked,
+             total_deliveries, accepted_requests, total_requests,
+             coins, xp, level)
+            VALUES ($1::BIGINT, $2::BIGINT, $3, $4, $5, $6, $7,
+                    $8, $9, $10, $11, $12, $13)
+            ON CONFLICT (user_id) DO NOTHING
+        """
+
+        for row in delivery_guys_data:
+            await conn.execute(insert_sql, *row)
+
+    print("✅ Delivery guy (with phone) inserted successfully (or already existed).")
+
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(seed_delivery_guys(db))

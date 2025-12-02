@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import asyncio
+import logging
 from aiogram import Router, F
 from aiogram.filters import CommandStart
 from aiogram.types import (
@@ -73,6 +74,7 @@ def more_menu() -> ReplyKeyboardMarkup:
         [KeyboardButton(text="⚙️ Settings"), KeyboardButton(text="⬅️ Back")],
     ]
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
+
 
 
 @router.message(F.text == "🎁 Redeem Coins")

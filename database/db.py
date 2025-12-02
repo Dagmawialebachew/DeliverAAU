@@ -24,6 +24,18 @@ CREATE TABLE IF NOT EXISTS users (
     status TEXT DEFAULT 'active'
 );
 
+
+CREATE TABLE IF NOT EXISTS tickets (
+    ticket_id TEXT PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    text TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open',
+    original_msg_id BIGINT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    closed_at TIMESTAMP
+);
+
+
 CREATE TABLE IF NOT EXISTS delivery_guys (
     id SERIAL PRIMARY KEY,
     user_id BIGINT UNIQUE, -- Foreign key to users.id
@@ -260,8 +272,8 @@ class Database:
                 date
             )
             
-    
-    
+
+
     async def summarize_orders_day(self, date: str) -> Dict[str, Any]:
         async with self._open_connection() as conn:
             row = await conn.fetchrow(
@@ -288,6 +300,50 @@ class Database:
                 "delivery_fees": float(row["delivery_fees"]),
                 "reliability_pct": reliability_pct,
             }
+            
+    
+    
+        
+        # db/tickets.py
+    async def save_ticket(self, ticket_id, user_id, text, status, original_msg_id):
+        async with self._pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO tickets (ticket_id, user_id, text, status, original_msg_id)
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (ticket_id) DO NOTHING
+            """, ticket_id, user_id, text, status, original_msg_id)
+
+    async def get_ticket(self, ticket_id):
+        async with self._pool.acquire() as conn:
+            return await conn.fetchrow(
+                "SELECT ticket_id, user_id, text, status, original_msg_id FROM tickets WHERE ticket_id=$1",
+                ticket_id
+            )
+
+    async def list_open_tickets(self):
+        async with self._pool.acquire() as conn:
+            return await conn.fetch(
+                "SELECT ticket_id, status FROM tickets WHERE status='open' ORDER BY created_at DESC"
+            )
+
+    async def close_ticket(self, ticket_id):
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE tickets SET status='closed', closed_at=CURRENT_TIMESTAMP WHERE ticket_id=$1",
+                ticket_id
+            )
+            
+    
+    async def list_closed_tickets(self):
+        async with self._pool.acquire() as conn:
+            return await conn.fetch(
+                "SELECT ticket_id, status, user_id, text, closed_at "
+                "FROM tickets WHERE status='closed' ORDER BY closed_at DESC"
+            )
+            
+    
+    
+            
             
     
     
@@ -586,6 +642,7 @@ class Database:
         Returns reliability percentage for a given day:
         progressed (accepted/in_progress/delivered) vs cancelled.
         """
+        import datetime
         date = datetime.date.today()
         async with self._open_connection() as conn:
             r = await conn.fetchrow(
@@ -1326,3 +1383,51 @@ async def seed_delivery_guys(db: Database) -> None:
             await conn.execute(insert_sql, *row)
 
     print("✅ delivery_guys table reset and seeded with entries")
+    
+    
+
+
+
+async def seed_speicific_dg(db: Database) -> None:
+    """
+    Reset and seed the delivery_guys table with ONLY the real DG you specified.
+    """
+
+    # (user_id, telegram_id, name, campus, phone, active,
+    #  total_deliveries, accepted_requests, total_requests,
+    #  coins, xp, level)
+    delivery_guy = (
+        1001,
+        settings.DG_IDS["Dagmawi"],
+        "Dagmawi",
+        "6kilo",
+        "0960306801",   # <- Your phone number here
+        True,
+        12,
+        14,
+        16,
+        10,
+        260,
+        3
+    )
+
+    async with db._open_connection() as conn:
+        # Reset table
+        await conn.execute("""
+            DELETE FROM users
+            WHERE user_id = $1 OR telegram_id = $2
+        """, delivery_guy[0], delivery_guy[1])
+
+
+        insert_sql = """
+            INSERT INTO delivery_guys 
+            (user_id, telegram_id, name, campus, phone, active,
+             total_deliveries, accepted_requests, total_requests,
+             coins, xp, level)
+            VALUES ($1::BIGINT, $2::BIGINT, $3, $4, $5, $6,
+                    $7, $8, $9, $10, $11, $12)
+        """
+
+        await conn.execute(insert_sql, *delivery_guy)
+
+    print("✅ delivery_guysseeded with ONLY one specific delivery guy")

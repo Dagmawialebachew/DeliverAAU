@@ -14,7 +14,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.types import Update, BotCommand, BotCommandScopeDefault, BotCommandScopeChat
 
 from config import settings
-from database.db import Database, seed_delivery_guys, seed_vendors
+from database.db import Database, seed_delivery_guys, seed_vendors, seed_speicific_dg
 from utils.scheduler import BotScheduler
 
 # Middlewares
@@ -28,10 +28,10 @@ from handlers.student import router as student_router
 from handlers.student_track_order import router as student_track_order_router
 from handlers.delivery_guy import router as delivery_guy_router
 from handlers.vendor import router as vendor_router
-from handlers.rating import router as rating_router
 from handlers.help import router as help_router
 from handlers.settings import router as settings_router
 from handlers.admin import router as admin_router
+from handlers.rating import router as rating_router
 from middlewares.gracefull_fallback_middleware import GracefulFallbackMiddleware
 
 # --- Logging ---
@@ -68,9 +68,8 @@ dp.include_router(delivery_guy_router)
 dp.include_router(vendor_router)
 dp.include_router(rating_router)
 dp.include_router(help_router)
-# dp.include_router(settings_router)
-# dp.include_router(admin_router)
-logging.info(f"Included admin router id: {id(admin_router)}")
+dp.include_router(settings_router)
+dp.include_router(admin_router)
 
 # --- DB + Scheduler ---
 scheduler = BotScheduler(db=db, bot=bot)
@@ -159,6 +158,7 @@ if __name__ == "__main__":
         # 3. Seed data
         # await seed_vendors(db)
         # await seed_delivery_guys(db)
+        # await seed_speicific_dg(db)
 
         # 4. Start scheduler
         scheduler.start()
