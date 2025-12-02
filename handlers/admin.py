@@ -21,6 +21,7 @@ from aiogram.types import (
 # Ensure these imports match your project structure
 from config import settings
 from app_context import db
+from utils.helpers import time_ago  # wherever you placed the helper
 from database.db import Database 
 # Initialize Router
 router = Router()
@@ -40,6 +41,8 @@ class AdminStates(StatesGroup):
     vendor_get_id = State()
     vendor_get_name = State()
     vendor_confirm = State()
+    vendor_edit_menu = State()
+    vendor_get_status = State()
 
     # Delivery Guy (DG) Protocol
     dg_get_id = State()
@@ -65,15 +68,209 @@ class AdminReplyState(StatesGroup):
 # 🛠 UI HELPERS (Keyboards & Formatting)
 # ==============================================================================
 def get_main_menu_kb() -> ReplyKeyboardMarkup:
-    """The persistent command deck for the admin."""
     kb = [
-        [KeyboardButton(text="🏪 Add Vendor"), KeyboardButton(text="🛵 Add Delivery Guy")],
-        [KeyboardButton(text="📢 Broadcast"), KeyboardButton(text="💰 Finance")],
-        [KeyboardButton(text="⚙️ Settings"), KeyboardButton(text="📈 Analytics")],
-        [KeyboardButton(text="🛡 System Status"), KeyboardButton(text="🛑 Emergency Stop")],
-        [KeyboardButton(text="🆘 Support")]
+        [KeyboardButton(text="🏪 Vendors"), KeyboardButton(text="🛵 Delivery Guys")],
+        [KeyboardButton(text="📦 Orders"), KeyboardButton(text="📈 Analytics")]
+        # [KeyboardButton(text="📢 Broadcast"), KeyboardButton(text="💰 Finance")],
+        # [KeyboardButton(text="⚙️ Settings"), KeyboardButton(text="🛡 System Status")],
+        # [KeyboardButton(text="🆘 Support"), KeyboardButton(text="🛑 Emergency Stop")]
     ]
-    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True, input_field_placeholder="Awaiting Command...")
+    return ReplyKeyboardMarkup(
+        keyboard=kb,
+        resize_keyboard=True,
+        input_field_placeholder="Choose a module..."
+    )
+    
+
+
+@router.message(F.text == "🏪 Vendors", F.from_user.id.in_(settings.ADMIN_IDS))
+async def admin_vendors_entry(message: Message, state: FSMContext):
+    """Handles when admin presses Vendors from the main menu."""
+    await state.clear()
+
+    # Fetch vendors from DB
+    async with db._open_connection() as conn:
+        rows = await conn.fetch(
+            "SELECT id, name, status, rating_avg, rating_count FROM vendors ORDER BY id ASC"
+        )
+
+    if not rows:
+        await message.answer(
+            "⚠️ <b>No vendors found</b>\nTap ➕ <b>Add Vendor</b> to create one.",
+            reply_markup=get_main_menu_kb(),
+            parse_mode="HTML"
+        )
+        return
+
+    # Dashboard style summary
+    summary_lines = [
+        "⚡ <b>Vendor Directory</b> 𖤐",
+        "━━━━━━━━━━━━━━━━━━━━━━"
+    ]
+
+    for i, r in enumerate(rows, start=1):
+        status_emoji = (
+            "🟢 Active" if r['status'] == "active"
+            else "🟡 Busy" if r['status'] == "busy"
+            else "🔴 Offline"
+        )
+        summary_lines.append(
+            f"{i}️⃣ <b>{r['name']}</b>\n"
+            f"   📊 {status_emoji} • ⭐ {round(r['rating_avg'],1)} ({r['rating_count']} ratings)\n"
+        )
+
+    summary_lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+    summary_lines.append("🔍 <i>Select a vendor below to view full details</i>")
+
+    # Inline keyboard with numbered View buttons
+    vendors = [{"id": r["id"], "name": r["name"]} for r in rows]
+    kb = get_vendor_list_kb(vendors)
+
+    await message.answer("\n".join(summary_lines), reply_markup=kb, parse_mode="HTML")
+
+
+
+@router.callback_query(F.data.startswith("vendor_view:"))
+async def vendor_view_callback(callback: CallbackQuery, state: FSMContext):
+    vendor_id = int(callback.data.split(":")[1])
+
+    async with db._open_connection() as conn:
+        vendor = await conn.fetchrow(
+            "SELECT id, name, status, rating_avg, rating_count, created_at FROM vendors WHERE id = $1",
+            vendor_id
+        )
+
+    if not vendor:
+        await callback.answer("⚠️ Vendor not found.", show_alert=True)
+        return
+
+    # Status emoji
+    status_emoji = (
+        "🟢 Active" if vendor['status'] == "active"
+        else "🟡 Busy" if vendor['status'] == "busy"
+        else "🔴 Offline"
+    )
+    created_display = time_ago(vendor["created_at"])
+
+    # Card text
+    card_text = (
+        f"🏪 <b>Vendor: {vendor['name']}</b>\n"
+        f"📊 Status: {status_emoji}\n"
+        f"⭐ Rating: {round(vendor['rating_avg'],1)} ({vendor['rating_count']} ratings)\n"
+        f"📅 Created: {created_display}\n"       
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "⚡ Tap buttons below to manage or view stats"
+    )
+
+    kb = get_vendor_card_kb(vendor_id)
+    await callback.message.edit_text(card_text, reply_markup=kb, parse_mode="HTML")
+    await callback.answer()
+
+
+def get_vendor_list_kb(vendors: list) -> InlineKeyboardMarkup:
+    rows = []
+    numbered_buttons = [
+        InlineKeyboardButton(text=f"🔎 View {i+1}", callback_data=f"vendor_view:{vendor['id']}")
+        for i, vendor in enumerate(vendors)
+    ]
+    for i in range(0, len(numbered_buttons), 3):
+        rows.append(numbered_buttons[i:i+3])
+    rows.append([
+        InlineKeyboardButton(text="➕ Add Vendor", callback_data="vendor_add"),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def get_vendor_card_kb(vendor_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✏️ Edit", callback_data=f"vendor_edit:{vendor_id}"),
+            InlineKeyboardButton(text="🗑 Delete", callback_data=f"vendor_delete:{vendor_id}")
+        ],
+        [
+            InlineKeyboardButton(text="📊 Status", callback_data=f"vendor_status:{vendor_id}"),
+            InlineKeyboardButton(text="⬅️ Back to List", callback_data="admin_vendors")
+        ]
+    ])
+
+@router.callback_query(F.data == "admin_vendors")
+async def vendor_back_to_list(callback: CallbackQuery, state: FSMContext):
+    """Handles when admin presses ⬅️ Back to List from a vendor card."""
+    await state.clear()
+
+    async with db._open_connection() as conn:
+        rows = await conn.fetch(
+            "SELECT id, name, status, rating_avg, rating_count FROM vendors ORDER BY id ASC"
+        )
+
+    if not rows:
+        await callback.message.edit_text(
+            "⚠️ <b>No vendors found</b>\nTap ➕ <b>Add Vendor</b> to create one.",
+            reply_markup=get_main_menu_kb(),
+            parse_mode="HTML"
+        )
+        await callback.answer()
+        return
+
+    # Build summary again
+    summary_lines = [
+        "⚡ <b>Vendor Directory</b> 𖤐",
+        "━━━━━━━━━━━━━━━━━━━━━━"
+    ]
+
+    for i, r in enumerate(rows, start=1):
+        status_emoji = (
+            "🟢 Active" if r['status'] == "active"
+            else "🟡 Busy" if r['status'] == "busy"
+            else "🔴 Offline"
+        )
+        summary_lines.append(
+            f"{i}️⃣ <b>{r['name']}</b>\n"
+            f"   📊 {status_emoji} • ⭐ {round(r['rating_avg'],1)} ({r['rating_count']} ratings)\n"
+        )
+
+    summary_lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+    summary_lines.append("🔍 <i>Select a vendor below to view full details</i>")
+
+    vendors = [{"id": r["id"], "name": r["name"]} for r in rows]
+    kb = get_vendor_list_kb(vendors)
+
+    # Edit the existing message back to the list view
+    await callback.message.edit_text("\n".join(summary_lines), reply_markup=kb, parse_mode="HTML")
+    await callback.answer()
+
+
+
+def get_dg_list_kb(dgs: list) -> InlineKeyboardMarkup:
+    rows = []
+    numbered_buttons = [
+        InlineKeyboardButton(text=f"🔎 View {i+1}", callback_data=f"dg_view:{dg['id']}")
+        for i, dg in enumerate(dgs)
+    ]
+    for i in range(0, len(numbered_buttons), 3):
+        rows.append(numbered_buttons[i:i+3])
+    rows.append([
+        InlineKeyboardButton(text="➕ Add Delivery Guy", callback_data="dg_add"),
+        InlineKeyboardButton(text="⬅️ Back to Main", callback_data="admin_back")
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def get_order_list_kb(orders: list) -> InlineKeyboardMarkup:
+    rows = []
+    numbered_buttons = [
+        InlineKeyboardButton(text=f"🔎 View {i+1}", callback_data=f"order_view:{order['id']}")
+        for i, order in enumerate(orders)
+    ]
+    for i in range(0, len(numbered_buttons), 3):
+        rows.append(numbered_buttons[i:i+3])
+    rows.append([
+        InlineKeyboardButton(text="⬅️ Back to Main", callback_data="admin_back")
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 
 def get_confirm_cancel_kb(action_prefix: str) -> InlineKeyboardMarkup:
     """Generates a standard Confirm/Cancel inline keyboard."""
@@ -134,17 +331,163 @@ async def cancel_operation(event: Union[Message, CallbackQuery], state: FSMConte
 # ==============================================================================
 # 🏪 PROTOCOL: VENDOR ONBOARDING
 # ==============================================================================
-@router.message(F.text == "🏪 Add Vendor", F.from_user.id.in_(settings.ADMIN_IDS))
-async def vendor_start(message: Message, state: FSMContext):
-    await message.answer(
+@router.callback_query(F.data == "vendor_add", F.from_user.id.in_(settings.ADMIN_IDS))
+async def vendor_add_init(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.edit_text(
         "<b>🏪 VENDOR DEPLOYMENT // STEP 1/3</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
         "Enter the <b>Telegram ID</b> of the Vendor owner.\n"
-        "<i>(This is required for order notifications)</i>",
-        parse_mode="HTML",
-        reply_markup=ReplyKeyboardRemove()
+        "<i>(This ID is used for notifications)</i>",
+        parse_mode="HTML"
+        # ❌ remove reply_markup=ReplyKeyboardRemove()
     )
     await state.set_state(AdminStates.vendor_get_id)
+    await callback.answer()
+
+
+async def render_vendor_edit_preview(bot: Bot, chat_id: int, message_id: int, data: dict):
+    summary = (
+        "<b>📋 EDIT VENDOR DATA</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🆔 <b>Telegram ID:</b> <code>{data.get('v_id','—')}</code>\n"
+        f"🏷 <b>Name:</b> {data.get('v_name','—')}\n"
+        f"📊 <b>Status:</b> {data.get('v_status','—')}\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "<i>Select a field to edit or confirm changes.</i>"
+    )
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🆔 Edit Telegram ID", callback_data="edit_vendor_id"),
+            InlineKeyboardButton(text="🏷 Edit Name", callback_data="edit_vendor_name")
+        ],
+        [
+            InlineKeyboardButton(text="📊 Edit Status", callback_data="edit_vendor_status"),
+            InlineKeyboardButton(text="✅ Confirm", callback_data="vendor_edit_confirm")
+        ],
+        [
+            InlineKeyboardButton(text="❌ Cancel", callback_data="admin_cancel_inline")
+        ]
+    ])
+
+    return await bot.edit_message_text(
+        chat_id=chat_id,
+        message_id=message_id,
+        text=summary,
+        parse_mode="HTML",
+        reply_markup=kb
+    )
+
+
+@router.callback_query(F.data.startswith("vendor_edit:"))
+async def vendor_edit_init(callback: CallbackQuery, state: FSMContext):
+    vendor_id = int(callback.data.split(":")[1])
+
+    async with db._open_connection() as conn:
+        vendor = await conn.fetchrow(
+            "SELECT id, telegram_id, name, status FROM vendors WHERE id = $1",
+            vendor_id
+        )
+
+    if not vendor:
+        await callback.answer("⚠️ Vendor not found.", show_alert=True)
+        return
+
+    # Pre‑fill FSM with existing data
+    preview_msg = await callback.message.edit_text("Loading vendor data...")
+    await state.update_data(
+        card_message_id=preview_msg.message_id,
+        edit_mode=True,
+        vendor_db_id=vendor["id"],
+        v_id=vendor["telegram_id"],
+        v_name=vendor["name"],
+        v_status=vendor["status"]
+    )
+
+    await render_vendor_edit_preview(
+        bot=callback.bot,
+        chat_id=callback.message.chat.id,
+        message_id=preview_msg.message_id,
+        data=await state.get_data()
+    )
+    await state.set_state(AdminStates.vendor_edit_menu)
+
+
+@router.callback_query(F.data == "edit_vendor_id", AdminStates.vendor_edit_menu)
+async def edit_vendor_id(callback: CallbackQuery, state: FSMContext):
+    await callback.message.answer("Enter new Telegram ID:", reply_markup=ReplyKeyboardRemove())
+    await state.set_state(AdminStates.vendor_get_id)
+    await callback.answer()
+
+@router.message(AdminStates.vendor_get_id)
+async def vendor_id_updated(message: Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("⚠️ ID must be numeric. Try again.")
+        return
+    await state.update_data(v_id=int(message.text))
+
+    # Refresh preview card
+    data = await state.get_data()
+    await render_vendor_edit_preview(
+            bot=message.bot,
+            chat_id=message.chat.id,
+            message_id=data["card_message_id"],
+            data=data
+        )
+    await state.set_state(AdminStates.vendor_edit_menu)
+
+
+@router.callback_query(F.data == "edit_vendor_name", AdminStates.vendor_edit_menu)
+async def edit_vendor_name(callback: CallbackQuery, state: FSMContext):
+    await callback.message.answer("Enter new Vendor Name:", reply_markup=ReplyKeyboardRemove())
+    await state.set_state(AdminStates.vendor_get_name)
+    await callback.answer()
+
+@router.message(AdminStates.vendor_get_name)
+async def vendor_name_updated(message: Message, state: FSMContext):
+    await state.update_data(v_name=message.text)
+    data = await state.get_data()
+
+    await render_vendor_edit_preview(
+        bot=message.bot,
+        chat_id=message.chat.id,
+        message_id=data["card_message_id"],
+        data=data
+    )
+
+    await state.set_state(AdminStates.vendor_edit_menu)
+
+
+@router.callback_query(F.data == "edit_vendor_status", AdminStates.vendor_edit_menu)
+async def edit_vendor_status(callback: CallbackQuery, state: FSMContext):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🟢 Active", callback_data="status_active"),
+            InlineKeyboardButton(text="🟡 Busy", callback_data="status_busy"),
+            InlineKeyboardButton(text="🔴 Offline", callback_data="status_offline")
+        ]
+    ])
+    await callback.message.edit_text("Choose new status:", reply_markup=kb)
+    await state.set_state(AdminStates.vendor_get_status)
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("status_"), AdminStates.vendor_get_status)
+async def vendor_status_updated(callback: CallbackQuery, state: FSMContext):
+    status = callback.data.replace("status_", "")
+    await state.update_data(v_status=status)
+
+    # Refresh preview card
+    data = await state.get_data()
+    await render_vendor_edit_preview(
+        bot=callback.bot,
+        chat_id=callback.message.chat.id,
+        message_id=data["card_message_id"],
+        data=data
+    )
+
+    await state.set_state(AdminStates.vendor_edit_menu)
+    await callback.answer()
 
 @router.message(AdminStates.vendor_get_id)
 async def vendor_id_captured(message: Message, state: FSMContext):
@@ -155,13 +498,14 @@ async def vendor_id_captured(message: Message, state: FSMContext):
     await state.update_data(v_id=int(message.text))
     await message.answer(
         "<b>🏪 VENDOR DEPLOYMENT // STEP 2/3</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
         "Enter the <b>Display Name</b> for this Vendor.\n"
-        "<i>(e.g., 'Burger King 6kilo')</i>",
+        "<i>(e.g., 'Juice Hub 5kilo')</i>",
         parse_mode="HTML"
     )
     await state.set_state(AdminStates.vendor_get_name)
-
+    
+    
 @router.message(AdminStates.vendor_get_name)
 async def vendor_name_captured(message: Message, state: FSMContext):
     await state.update_data(v_name=message.text)
@@ -169,46 +513,78 @@ async def vendor_name_captured(message: Message, state: FSMContext):
     
     summary = (
         "<b>📋 REVIEW DEPLOYMENT DATA</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🆔 <b>Vendor ID:</b> <code>{data['v_id']}</code>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🆔 <b>Telegram ID:</b> <code>{data['v_id']}</code>\n"
         f"🏷 <b>Name:</b> {data['v_name']}\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "<i>Commit to database?</i>"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "<i>Confirm to commit this Vendor to the database?</i>"
     )
     await message.answer(summary, parse_mode="HTML", reply_markup=get_confirm_cancel_kb("vendor"))
     await state.set_state(AdminStates.vendor_confirm)
-
-@router.callback_query(F.data == "vendor_confirm", AdminStates.vendor_confirm)
-async def vendor_commit(call: CallbackQuery, state: FSMContext, db: Database):
-    data = await state.get_data()
     
-    try:
-        # Check if exists logic should be inside db.create_vendor or handled here
-        existing = await db.get_vendor_by_telegram(data['v_id'])
-        if existing:
-            await call.message.edit_text(f"⚠️ <b>Failed:</b> Vendor ID {data['v_id']} already exists.", parse_mode="HTML")
-            await state.clear()
-            return
+  
+  
+  
+@router.callback_query(
+    (F.data == "vendor_confirm") | (F.data == "vendor_edit_confirm"),
+    AdminStates.vendor_confirm
+)
+async def vendor_commit(call: CallbackQuery, state: FSMContext):
+    """Handles both add and edit vendor commit actions."""
+    data = await state.get_data()
 
-        vid = await db.create_vendor(data['v_id'], data['v_name'])
-        
+    try:
+        if data.get("edit_mode"):
+            # Update existing vendor
+            await db.update_vendor(
+                vendor_id=data["vendor_db_id"],
+                telegram_id=data["v_id"],
+                name=data["v_name"],
+                status=data.get("v_status", "active")
+            )
+            await call.message.edit_text(
+                f"✅ <b>SUCCESS: VENDOR UPDATED</b>\n"
+                f"Vendor <b>{data['v_name']}</b> has been updated.",
+                parse_mode="HTML"
+            )
+            logger.info(
+                f"[ADMIN:VENDOR] Updated vendor {data['v_name']} "
+                f"(DB ID: {data['vendor_db_id']})"
+            )
+        else:
+            # Create new vendor
+            existing = await db.get_vendor_by_telegram(data['v_id'])
+            if existing:
+                await call.message.edit_text(
+                    f"⚠️ <b>Failed:</b> Vendor with Telegram ID {data['v_id']} already exists.",
+                    parse_mode="HTML"
+                )
+                await state.clear()
+                return
+
+            vid = await db.create_vendor(data['v_id'], data['v_name'])
+            await call.message.edit_text(
+                f"✅ <b>SUCCESS: VENDOR DEPLOYED</b>\n"
+                f"Reference ID: <code>{vid}</code>\n"
+                f"Vendor <b>{data['v_name']}</b> is now active.",
+                parse_mode="HTML"
+            )
+            logger.info(
+                f"[ADMIN:VENDOR] Created vendor {data['v_name']} "
+                f"(Telegram ID: {data['v_id']})"
+            )
+
+        # Restore main menu
+        await call.message.answer("Ready for next command.", reply_markup=get_main_menu_kb())
+
+    except Exception as e:
+        logger.error(f"[ADMIN:ERROR] Vendor commit failed: {e}")
         await call.message.edit_text(
-            f"✅ <b>SUCCESS: VENDOR DEPLOYED</b>\n"
-            f"Reference ID: <code>{vid}</code>\n"
-            f"Vendor <b>{data['v_name']}</b> is now active.",
+            f"💥 <b>CRITICAL ERROR:</b> {str(e)}",
             parse_mode="HTML"
         )
-        logger.info(f"[ADMIN:VENDOR] Created vendor {data['v_name']} (ID: {data['v_id']})")
-        
-        # Send admin menu back as a new message to restore keyboard
-        await call.message.answer("Ready for next command.", reply_markup=get_main_menu_kb())
-        
-    except Exception as e:
-        logger.error(f"[ADMIN:ERROR] Vendor creation failed: {e}")
-        await call.message.edit_text(f"💥 <b>CRITICAL ERROR:</b> {str(e)}", parse_mode="HTML")
-    
-    await state.clear()
 
+    await state.clear()
 # ==============================================================================
 # 🛵 PROTOCOL: DELIVERY FLEET ONBOARDING
 # ==============================================================================

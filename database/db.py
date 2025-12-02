@@ -273,7 +273,6 @@ class Database:
             )
             
 
-
     async def summarize_orders_day(self, date: str) -> Dict[str, Any]:
         async with self._open_connection() as conn:
             row = await conn.fetchrow(
@@ -281,8 +280,8 @@ class Database:
                 SELECT COUNT(*) AS total,
                     SUM(CASE WHEN status='delivered' THEN 1 ELSE 0 END) AS delivered,
                     SUM(CASE WHEN status='cancelled' THEN 1 ELSE 0 END) AS cancelled,
-                    COALESCE(SUM(food_subtotal),0) AS food_revenue,
-                    COALESCE(SUM(delivery_fee),0) AS delivery_fees
+                    COALESCE(SUM(CASE WHEN status='delivered' THEN food_subtotal ELSE 0 END),0) AS food_revenue,
+                    COALESCE(SUM(CASE WHEN status='delivered' THEN delivery_fee ELSE 0 END),0) AS delivery_fees
                 FROM orders
                 WHERE created_at::DATE = $1
                 """,
@@ -296,15 +295,79 @@ class Database:
                 "total": int(row["total"]),
                 "delivered": int(delivered),
                 "cancelled": int(cancelled),
-                "food_revenue": float(row["food_revenue"]),
-                "delivery_fees": float(row["delivery_fees"]),
+                "food_revenue": float(row["food_revenue"]),   # delivered only
+                "delivery_fees": float(row["delivery_fees"]), # delivered only
                 "reliability_pct": reliability_pct,
             }
-            
-    
-    
-        
-        # db/tickets.py
+                
+            # List cancelled orders with meal/vendor names
+    async def list_cancelled_orders_day(self, date: str):
+        async with self._pool.acquire() as conn:
+            return await conn.fetch(
+                """
+                SELECT o.user_id,
+                    v.name AS vendor_name,
+                    item->>'name' AS meal_name
+                FROM orders o
+                JOIN vendors v ON o.vendor_id = v.id
+                CROSS JOIN LATERAL jsonb_array_elements(o.items_json::jsonb) AS item
+                WHERE o.status='cancelled' AND o.created_at::DATE=$1
+                """,
+                date
+            )
+
+    # Top delivered meal
+    async def top_meal_day(self, date: str):
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT item->>'name' AS meal_name, COUNT(*) AS cnt
+                FROM orders o
+                CROSS JOIN LATERAL jsonb_array_elements(o.items_json::jsonb) AS item
+                WHERE o.status='delivered' AND o.created_at::DATE=$1
+                GROUP BY meal_name
+                ORDER BY cnt DESC
+                LIMIT 1
+                """,
+                date
+            )
+            return (row["meal_name"], row["cnt"]) if row else ("None", 0)
+
+    # Top vendor delivered
+    async def top_vendor_delivered_day(self, date: str):
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT v.name AS vendor_name, COUNT(*) AS cnt
+                FROM orders o
+                JOIN vendors v ON o.vendor_id = v.id
+                WHERE o.status='delivered' AND o.created_at::DATE=$1
+                GROUP BY vendor_name
+                ORDER BY cnt DESC
+                LIMIT 1
+                """,
+                date
+            )
+            return (row["vendor_name"], row["cnt"]) if row else ("None", 0)
+
+    # Top vendor cancelled
+    async def top_vendor_cancelled_day(self, date: str):
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT v.name AS vendor_name, COUNT(*) AS cnt
+                FROM orders o
+                JOIN vendors v ON o.vendor_id = v.id
+                WHERE o.status='cancelled' AND o.created_at::DATE=$1
+                GROUP BY vendor_name
+                ORDER BY cnt DESC
+                LIMIT 1
+                """,
+                date
+            )
+            return (row["vendor_name"], row["cnt"]) if row else ("None", 0)
+
+   # db/tickets.py
     async def save_ticket(self, ticket_id, user_id, text, status, original_msg_id):
         async with self._pool.acquire() as conn:
             await conn.execute("""
@@ -1110,6 +1173,23 @@ class Database:
                 telegram_id, name, menu_json
             )
             return int(vendor_id) if vendor_id else 0
+        
+    
+    async def update_vendor(self, vendor_id: int, telegram_id: int, name: str, status: str = "active"):
+        async with self._open_connection() as conn:
+            await conn.execute(
+                """
+                UPDATE vendors
+                SET telegram_id = $1,
+                    name = $2,
+                    status = $3,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = $4
+                """,
+                telegram_id, name, status, vendor_id
+            )
+        return vendor_id
+
 
     async def update_vendor_menu(self, vendor_id: int, menu: List[Dict[str, Any]]) -> None:
         """Update a vendor's menu JSON."""
@@ -1177,6 +1257,13 @@ class AnalyticsService:
     def __init__(self, db):
         self.db = db
 
+    from datetime import datetime, timedelta
+from typing import Dict, Any, List
+
+class AnalyticsService:
+    def __init__(self, db):
+        self.db = db
+
     async def summarize_day(self) -> Dict[str, Any]:
         today = datetime.now().date()
         cutoff = datetime.now() - timedelta(days=1)
@@ -1190,14 +1277,21 @@ class AnalyticsService:
         )
         new_users = await self.db.count_new_users(date=today)
 
-        # --- Orders ---
+        # --- Orders (delivered-only revenue now) ---
         orders_summary = await self.db.summarize_orders_day(date=today)
         orders_total = orders_summary["total"]
         orders_delivered = orders_summary["delivered"]
         orders_cancelled = orders_summary["cancelled"]
-        food_rev = orders_summary["food_revenue"]
-        delivery_fees = orders_summary["delivery_fees"]
+        food_rev = orders_summary["food_revenue"]        # delivered only
+        delivery_fees = orders_summary["delivery_fees"]  # delivered only
         total_payout = food_rev + delivery_fees
+        reliability_pct = orders_summary["reliability_pct"]
+
+        # --- Cancelled names + top meal/vendor delivered/cancelled ---
+        cancelled_orders: List[Dict[str, Any]] = await self.db.list_cancelled_orders_day(date=today)
+        top_meal_name, top_meal_count = await self.db.top_meal_day(date=today)
+        top_vendor_delivered, vendor_delivered_count = await self.db.top_vendor_delivered_day(date=today)
+        top_vendor_cancelled, vendor_cancelled_count = await self.db.top_vendor_cancelled_day(date=today)
 
         # --- Vendors ---
         vendors_summary = await self.db.summarize_vendors_day(date=today)
@@ -1210,13 +1304,10 @@ class AnalyticsService:
         dg_deliveries = dg_summary["deliveries"]
         dg_acceptance_rate = dg_summary["acceptance_rate"]
 
-        # --- Reliability ---
-        reliability_pct = orders_summary["reliability_pct"]
-
         # --- Campus breakdown ---
         top_campus_name, top_campus_orders = await self.db.top_campus_day(date=today)
 
-        # --- Top Deliverer ---
+        # --- Top Deliverer (from leaderboard) ---
         top_deliverer_name = users[0].get("first_name", "N/A") if users else "None"
         top_deliverer_xp = users[0].get("xp", 0) if users else 0
 
@@ -1241,44 +1332,62 @@ class AnalyticsService:
             "top_campus_orders": top_campus_orders,
             "top_deliverer_name": top_deliverer_name,
             "top_deliverer_xp": top_deliverer_xp,
+            # New insights
+            "cancelled_orders": cancelled_orders,
+            "top_meal_name": top_meal_name,
+            "top_meal_count": top_meal_count,
+            "top_vendor_delivered": top_vendor_delivered,
+            "vendor_delivered_count": vendor_delivered_count,
+            "top_vendor_cancelled": top_vendor_cancelled,
+            "vendor_cancelled_count": vendor_cancelled_count,
         }
 
     async def summary_text(self) -> str:
         data = await self.summarize_day()
+        cancelled_names = ", ".join(
+            [f"{o['meal_name']} ({o['vendor_name']})" for o in data["cancelled_orders"]]
+        ) or "None"
+
         return f"""
-📊 **Daily Summary** - {data['date']}
+📊⚡Daily Summary — {data['date']}
 
-👥 Total Users: {data['total_users']}
+👥 USERS: {data['total_users']}
 
-✅ Active (24h): {data['active_count']}
+    🔷 Active 24h: {data['active_count']}
+    🆕 New: {data['new_users']}
 
-🆕 New Signups: {data['new_users']}
+📦 ORDERS: {data['orders_total']}
 
-📦 Orders: {data['orders_total']} 
+    💠 Delivered: {data['orders_delivered']}
+    ❌ Cancelled: {data['orders_cancelled']}
 
-    • ✅ Delivered: {data['orders_delivered']}
-    • ❌ Cancelled: {data['orders_cancelled']}
+💸 REVENUE: {data['total_payout']:.2f} ብር
 
-💰 Revenue: 
+    🍽️ Food: {data['food_rev']:.2f} ብር
+    🚚 Delivery: {data['delivery_fees']:.2f} ብር
 
-     Food {data['food_rev']:.2f} + Delivery {data['delivery_fees']:.2f} = {data['total_payout']:.2f}
+🍜 TOP MEAL: {data['top_meal_name']} ×{data['top_meal_count']}
 
-🏪 Vendors Active: {data['vendors_active']} • ⭐ Avg Rating: {data['avg_vendor_rating']:.1f}
+🏪 VENDORS: {data['vendors_active']}
 
-🛵 Delivery Guys Active: {data['dg_active']} 
+    ⭐ Avg Rating: {data['avg_vendor_rating']:.1f}
+    🥇 Top Delivered: {data['top_vendor_delivered']} ({data['vendor_delivered_count']})
+    🔻 Top Cancelled: {data['top_vendor_cancelled']} ({data['vendor_cancelled_count']})
 
-    • 🚚 Total Deliveries: {data['dg_deliveries']} 
+🛵 DELIVERY SQUAD: {data['dg_active']}
 
-    • 📈 Acceptance Rate: {data['dg_acceptance_rate']:.0f}%
+    📡 Total Runs: {data['dg_deliveries']}
+    📈 Acceptance Rate: {data['dg_acceptance_rate']:.0f}%
 
-📈 Reliability: {data['reliability_pct']}%
+🧬 RELIABILITY INDEX: {data['reliability_pct']}%
 
-🎓 Top Campus: {data['top_campus_name']} ({data['top_campus_orders']} orders)
+🏛 TOP CAMPUS: {data['top_campus_name']} ({data['top_campus_orders']} orders)
 
-🏆 Top Deliverer: {data['top_deliverer_name']} ({data['top_deliverer_xp']} XP)
+🏆 TOP DELIVERER: {data['top_deliverer_name']} ({data['top_deliverer_xp']} XP)
 
-🚀 UniBites Delivery Bot
-"""
+⚡🧊 UniBites Delivery Bot • Powered by Neon Engine 🚀
+    """
+
 
 # -------------------- Seed Functions --------------------
 async def seed_vendors(db: Database) -> None:

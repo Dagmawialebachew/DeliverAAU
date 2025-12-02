@@ -5,18 +5,28 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError 
-
+from aiogram.types import (
+    Message,
+    ReplyKeyboardMarkup, KeyboardButton,
+    ReplyKeyboardRemove,
+    InlineKeyboardMarkup, InlineKeyboardButton,
+    CallbackQuery,
+)
 from database.db import AnalyticsService, Database
 from config import settings
 from handlers.delivery_guy import _db_get_delivery_guy_by_user
-from utils.db_helpers import reset_skips_daily, add_dg_to_blacklist
+from utils.db_helpers import calc_acceptance_rate, reset_skips_daily, add_dg_to_blacklist
 from utils.globals import PENDING_OFFERS # IMPORTANT: Ensure utils/globals.py exists
 from utils.vendor_scheduler import VendorJobs
 ADMIN_IDS = settings.ADMIN_IDS
 ADMIN_GROUP_ID = settings.ADMIN_SUMMRY_GROUP_ID
 log = logging.getLogger(__name__)
 
-
+    
+def go_online_keyboard(ticket_id: str = None):
+        return InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🟢 Go Online", callback_data="dg:go_online")]
+        ])
 class BotScheduler:
     """Bot background job scheduler."""
 
@@ -255,8 +265,198 @@ class BotScheduler:
 
         except Exception as e:
             log.exception("Failed to expire stale orders: %s", e)
-        
-        
+            
+    async def reset_delivery_guys_and_send_summary(self) -> None:
+        """Reset all delivery guys to offline, send them daily summary, and notify admins with a report."""
+        log.info("Running daily DG reset + summary task")
+        try:
+            async with self.db._pool.acquire() as conn:
+
+                # 1) Reset all DGs to offline
+                await conn.execute("UPDATE delivery_guys SET active = FALSE, last_offline_at = NOW()")
+                log.info("All delivery guys set to offline")
+
+                # 2) Fetch DGs
+                dgs = await conn.fetch("SELECT id, telegram_id FROM delivery_guys")
+                total_dgs = len(dgs)
+
+                from datetime import date
+                today_date = date.today()
+                today_date_str = today_date.strftime("%Y-%m-%d")
+
+                sent_count = 0
+                failed_count = 0
+                failed_ids: list[int] = []
+
+                # 3) HYPED summary to each DG
+                for dg in dgs:
+                    dg_id = dg["id"]
+                    tg_id = dg["telegram_id"]
+
+                    try:
+                        stats = await self.db.get_daily_stats_for_dg(dg_id, today_date)
+                    except Exception:
+                        stats = {"deliveries": 0, "earnings": 0.0, "xp": 0, "coins": 0.0}
+
+                    # 🔥 ULTRA-HYPE CREATOR DASHBOARD STYLE
+                    text = (
+                        f"🔥 **Your DAILY RECAP is READY — {today_date_str}** 🔥\n"
+                        "━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"🚀 **Today’s Performance**\n"
+                        f"   • 🚚 Delivers: **{stats.get('deliveries', 0)}**\n"
+                        f"   • 💵 Earnings: **{int(stats.get('earnings', 0))} birr**\n"
+                        f"   • 🎁 Rewards: **+{stats.get('xp', 0)} XP** • **+{stats.get('coins', 0.0):.2f} Coins**\n\n"
+                        f"🧊 **Status:** `OFFLINE`\n"
+                        "You’re offline. You are not receiving orders.\n\n"
+                        "⚡ **Go Online anytime to jump back into the game.**"
+                    )
+
+                    try:
+                        await self.bot.send_message(
+                            tg_id,
+                            text,
+                            reply_markup=go_online_keyboard(),
+                            parse_mode="Markdown"
+                        )
+                        sent_count += 1
+                        log.info("🔥 Sent hype summary to DG %s", dg_id)
+                    except Exception as e:
+                        failed_count += 1
+                        failed_ids.append(dg_id)
+                        log.error("❌ Failed to send summary to DG %s: %s", dg_id, e)
+
+                # -------------------------
+                # ADMIN REPORT SECTIONS
+                # -------------------------
+
+                # A) Top 3 drivers
+                top_drivers_rows = await conn.fetch(
+                    """
+                    SELECT ds.dg_id, ds.deliveries, ds.earnings, dg.name
+                    FROM daily_stats ds
+                    LEFT JOIN delivery_guys dg ON dg.id = ds.dg_id
+                    WHERE ds.date = $1
+                    ORDER BY ds.deliveries DESC, ds.earnings DESC
+                    LIMIT 3
+                    """,
+                    today_date_str
+                )
+
+                top_drivers = []
+                for r in top_drivers_rows:
+                    name = r["name"] or f"DG #{r['dg_id']}"
+                    top_drivers.append({
+                        "id": r["dg_id"],
+                        "name": name,
+                        "deliveries": int(r["deliveries"] or 0),
+                        "earnings": int(r["earnings"] or 0.0)
+                    })
+
+                # B) Drivers low acceptance
+                            # Fetch all drivers for today
+                low_accept_rows = await conn.fetch(
+                    """
+                    SELECT ds.dg_id, dg.name
+                    FROM daily_stats ds
+                    LEFT JOIN delivery_guys dg ON dg.id = ds.dg_id
+                    WHERE ds.date = $1
+                    """,
+                    today_date_str
+                )
+
+                driver_alerts = []
+                for r in low_accept_rows:
+                    # Pass the db instance explicitly, just like in delivery_guy.py
+                    acceptance_rate = await calc_acceptance_rate(self.db, r["dg_id"])
+                    
+                    driver_alerts.append(
+                        f"⚠️ {r['name'] or f'DG #{r['dg_id']}'} • {acceptance_rate:.1f}% acceptance"
+                    )
+
+
+                # C) Vendor cancels
+                vendor_cancel_rows = await conn.fetch(
+                    """
+                    SELECT v.id AS vendor_id, v.name AS vendor_name, COUNT(*) AS cancels
+                    FROM orders o
+                    JOIN vendors v ON o.vendor_id = v.id
+                    WHERE o.status = 'cancelled' AND o.created_at::DATE = $1
+                    GROUP BY v.id, v.name
+                    HAVING COUNT(*) > 0
+                    ORDER BY cancels DESC
+                    LIMIT 5
+                    """,
+                    today_date
+                )
+
+                vendor_alerts = [
+                    f"- {r['vendor_name']} • {int(r['cancels'])} cancels"
+                    for r in vendor_cancel_rows
+                ]
+
+                # D) Engagement metric
+                reactivated_count = int(await conn.fetchval(
+                    """
+                    SELECT COUNT(*) FROM delivery_guys
+                    WHERE last_online_at IS NOT NULL
+                    AND last_online_at > (NOW() - INTERVAL '2 hours')
+                    """
+                ) or 0)
+
+                # -------------------------------------
+                # ADMIN REPORT — ULTRA HYPE CREATOR MODE
+                # -------------------------------------
+
+                failed_ids_str = f" (IDs: {', '.join(map(str, failed_ids))})" if failed_ids else ""
+
+                admin_lines = [
+        "",  # breaker line to separate from previous messages
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        f"📢 **DELIVERY OPERATIONS DASHBOARD — {today_date_str}**",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        f"👥 DGs Reset: **{total_dgs}**",
+        f"📤 Summaries Sent: **{sent_count}**",
+        f"⚠️ Failed: **{failed_count}**{failed_ids_str}",
+        "",
+        "🏆 **TOP PERFORMERS**:"
+    ]
+
+
+                if top_drivers:
+                    for idx, td in enumerate(top_drivers, 1):
+                        admin_lines.append(
+                            f"{idx}. **{td['name']}** — 🚚 {td['deliveries']} • 💵 {td['earnings']} birr"
+                        )
+                else:
+                    admin_lines.append("No top performers today.")
+
+                admin_lines.append("")
+                admin_lines.append("🚨 **ALERTS**")
+                admin_lines.extend(driver_alerts or ["- No driver alerts"])
+                admin_lines.extend(vendor_alerts or ["- No vendor alerts"])
+
+                admin_lines.append("")
+                admin_lines.append("📈 **ENGAGEMENT METRIC**")
+                admin_lines.append(
+                    f"⚡ {reactivated_count} drivers bounced back online within 2 hours."
+                )
+
+                admin_text = "\n".join(admin_lines)
+
+                # Send admin report
+                try:
+                    await self.bot.send_message(
+                        ADMIN_GROUP_ID,
+                        admin_text,
+                        parse_mode="Markdown"
+                    )
+                    log.info("🔥 Sent admin creator dashboard report")
+                except Exception as e:
+                    log.error("❌ Failed to send admin report: %s", e)
+
+        except Exception:
+            log.exception("Error in DG reset + summary task")
+
     async def expire_unpicked_ready_orders(self):
         """Auto-cancel orders that were ready but not picked up within 3 hours."""
         try:
@@ -489,6 +689,16 @@ class BotScheduler:
             CronTrigger(hour="*/6"),
             id="cleanup_sessions"
         )
+        
+        #cleanup the inactive delivery guys and send them summary at 23:59
+        self.scheduler.add_job(
+            self.reset_delivery_guys_and_send_summary,
+            CronTrigger(hour=23, minute=5),
+            id="dg_daily_summary"
+        )
+        # self.scheduler.add_job(self.reset_delivery_guys_and_send_summary, "interval", minutes=0.2)  # run every 1 minute for testing
+
+
         
         # Vendor jobs
         vj = VendorJobs(self.db, self.bot)

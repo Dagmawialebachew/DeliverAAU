@@ -173,7 +173,7 @@ async def start(message: Message, state: FSMContext):
         await typing_pause(message, "🏪 እንኳን በደህና መጡ — የሱቅዎ ዳሽቦርድ ዝግጁ ነው!")
         await asyncio.sleep(0.4)
         await message.answer(
-            f"⭐ አማካይ ደረጃ: {float(vendor.get('rating_avg', 0.0)):.1f} "
+            f"⭐ አማካይ ደረጃ: {float(vendor.get('rating_avg', 3.00)):.1f} "
             f"({int(vendor.get('rating_count', 0))} አስተያየት)",
             parse_mode="HTML"
         )

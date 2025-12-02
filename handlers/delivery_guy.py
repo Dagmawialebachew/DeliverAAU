@@ -345,7 +345,6 @@ async def handle_performance_menu(message: Message):
 
     await _send_performance_view(message.bot, dg, message)
 
-
 @router.message(F.text.in_({"🟢 Go Online", "🔴 Go Offline"}))
 async def handle_status_toggle(message: Message):
     dg = await _db_get_delivery_guy_by_user(message.from_user.id)
@@ -353,18 +352,32 @@ async def handle_status_toggle(message: Message):
         return
     
     if message.text == "🟢 Go Online":
-        # Just run online logic → show location keyboard
         await _go_online_logic(message, dg)
 
     elif message.text == "🔴 Go Offline":
-        # Run offline logic
         await _go_offline_logic(message, dg)
-
-        # After going offline, refresh dashboard
         updated_dg = await _db_get_delivery_guy_by_user(message.from_user.id)
         if updated_dg:
             await _send_dashboard_view(message.bot, updated_dg["user_id"], updated_dg)
 
+
+# Inline button handler → reuse the same function
+@router.callback_query(F.data.in_({"dg:go_online", "dg:go_offline"}))
+async def handle_status_toggle_inline(cb: CallbackQuery):
+    dg = await _db_get_delivery_guy_by_user(cb.from_user.id)
+    if not dg:
+        await cb.answer("Not registered as a delivery guy.")
+        return
+
+    if cb.data == "dg:go_online":
+        await _go_online_logic(cb.message, dg)
+    else:
+        await _go_offline_logic(cb.message, dg)
+        updated_dg = await _db_get_delivery_guy_by_user(cb.from_user.id)
+        if updated_dg:
+            await _send_dashboard_view(cb.bot, updated_dg["user_id"], updated_dg)
+
+    await cb.answer()
 
 # --------------------------
 # Sub-Dashboard Views (Section 4)

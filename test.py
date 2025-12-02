@@ -410,54 +410,101 @@ import asyncio
 #     asyncio.run(main())
 
 
+# import asyncio
+# from typing import List, Tuple
+# from database.db import Database
+# from database import db
+
+# async def seed_delivery_guys(db: Database) -> None:
+#     """
+#     Insert a single delivery guy into the delivery_guys table.
+#     Uses ON CONFLICT DO NOTHING so it won't raise if user_id already exists.
+#     """
+
+#     # (user_id, telegram_id, name, campus, phone, active, blocked,
+#     #  total_deliveries, accepted_requests, total_requests,
+#     #  coins, xp, level)
+#     delivery_guys_data: List[Tuple] = [
+#         (
+#             1001,            # user_id
+#             7112595006,      # telegram_id
+#             "Kupachata",     # name
+#             "4kilo",         # campus
+#             "+251960306801", # phone (example; change as needed)
+#             True,            # active
+#             False,           # blocked
+#             12,              # total_deliveries
+#             14,              # accepted_requests
+#             16,              # total_requests
+#             10,              # coins
+#             260,             # xp
+#             3                # level
+#         )
+#     ]
+
+#     async with db.open_connection() as conn:
+#         insert_sql = """
+#             INSERT INTO delivery_guys 
+#             (user_id, telegram_id, name, campus, phone, active, blocked,
+#              total_deliveries, accepted_requests, total_requests,
+#              coins, xp, level)
+#             VALUES ($1::BIGINT, $2::BIGINT, $3, $4, $5, $6, $7,
+#                     $8, $9, $10, $11, $12, $13)
+#             ON CONFLICT (user_id) DO NOTHING
+#         """
+
+#         for row in delivery_guys_data:
+#             await conn.execute(insert_sql, *row)
+
+#     print("✅ Delivery guy (with phone) inserted successfully (or already existed).")
+
+
+# if __name__ == "__main__":
+#     asyncio.run(seed_delivery_guys(db))
+
+
+
+
 import asyncio
-from typing import List, Tuple
 from database.db import Database
-from database import db
 
-async def seed_delivery_guys(db: Database) -> None:
-    """
-    Insert a single delivery guy into the delivery_guys table.
-    Uses ON CONFLICT DO NOTHING so it won't raise if user_id already exists.
-    """
+async def test_schema():
+    db = Database()
+    await db.init_pool()
+    async with db._open_connection() as conn:
+        # List all tables in public schema
+        tables = await conn.fetch("""
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema='public'
+            ORDER BY table_name
+        """)
+        print("Tables:", [t['table_name'] for t in tables])
 
-    # (user_id, telegram_id, name, campus, phone, active, blocked,
-    #  total_deliveries, accepted_requests, total_requests,
-    #  coins, xp, level)
-    delivery_guys_data: List[Tuple] = [
-        (
-            1001,            # user_id
-            7112595006,      # telegram_id
-            "Kupachata",     # name
-            "4kilo",         # campus
-            "+251960306801", # phone (example; change as needed)
-            True,            # active
-            False,           # blocked
-            12,              # total_deliveries
-            14,              # accepted_requests
-            16,              # total_requests
-            10,              # coins
-            260,             # xp
-            3                # level
-        )
-    ]
+        # Show columns + types for orders
+        orders_cols = await conn.fetch("""
+            SELECT column_name, data_type
+            FROM information_schema.columns
+            WHERE table_name = 'orders'
+            ORDER BY ordinal_position
+        """)
+        print("orders columns:", [(c['column_name'], c['data_type']) for c in orders_cols])
 
-    async with db.open_connection() as conn:
-        insert_sql = """
-            INSERT INTO delivery_guys 
-            (user_id, telegram_id, name, campus, phone, active, blocked,
-             total_deliveries, accepted_requests, total_requests,
-             coins, xp, level)
-            VALUES ($1::BIGINT, $2::BIGINT, $3, $4, $5, $6, $7,
-                    $8, $9, $10, $11, $12, $13)
-            ON CONFLICT (user_id) DO NOTHING
-        """
+        # Show columns + types for vendors
+        vendors_cols = await conn.fetch("""
+            SELECT column_name, data_type
+            FROM information_schema.columns
+            WHERE table_name = 'vendors'
+            ORDER BY ordinal_position
+        """)
+        print("vendors columns:", [(c['column_name'], c['data_type']) for c in vendors_cols])
 
-        for row in delivery_guys_data:
-            await conn.execute(insert_sql, *row)
+        # Optionally: peek at a few rows
+        sample_orders = await conn.fetch("SELECT * FROM orders LIMIT 5;")
+        print("Sample orders:", [dict(r) for r in sample_orders])
 
-    print("✅ Delivery guy (with phone) inserted successfully (or already existed).")
-
+        sample_vendors = await conn.fetch("SELECT * FROM vendors LIMIT 5;")
+        print("Sample vendors:", [dict(r) for r in sample_vendors])
 
 if __name__ == "__main__":
-    asyncio.run(seed_delivery_guys(db))
+    asyncio.run(test_schema())

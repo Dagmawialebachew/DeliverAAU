@@ -90,7 +90,7 @@ async def show_vendor_dashboard(message: Message):
         return
 
     # Build rating text only if rating_avg > 0
-    rating_avg = float(vendor.get("rating_avg") or 0.0)
+    rating_avg = float(vendor.get("rating_avg") or 3.00)
     rating_count = int(vendor.get("rating_count") or 0)
     rating_text = ""
     if rating_avg > 0:

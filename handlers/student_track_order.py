@@ -966,7 +966,7 @@ async def render_order_summary(order_id: int, tick: int = 0, paused: bool = Fals
     vendor_name = vendor.get("name") if vendor else "Vendor"
     vendor_line = f"🏪 {vendor_name}"
     if vendor and vendor.get("rating_avg") is not None:
-        vendor_line += f" • ★ {round(vendor.get('rating_avg',0),1)} ({vendor.get('rating_count',0)})"
+        vendor_line += f" • ★ {round(vendor.get('rating_avg',3.00),1)} ({vendor.get('rating_count',0)})"
 
     # DG info
     dg_text = ""
