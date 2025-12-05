@@ -42,6 +42,14 @@ class BotScheduler:
     # 🆕 NEW: Live Offer Countdown Job (Phase 2)
     # -----------------------------------------------
     async def update_order_offers(self) -> None:
+        """
+        Periodically updates pending DG offers:
+        - Updates countdown on active offers
+        - Expires offers → resets order.delivery_guy_id and status to 'pending'
+        - Blacklists rejecting/blocked DG
+        - Re-offers to next candidate
+        - Notifies admin group with clear attribution (order + DG info)
+        """
         offers_to_check = list(PENDING_OFFERS.items())
         log.debug("[DEBUG] Checking %d pending offers", len(offers_to_check))
 
@@ -66,8 +74,28 @@ class BotScheduler:
                 icon = "❌"
 
             from handlers.delivery_guy import order_offer_keyboard, send_new_order_offer
-            from utils.helpers import find_next_candidate
+            from utils.helpers import find_next_candidate, notify_admin_log  # ensure import exists
             from utils.db_helpers import add_dg_to_blacklist
+            from config import ADMIN_GROUP_ID  # ensure import exists
+
+            async def _admin_notify(event: str, dg: dict | None, extra: str = ""):
+                # Minimal, resilient admin notifier with DG context
+                if not ADMIN_GROUP_ID:
+                    return
+                dg_name = dg.get("name") if dg else "Unknown DG"
+                dg_id = dg.get("id") if dg else "N/A"
+                dg_campus = dg.get("campus") if dg else "N/A"
+                dg_user = dg.get("telegram_id") if dg else chat_id
+                msg = (
+                    f"{event}\n"
+                    f"📦 Order #{order_id}\n"
+                    f"🚴 DG: {dg_name} (id={dg_id}, campus={dg_campus}, chat_id={dg_user})\n"
+                    f"{extra}".strip()
+                )
+                try:
+                    await notify_admin_log(self.bot, ADMIN_GROUP_ID, msg)
+                except Exception:
+                    log.exception("[ADMIN LOG] Failed to send admin notification for order %s", order_id)
 
             try:
                 # --- Offer expired ---
@@ -90,14 +118,14 @@ class BotScheduler:
                     except Exception:
                         log.debug("Failed to edit expired message for order %s to DG chat %s", order_id, chat_id)
 
-                    # Clear DB assignment and mark pending
+                    # Clear DB assignment and mark pending (do NOT rely on status for DG availability logic)
                     async with self.db._open_connection() as conn:
                         await conn.execute(
-                            "UPDATE orders SET status = $1, delivery_guy_id = $2 WHERE id = $3",
+                            "UPDATE orders SET status = $1, delivery_guy_id = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3",
                             "pending", None, order_id
                         )
 
-                    # Persist rejection using DG internal ID
+                    # Persist rejection using DG internal ID (blacklist)
                     dg = await _db_get_delivery_guy_by_user(chat_id)
                     if dg:
                         try:
@@ -108,6 +136,13 @@ class BotScheduler:
                     # Stop tracking this offer
                     PENDING_OFFERS.pop(order_id, None)
 
+                    # Admin notification (expired)
+                    await _admin_notify(
+                        event="⏰ Offer expired (ignored until timeout)",
+                        dg=dg,
+                        extra=f"🕒 Last countdown seen: {countdown}\n↩️ Returned to pool."
+                    )
+
                     # Re-offer to next candidate (do not assign)
                     order = await self.db.get_order(order_id)
                     if order:
@@ -117,10 +152,26 @@ class BotScheduler:
                             try:
                                 await send_new_order_offer(self.bot, next_dg, order)
                                 log.info("[REOFFER] Offered order %s to DG %s", order_id, next_dg["id"])
+                                # Admin notification (re-offered)
+                                await _admin_notify(
+                                    event="🔁 Re-offered to next candidate",
+                                    dg=next_dg,
+                                    extra="Awaiting DG response."
+                                )
                             except Exception:
                                 log.exception("[REOFFER] Failed to send offer for order %s to DG %s", order_id, next_dg.get("id"))
+                                await _admin_notify(
+                                    event="❗ Re-offer failed",
+                                    dg=next_dg,
+                                    extra="Check logs for details."
+                                )
                         else:
                             log.warning("[REOFFER] No eligible DG found for order %s", order_id)
+                            await _admin_notify(
+                                event="⚠️ No eligible DG found",
+                                dg=None,
+                                extra="Manual admin assignment may be required."
+                            )
 
                 # --- Offer still active: update countdown display ---
                 else:
@@ -132,6 +183,11 @@ class BotScheduler:
                     if not order:
                         log.debug("[DEBUG] Order %s not found in DB, removing from tracker", order_id)
                         PENDING_OFFERS.pop(order_id, None)
+                        await _admin_notify(
+                            event="⚠️ Offer tracking stopped (order missing)",
+                            dg=None,
+                            extra="Order not found in DB."
+                        )
                         continue
 
                     pickup_loc = order.get("pickup")
@@ -168,6 +224,11 @@ class BotScheduler:
                     except TelegramBadRequest as e:
                         if "message is not modified" not in str(e):
                             log.warning("Offer message for order %s failed to edit: %s", order_id, e)
+                            await _admin_notify(
+                                event="❗ Failed to edit DG offer message",
+                                dg=None,
+                                extra=str(e)
+                            )
                         PENDING_OFFERS.pop(order_id, None)
 
             except TelegramForbiddenError:
@@ -182,6 +243,13 @@ class BotScheduler:
                     except Exception:
                         log.exception("[BLACKLIST] Failed to add DG %s to blacklist for order %s", dg["id"], order_id)
 
+                # Admin notification (blocked)
+                await _admin_notify(
+                    event="🚫 DG blocked the bot",
+                    dg=dg,
+                    extra="Order returned to pool."
+                )
+                await self.db.increment_skip(dg["id"])
                 # Re-offer to next candidate
                 order = await self.db.get_order(order_id)
                 if order:
@@ -190,12 +258,27 @@ class BotScheduler:
                         try:
                             await send_new_order_offer(self.bot, next_dg, order)
                             log.info("[REOFFER] Offered order %s to DG %s after block", order_id, next_dg["id"])
+                            await _admin_notify(
+                                event="🔁 Re-offered to next candidate",
+                                dg=next_dg,
+                                extra="Awaiting DG response."
+                            )
                         except Exception:
                             log.exception("[REOFFER] Failed to send offer for order %s to DG %s", order_id, next_dg.get("id"))
+                            await _admin_notify(
+                                event="❗ Re-offer failed after block",
+                                dg=next_dg,
+                                extra="Check logs for details."
+                            )
 
             except Exception:
                 log.exception("Unexpected error updating offer %s", order_id)
                 PENDING_OFFERS.pop(order_id, None)
+                await _admin_notify(
+                    event="❗ Unexpected error in offer update",
+                    dg=None,
+                    extra="Offer tracking stopped for this order."
+                )
 
     #----------------------------------
     # 🆕 NEW: Core System Jobs (Section 7)
@@ -267,80 +350,146 @@ class BotScheduler:
             log.exception("Failed to expire stale orders: %s", e)
             
     async def reset_delivery_guys_and_send_summary(self) -> None:
-        """Reset all delivery guys to offline, send them daily summary, and notify admins with a report."""
+        """
+        Daily job that:
+        - Archives yesterday's daily_stats into daily_stats_archive and clears them
+        - Resets all delivery_guys to offline and stamps last_offline_at
+        - Clears in-memory pending offers to avoid ghost offers overnight
+        - Sends each DG a daily recap enriched with active_orders_count and acceptance_rate
+        - Sends an admin report with top performers, low-acceptance alerts, vendor cancels, and engagement metrics
+        """
         log.info("Running daily DG reset + summary task")
         try:
+            from datetime import date, timedelta
+            today = date.today()
+            yesterday = today - timedelta(days=1)
+            today_str = today.strftime("%Y-%m-%d")
+            yesterday_str = yesterday.strftime("%Y-%m-%d")
+
             async with self.db._pool.acquire() as conn:
+                # 1) Archive yesterday's daily_stats and clear them (idempotent)
+                try:
+                    await conn.execute(
+                        """
+                        INSERT INTO daily_stats_archive (dg_id, date, deliveries, earnings, skipped, assigned, acceptance_rate)
+                        SELECT dg_id, date, deliveries, earnings, skipped, assigned, acceptance_rate
+                        FROM daily_stats
+                        WHERE date = $1
+                        """,
+                        yesterday_str
+                    )
+                    await conn.execute("DELETE FROM daily_stats WHERE date = $1", yesterday_str)
+                    log.debug("Archived and cleared daily_stats for %s", yesterday_str)
+                except Exception:
+                    log.exception("Failed to archive/clear yesterday's daily_stats")
 
-                # 1) Reset all DGs to offline
-                await conn.execute("UPDATE delivery_guys SET active = FALSE, last_offline_at = NOW()")
-                log.info("All delivery guys set to offline")
+                # 2) Reset all DGs to offline and stamp last_offline_at
+                try:
+                    await conn.execute("UPDATE delivery_guys SET active = FALSE, last_offline_at = NOW()")
+                    log.info("All delivery guys set to offline")
+                except Exception:
+                    log.exception("Failed to reset delivery_guys active flags")
 
-                # 2) Fetch DGs
-                dgs = await conn.fetch("SELECT id, telegram_id FROM delivery_guys")
+                # 3) Clear in-memory pending offers
+                try:
+                    PENDING_OFFERS.clear()
+                    log.debug("Cleared PENDING_OFFERS")
+                except Exception:
+                    log.exception("Failed to clear PENDING_OFFERS")
+
+                # 4) Fetch DG list to message them
+                try:
+                    dgs = await conn.fetch("SELECT id, telegram_id, name FROM delivery_guys")
+                except Exception:
+                    log.exception("Failed to fetch delivery_guys")
+                    dgs = []
+
                 total_dgs = len(dgs)
-
-                from datetime import date
-                today_date = date.today()
-                today_date_str = today_date.strftime("%Y-%m-%d")
-
                 sent_count = 0
                 failed_count = 0
                 failed_ids: list[int] = []
 
-                # 3) HYPED summary to each DG
-                for dg in dgs:
-                    dg_id = dg["id"]
-                    tg_id = dg["telegram_id"]
-
+                # safe_send helper
+                async def safe_send(bot, chat_id, text, reply_markup=None, parse_mode="Markdown"):
                     try:
-                        stats = await self.db.get_daily_stats_for_dg(dg_id, today_date)
+                        await bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
+                        return True
+                    except Exception as e:
+                        log.warning("safe_send failed for chat %s: %s", chat_id, e)
+                        return False
+
+                # 5) Send per-DG summaries
+                for row in dgs:
+                    dg_id = row["id"]
+                    tg_id = row["telegram_id"]
+                    dg_name = row.get("name") or f"DG #{dg_id}"
+
+                    # Fetch today's stats (fallback to zeros)
+                    try:
+                        stats = await self.db.get_daily_stats_for_dg(dg_id, today)
                     except Exception:
+                        log.exception("Failed to fetch daily stats for DG %s", dg_id)
                         stats = {"deliveries": 0, "earnings": 0.0, "xp": 0, "coins": 0.0}
 
-                    # 🔥 ULTRA-HYPE CREATOR DASHBOARD STYLE
+                    # Enrich with active orders count
+                    try:
+                        active_orders = await self.db.get_active_orders_for_dg(dg_id)
+                        active_count = len(active_orders)
+                    except Exception:
+                        log.exception("Failed to compute active orders for DG %s", dg_id)
+                        active_count = 0
+
+                    # Acceptance rate
+                    try:
+                        acceptance_rate = await self.db.calc_acceptance_rate(dg_id)
+                    except Exception:
+                        log.exception("Failed to compute acceptance rate for DG %s", dg_id)
+                        acceptance_rate = 100.0
+
+                    # Build message
                     text = (
-                        f"🔥 **Your DAILY RECAP is READY — {today_date_str}** 🔥\n"
+                        f"🔥 **Your DAILY RECAP — {today_str}** 🔥\n"
                         "━━━━━━━━━━━━━━━━━━━━━━\n"
                         f"🚀 **Today’s Performance**\n"
-                        f"   • 🚚 Delivers: **{stats.get('deliveries', 0)}**\n"
+                        f"   • 🚚 Deliveries: **{int(stats.get('deliveries', 0))}**\n"
                         f"   • 💵 Earnings: **{int(stats.get('earnings', 0))} birr**\n"
-                        f"   • 🎁 Rewards: **+{stats.get('xp', 0)} XP** • **+{stats.get('coins', 0.0):.2f} Coins**\n\n"
+                        f"   • 🎁 Rewards: **+{int(stats.get('xp', 0))} XP** • **+{float(stats.get('coins', 0.0)):.2f} Coins**\n\n"
+                        f"📊 **Workload**: Active Orders: **{active_count}** • Acceptance: **{acceptance_rate:.1f}%**\n\n"
                         f"🧊 **Status:** `OFFLINE`\n"
-                        "You’re offline. You are not receiving orders.\n\n"
-                        "⚡ **Go Online anytime to jump back into the game.**"
+                        "You are offline and will not receive orders. Use the button below to go online.\n"
                     )
 
                     try:
-                        await self.bot.send_message(
-                            tg_id,
-                            text,
-                            reply_markup=go_online_keyboard(),
-                            parse_mode="Markdown"
-                        )
-                        sent_count += 1
-                        log.info("🔥 Sent hype summary to DG %s", dg_id)
-                    except Exception as e:
+                        ok = await safe_send(self.bot, tg_id, text, reply_markup=go_online_keyboard(), parse_mode="Markdown")
+                        if ok:
+                            sent_count += 1
+                            log.info("Sent daily recap to DG %s (%s)", dg_id, dg_name)
+                        else:
+                            failed_count += 1
+                            failed_ids.append(dg_id)
+                    except Exception:
+                        log.exception("Unexpected error sending recap to DG %s", dg_id)
                         failed_count += 1
                         failed_ids.append(dg_id)
-                        log.error("❌ Failed to send summary to DG %s: %s", dg_id, e)
 
-                # -------------------------
-                # ADMIN REPORT SECTIONS
-                # -------------------------
+                # 6) Build admin report
 
-                # A) Top 3 drivers
-                top_drivers_rows = await conn.fetch(
-                    """
-                    SELECT ds.dg_id, ds.deliveries, ds.earnings, dg.name
-                    FROM daily_stats ds
-                    LEFT JOIN delivery_guys dg ON dg.id = ds.dg_id
-                    WHERE ds.date = $1
-                    ORDER BY ds.deliveries DESC, ds.earnings DESC
-                    LIMIT 3
-                    """,
-                    today_date_str
-                )
+                # Top 3 drivers (today)
+                try:
+                    top_drivers_rows = await conn.fetch(
+                        """
+                        SELECT ds.dg_id, ds.deliveries, ds.earnings, dg.name
+                        FROM daily_stats ds
+                        LEFT JOIN delivery_guys dg ON dg.id = ds.dg_id
+                        WHERE ds.date = $1
+                        ORDER BY ds.deliveries DESC, ds.earnings DESC
+                        LIMIT 3
+                        """,
+                        today_str
+                    )
+                except Exception:
+                    log.exception("Failed to fetch top drivers")
+                    top_drivers_rows = []
 
                 top_drivers = []
                 for r in top_drivers_rows:
@@ -352,81 +501,80 @@ class BotScheduler:
                         "earnings": int(r["earnings"] or 0.0)
                     })
 
-                # B) Drivers low acceptance
-                            # Fetch all drivers for today
-                low_accept_rows = await conn.fetch(
-                    """
-                    SELECT ds.dg_id, dg.name
-                    FROM daily_stats ds
-                    LEFT JOIN delivery_guys dg ON dg.id = ds.dg_id
-                    WHERE ds.date = $1
-                    """,
-                    today_date_str
-                )
-
+                # Low acceptance alerts (scan drivers with stats today)
                 driver_alerts = []
-                for r in low_accept_rows:
-                    # Pass the db instance explicitly, just like in delivery_guy.py
-                    acceptance_rate = await calc_acceptance_rate(self.db, r["dg_id"])
-                    
-                    driver_alerts.append(
-                        f"⚠️ {r['name'] or f'DG #{r['dg_id']}'} • {acceptance_rate:.1f}% acceptance"
+                try:
+                    low_accept_rows = await conn.fetch(
+                        """
+                        SELECT DISTINCT ds.dg_id, dg.name
+                        FROM daily_stats ds
+                        LEFT JOIN delivery_guys dg ON dg.id = ds.dg_id
+                        WHERE ds.date = $1
+                        """,
+                        today_str
                     )
+                    for r in low_accept_rows:
+                        try:
+                            rate = await self.db.calc_acceptance_rate(r["dg_id"])
+                        except Exception:
+                            rate = 100.0
+                        if rate < 80.0:  # alert threshold
+                            driver_alerts.append(f"⚠️ {r['name'] or f'DG #{r['dg_id']}'} • {rate:.1f}% acceptance")
+                except Exception:
+                    log.exception("Failed to compute driver alerts")
 
+                # Vendor cancels
+                vendor_alerts = []
+                try:
+                    vendor_cancel_rows = await conn.fetch(
+                        """
+                        SELECT v.id AS vendor_id, v.name AS vendor_name, COUNT(*) AS cancels
+                        FROM orders o
+                        JOIN vendors v ON o.vendor_id = v.id
+                        WHERE o.status = 'cancelled' AND o.created_at::DATE = $1
+                        GROUP BY v.id, v.name
+                        HAVING COUNT(*) > 0
+                        ORDER BY cancels DESC
+                        LIMIT 5
+                        """,
+                        today
+                    )
+                    vendor_alerts = [
+                        f"- {r['vendor_name']} • {int(r['cancels'])} cancels"
+                        for r in vendor_cancel_rows
+                    ]
+                except Exception:
+                    log.exception("Failed to fetch vendor cancels")
 
-                # C) Vendor cancels
-                vendor_cancel_rows = await conn.fetch(
-                    """
-                    SELECT v.id AS vendor_id, v.name AS vendor_name, COUNT(*) AS cancels
-                    FROM orders o
-                    JOIN vendors v ON o.vendor_id = v.id
-                    WHERE o.status = 'cancelled' AND o.created_at::DATE = $1
-                    GROUP BY v.id, v.name
-                    HAVING COUNT(*) > 0
-                    ORDER BY cancels DESC
-                    LIMIT 5
-                    """,
-                    today_date
-                )
-
-                vendor_alerts = [
-                    f"- {r['vendor_name']} • {int(r['cancels'])} cancels"
-                    for r in vendor_cancel_rows
-                ]
-
-                # D) Engagement metric
-                reactivated_count = int(await conn.fetchval(
-                    """
-                    SELECT COUNT(*) FROM delivery_guys
-                    WHERE last_online_at IS NOT NULL
-                    AND last_online_at > (NOW() - INTERVAL '2 hours')
-                    """
-                ) or 0)
-
-                # -------------------------------------
-                # ADMIN REPORT — ULTRA HYPE CREATOR MODE
-                # -------------------------------------
+                # Engagement metric: drivers who came online in last 2 hours
+                try:
+                    reactivated_count = int(await conn.fetchval(
+                        """
+                        SELECT COUNT(*) FROM delivery_guys
+                        WHERE last_online_at IS NOT NULL
+                        AND last_online_at > (NOW() - INTERVAL '2 hours')
+                        """
+                    ) or 0)
+                except Exception:
+                    log.exception("Failed to compute engagement metric")
+                    reactivated_count = 0
 
                 failed_ids_str = f" (IDs: {', '.join(map(str, failed_ids))})" if failed_ids else ""
 
                 admin_lines = [
-        "",  # breaker line to separate from previous messages
-        "━━━━━━━━━━━━━━━━━━━━━━",
-        f"📢 **DELIVERY OPERATIONS DASHBOARD — {today_date_str}**",
-        "━━━━━━━━━━━━━━━━━━━━━━",
-        f"👥 DGs Reset: **{total_dgs}**",
-        f"📤 Summaries Sent: **{sent_count}**",
-        f"⚠️ Failed: **{failed_count}**{failed_ids_str}",
-        "",
-        "🏆 **TOP PERFORMERS**:"
-    ]
-
+                    "━━━━━━━━━━━━━━━━━━━━━━",
+                    f"📢 **DELIVERY OPERATIONS DASHBOARD — {today_str}**",
+                    "━━━━━━━━━━━━━━━━━━━━━━",
+                    f"👥 DGs Reset: **{total_dgs}**",
+                    f"📤 Summaries Sent: **{sent_count}**",
+                    f"⚠️ Failed: **{failed_count}**{failed_ids_str}",
+                    "",
+                    "🏆 **TOP PERFORMERS**:"
+                ]
 
                 if top_drivers:
                     for idx, td in enumerate(top_drivers, 1):
-                        admin_lines.append(
-                            f"{idx}. **{td['name']}** — 🚚 {td['deliveries']} • 💵 {td['earnings']} birr"
-                        )
+                        admin_lines.append(f"{idx}. **{td['name']}** — 🚚 {td['deliveries']} • 💵 {td['earnings']} birr")
                 else:
                     admin_lines.append("No top performers today.")
 
@@ -434,25 +582,17 @@ class BotScheduler:
                 admin_lines.append("🚨 **ALERTS**")
                 admin_lines.extend(driver_alerts or ["- No driver alerts"])
                 admin_lines.extend(vendor_alerts or ["- No vendor alerts"])
-
                 admin_lines.append("")
                 admin_lines.append("📈 **ENGAGEMENT METRIC**")
-                admin_lines.append(
-                    f"⚡ {reactivated_count} drivers bounced back online within 2 hours."
-                )
-
+                admin_lines.append(f"⚡ {reactivated_count} drivers bounced back online within 2 hours.")
                 admin_text = "\n".join(admin_lines)
 
                 # Send admin report
                 try:
-                    await self.bot.send_message(
-                        ADMIN_GROUP_ID,
-                        admin_text,
-                        parse_mode="Markdown"
-                    )
-                    log.info("🔥 Sent admin creator dashboard report")
-                except Exception as e:
-                    log.error("❌ Failed to send admin report: %s", e)
+                    await self.bot.send_message(ADMIN_GROUP_ID, admin_text, parse_mode="Markdown")
+                    log.info("Sent admin daily report")
+                except Exception:
+                    log.exception("Failed to send admin report")
 
         except Exception:
             log.exception("Error in DG reset + summary task")

@@ -71,6 +71,30 @@ CREATE TABLE IF NOT EXISTS vendors (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS orders (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER,
+    delivery_guy_id INTEGER NULL, 
+    vendor_id INTEGER,
+    pickup TEXT,
+    dropoff TEXT,
+    items_json TEXT,
+    food_subtotal DOUBLE PRECISION DEFAULT 0.0, -- Changed REAL to DOUBLE PRECISION
+    delivery_fee DOUBLE PRECISION DEFAULT 0.0, -- Changed REAL to DOUBLE PRECISION
+    status TEXT, -- pending / assigned / preparing / ready / in_progress / delivered / cancelled
+    payment_method TEXT,
+    payment_status TEXT,
+    receipt_id INTEGER,
+    breakdown_json TEXT,
+    live_shared BOOLEAN DEFAULT FALSE, -- Changed INTEGER DEFAULT 0 to BOOLEAN DEFAULT FALSE
+    live_expires TIMESTAMP NULL, 
+    last_lat DOUBLE PRECISION NULL, -- Changed REAL to DOUBLE PRECISION
+    last_lon DOUBLE PRECISION NULL, -- Changed REAL to DOUBLE PRECISION
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    accepted_at TIMESTAMP NULL,
+    delivered_at TIMESTAMP NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 
 
 CREATE TABLE IF NOT EXISTS daily_stats (
@@ -301,6 +325,15 @@ class Database:
             }
                 
             # List cancelled orders with meal/vendor names
+            
+    async def get_active_orders_for_dg(self, dg_id: int) -> List[Dict]:
+        async with self._open_connection() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM orders WHERE delivery_guy_id = $1 AND status IN ('assigned','in_progress','ready')",
+                dg_id
+            )
+            return [self._row_to_dict(r) for r in rows]
+
     async def list_cancelled_orders_day(self, date: str):
         async with self._pool.acquire() as conn:
             return await conn.fetch(
@@ -1068,33 +1101,74 @@ class Database:
                 total_xp, total_coins, dg_id
             )
     
-    async def increment_skip(self, dg_id: int) -> None:
-        """Increments skipped_requests and updates last_skip_at for a DG."""
-        today_str = datetime.date.today().strftime('%Y-%m-%d')
-        
+    async def increment_total_requests(self, dg_id: int) -> None:
+            """Increment total_requests whenever a new order offer is sent to a DG."""
+            async with self._open_connection() as conn:
+                await conn.execute(
+                    """
+                    UPDATE delivery_guys
+                    SET total_requests = total_requests + 1
+                    WHERE id = $1
+                    """,
+                    dg_id
+                )
+
+    async def increment_accepted_requests(self, dg_id: int) -> None:
+        """Increment accepted_requests when a DG accepts an order offer."""
         async with self._open_connection() as conn:
-            # 1. Update delivery_guys table
             await conn.execute(
                 """
-                UPDATE delivery_guys SET
-                skipped_requests = skipped_requests + 1,
-                last_skip_at = CURRENT_TIMESTAMP
+                UPDATE delivery_guys
+                SET accepted_requests = accepted_requests + 1
                 WHERE id = $1
                 """,
                 dg_id
             )
-            
-            # 2. Update daily_stats table (UPSERT)
+
+    async def increment_skip(self, dg_id: int) -> None:
+        """Increment skipped_requests and update last_skip_at when a DG skips/ignores an order."""
+        today_str = datetime.date.today().strftime('%Y-%m-%d')
+        async with self._open_connection() as conn:
             await conn.execute(
                 """
-                INSERT INTO daily_stats (dg_id, date, skipped)
+                UPDATE delivery_guys
+                SET skipped_requests = skipped_requests + 1,
+                    last_skip_at = CURRENT_TIMESTAMP
+                WHERE id = $1
+                """,
+                dg_id
+            )
+
+    import datetime
+
+    async def increment_total_deliveries(self, dg_id: int) -> None:
+        """Increment total_deliveries when a DG successfully delivers an order and update daily_stats."""
+        today_str = datetime.date.today().strftime("%Y-%m-%d")
+
+        # 1. Update delivery_guys cumulative counter
+        async with self._open_connection() as conn:
+            await conn.execute(
+                """
+                UPDATE delivery_guys
+                SET total_deliveries = total_deliveries + 1
+                WHERE id = $1
+                """,
+                dg_id
+            )
+
+        # 2. Update daily_stats table (UPSERT)
+        async with self._open_connection() as conn:
+            await conn.execute(
+                """
+                INSERT INTO daily_stats (dg_id, date, deliveries)
                 VALUES ($1, $2, 1)
                 ON CONFLICT(dg_id, date) DO UPDATE SET
-                skipped = daily_stats.skipped + 1,
-                updated_at = CURRENT_TIMESTAMP
+                    deliveries = daily_stats.deliveries + 1,
+                    updated_at = CURRENT_TIMESTAMP
                 """,
                 dg_id, today_str
             )
+
 
     async def reset_daily_skip_count(self, dg_id: int) -> None:
         """Resets the DG's `skipped_requests` counter."""
@@ -1248,6 +1322,127 @@ class Database:
         assert field in ("accepted_at", "delivered_at")
         async with self._open_connection() as conn:
             await conn.execute(f"UPDATE orders SET {field} = CURRENT_TIMESTAMP WHERE id = $1", order_id)
+   
+   
+    async def count_orders(
+        self,
+        filter_statuses: list[str] | None = None,
+        delivery_guy_null: bool | None = None
+    ) -> int:
+        """
+        Count orders with optional status filter and DG assignment filter.
+        """
+        async with self._open_connection() as conn:
+            query = "SELECT COUNT(*) FROM orders WHERE TRUE"
+            params = []
+            param_index = 1
+
+            if filter_statuses:
+                query += f" AND status = ANY(${param_index})"
+                params.append(filter_statuses)
+                param_index += 1
+
+            if delivery_guy_null is not None:
+                query += f" AND (delivery_guy_id IS NULL) = ${param_index}"
+                params.append(delivery_guy_null)
+                param_index += 1
+
+            return await conn.fetchval(query, *params) or 0
+        
+    async def count_active_delivery_guys(self) -> int:
+        """
+        Count all active, non-blocked delivery guys.
+        """
+        async with self._open_connection() as conn:
+            return await conn.fetchval(
+                "SELECT COUNT(*) FROM delivery_guys WHERE active = TRUE AND blocked = FALSE"
+            ) or 0
+        
+    
+    async def get_orders(
+        self,
+        filter_statuses: list[str] | None = None,
+        delivery_guy_null: bool | None = None,
+        limit: int = 10,
+        offset: int = 0
+    ) -> list[dict]:
+        """
+        Fetch orders with optional status filter and DG assignment filter.
+        """
+        async with self._open_connection() as conn:
+            query = "SELECT * FROM orders WHERE TRUE"
+            params = []
+            param_index = 1
+
+            if filter_statuses:
+                query += f" AND status = ANY(${param_index})"
+                params.append(filter_statuses)
+                param_index += 1
+
+            if delivery_guy_null is not None:
+                query += f" AND (delivery_guy_id IS NULL) = ${param_index}"
+                params.append(delivery_guy_null)
+                param_index += 1
+
+            query += f" ORDER BY created_at DESC LIMIT ${param_index} OFFSET ${param_index+1}"
+            params.extend([limit, offset])
+
+            rows = await conn.fetch(query, *params)
+            return [dict(r) for r in rows]
+
+    async def update_order_delivery_guy(
+        self,
+        order_id: int,
+        delivery_guy_id: int,
+        breakdown_json: str | None
+    ) -> None:
+        """
+        Update the assigned delivery guy and breakdown info.
+        """
+        async with self._open_connection() as conn:
+            await conn.execute(
+                """
+                UPDATE orders
+                SET delivery_guy_id = $1,
+                    breakdown_json = $2,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = $3
+                """,
+                delivery_guy_id, breakdown_json, order_id
+            )
+
+    async def set_order_timestamp(self, order_id: int, field_name: str) -> None:
+        """
+        Set a timestamp field to CURRENT_TIMESTAMP.
+        Example: accepted_at, ready_at, delivered_at.
+        """
+        async with self._open_connection() as conn:
+            # Use SQL injection-safe field name check if needed
+            if field_name not in {"accepted_at", "ready_at", "delivered_at"}:
+                raise ValueError(f"Unsupported timestamp field: {field_name}")
+            await conn.execute(
+                f"UPDATE orders SET {field_name} = CURRENT_TIMESTAMP WHERE id = $1",
+                order_id
+            )
+
+    async def list_delivery_guys(
+        self,
+        limit: int,
+        offset: int,
+        active_only: bool = True
+    ) -> list[dict]:
+        """
+        List delivery guys for manual assignment.
+        """
+        async with self._open_connection() as conn:
+            query = """
+            SELECT * FROM delivery_guys
+            WHERE (active = TRUE OR $3 = FALSE)
+            ORDER BY name
+            LIMIT $1 OFFSET $2
+            """
+            rows = await conn.fetch(query, limit, offset, active_only)
+            return [dict(r) for r in rows]
 
 
 from datetime import datetime, timedelta

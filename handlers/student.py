@@ -796,6 +796,10 @@ async def ask_final_confirmation(message: Message, state: FSMContext):
     await state.update_data(food_subtotal=subtotal, delivery_fee=delivery_fee)
     await state.set_state(OrderStates.confirm)
 
+
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__name__)
+
     # 🎯 Step 2: Handle Final Confirmation (removes inline buttons, shows main menu during placement)
 @router.callback_query(OrderStates.confirm, F.data == "final:confirm")
 async def final_confirm(cb: CallbackQuery, state: FSMContext):
@@ -893,7 +897,17 @@ async def final_confirm(cb: CallbackQuery, state: FSMContext):
                 ]
             ]
         )
-        await cb.bot.send_message(vendor_chat_id, vendor_text, reply_markup=kb)
+        try:
+            await cb.bot.send_message(vendor_chat_id, vendor_text, reply_markup=kb)
+        except Exception as e:
+            # Log the error but don't block the rest of the flow
+            log.warning(f"Failed to notify vendor {vendor_chat_id} for order {order_id}: {e}")
+            # Optionally notify admin group
+            from utils.db_helpers import notify_admin_log
+            await notify_admin_log(cb.bot, settings.ADMIN_DAILY_GROUP_ID,
+                f"⚠️ Could not notify vendor {vendor.get('name','Unknown')} (chat_id={vendor_chat_id}) "
+                f"about Order #{order_id}. Error: {e}"
+            )
 
     # 🎬 Cinematic progress sequence
     cinematic_msg = await cb.message.answer("🍳 Coordinating with kitchen...")

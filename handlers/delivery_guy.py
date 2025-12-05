@@ -123,7 +123,9 @@ def location_request_keyboard() -> ReplyKeyboardMarkup:
     """Temporary keyboard to request location."""
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="📍 Share My Location (Required)", request_location=True)]
+            [KeyboardButton(text="📍 Share My Location (Optional)", request_location=True)],
+            [KeyboardButton(text="🏠 Back to Dashboard")]
+
         ],
         resize_keyboard=True,
         one_time_keyboard=False
@@ -645,6 +647,7 @@ async def send_new_order_offer(bot: Bot, dg: Dict[str, Any], order: Dict[str, An
 
     kb = order_offer_keyboard(order_id, EXPIRY_SECONDS)
 
+
     try:
         sent_message = await bot.send_message(
             dg["telegram_id"],
@@ -660,6 +663,8 @@ async def send_new_order_offer(bot: Bot, dg: Dict[str, Any], order: Dict[str, An
             "order_id": order_id
         }
         log.info("[OFFER SENT] Order %s → DG %s (msg_id=%s)", order_id, dg["id"], sent_message.message_id)
+        await db.increment_total_requests(dg["id"])
+
 
         # --- NEW: Notify admin group ---
         vendor_name = order.get("vendor_name", "Unknown Vendor")
@@ -777,6 +782,7 @@ async def handle_accept_order(call: CallbackQuery):
                 reply_markup=accepted_order_actions(order_id, action_key),
                 parse_mode="Markdown"
             )
+            await db.increment_accepted_requests(dg["id"])
             await call.answer("Order accepted!")
         except TelegramBadRequest as e:
             if "message is not modified" in str(e):
@@ -1030,6 +1036,7 @@ async def handle_delivered(call: CallbackQuery):
     try:
         # Update order status to delivered
         await db.update_order_status(order_id, "delivered", dg["id"])
+        await db.increment_total_deliveries(dg["id"])
         # Update DG stats (total deliveries, active flag)
         await db.set_delivery_guy_online(dg["id"])
     except Exception:

@@ -129,7 +129,7 @@ def build_profile_card(user: dict, role: str = "student") -> str:
             f"🏛 {user.get('campus', 'N/A')}\n"
             f"📦 Deliveries: {user.get('total_deliveries', 0)}\n"
             # CHANGED: Postgres boolean
-            f"⚡ Status: {'🟢 Active' if user.get('active', False) else '🔴 Inactive'}\n\n"
+            f"⚡ Status: {'🟢 Online' if user.get('active', False) else '🔴 Offline'}\n\n"
             f"💰 Coins: {coins} • 🏆 XP: {xp} • 🔰 Level: {level}\n"
             f"{progress_bar}\n\n"
             "🚴 Keep hustling — every delivery powers your reputation ⚡"

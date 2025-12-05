@@ -65,33 +65,37 @@ async def reset_skips_daily(self) -> None:
 
 
 async def calc_acceptance_rate(self, dg_id: int) -> float:
-        """
-        Calculates the DG's acceptance rate (accepted / total requests) 
-        from the delivery_guys table.
-        """
-        async with self._open_connection() as conn:
-            row = await conn.fetchrow(
-                "SELECT total_requests, accepted_requests FROM delivery_guys WHERE id = $1",
-                dg_id
-            )
+    """
+    Calculates the Delivery Guy's acceptance rate:
+    (accepted_requests / total_requests) * 100
+    
+    - accepted_requests: how many offers the DG accepted
+    - total_requests: how many offers were sent to the DG
+    
+    Returns a percentage between 0.0 and 100.0.
+    If no requests exist, defaults to 100.0 (neutral baseline).
+    """
+    async with self._open_connection() as conn:
+        row = await conn.fetchrow(
+            "SELECT total_requests, accepted_requests FROM delivery_guys WHERE id = $1",
+            dg_id
+        )
 
-            if row:
-                total_requests = int(row["total_requests"] or 0)
-                accepted_requests = int(row["accepted_requests"] or 0)
-                
-                # Note: The SQLite version used total_deliveries. 
-                # accepted_requests is generally the intended metric for rate calculation,
-                # as total_deliveries implies *completion*. We assume total_deliveries 
-                # in the original meant 'accepted_requests' conceptually.
-                
-                if total_requests == 0:
-                    return 100.0
-                    
-                acceptance_rate = (accepted_requests / total_requests) * 100
-                return round(acceptance_rate, 2)
-            
-            return 100.0
+        if not row:
+            return 100.0  # DG not found → treat as neutral baseline
 
+        total_requests = int(row["total_requests"] or 0)
+        accepted_requests = int(row["accepted_requests"] or 0)
+
+        if total_requests <= 0:
+            return 100.0  # No requests yet → full acceptance by definition
+
+        acceptance_rate = (accepted_requests / total_requests) * 100.0
+
+        # Clamp to [0, 100] in case of data anomalies
+        acceptance_rate = max(0.0, min(acceptance_rate, 100.0))
+
+        return round(acceptance_rate, 2)
 
     # -------------------- Order Retrieval (Postgres/asyncpg) --------------------
 
@@ -103,7 +107,9 @@ async def get_all_active_orders_for_dg(self, dg_id: int) -> List[Dict[str, Any]]
             SELECT * 
             FROM orders 
             WHERE delivery_guy_id = $1 
-              AND status != 'delivered' 
+                AND status != 'delivered'
+                AND status != 'cancelled'
+
             ORDER BY created_at DESC
             """,
             dg_id,

@@ -411,7 +411,7 @@ async def vendor_edit_init(callback: CallbackQuery, state: FSMContext):
         message_id=preview_msg.message_id,
         data=await state.get_data()
     )
-    await state.set_state(AdminStates.vendor_edit_menu)
+    await state.set_state(AdminStates.vendor_confirm)
 
 
 @router.callback_query(F.data == "edit_vendor_id", AdminStates.vendor_edit_menu)
@@ -435,7 +435,7 @@ async def vendor_id_updated(message: Message, state: FSMContext):
             message_id=data["card_message_id"],
             data=data
         )
-    await state.set_state(AdminStates.vendor_edit_menu)
+    await state.set_state(AdminStates.vendor_confirm)
 
 
 @router.callback_query(F.data == "edit_vendor_name", AdminStates.vendor_edit_menu)
@@ -456,7 +456,7 @@ async def vendor_name_updated(message: Message, state: FSMContext):
         data=data
     )
 
-    await state.set_state(AdminStates.vendor_edit_menu)
+    await state.set_state(AdminStates.vendor_confirm)
 
 
 @router.callback_query(F.data == "edit_vendor_status", AdminStates.vendor_edit_menu)
@@ -486,7 +486,7 @@ async def vendor_status_updated(callback: CallbackQuery, state: FSMContext):
         data=data
     )
 
-    await state.set_state(AdminStates.vendor_edit_menu)
+    await state.set_state(AdminStates.vendor_confirm)
     await callback.answer()
 
 @router.message(AdminStates.vendor_get_id)

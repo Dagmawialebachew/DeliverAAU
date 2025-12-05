@@ -24,6 +24,7 @@ from middlewares.error_handling_middleware import ErrorHandlingMiddleware
 from app_context import bot, dp, db
 # Routers
 from handlers.onboarding import router as onboarding_router
+from handlers.admin_order import router as admin_order_router
 from handlers.student import router as student_router
 from handlers.student_track_order import router as student_track_order_router
 from handlers.delivery_guy import router as delivery_guy_router
@@ -70,7 +71,7 @@ dp.include_router(rating_router)
 dp.include_router(help_router)
 dp.include_router(settings_router)
 dp.include_router(admin_router)
-
+dp.include_router(admin_order_router)
 # --- DB + Scheduler ---
 scheduler = BotScheduler(db=db, bot=bot)
 
