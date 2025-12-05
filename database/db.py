@@ -1021,12 +1021,7 @@ class Database:
             )
             return int(order_id) if order_id is not None else 0
 
-            
-    async def get_order(self, order_id: int) -> Optional[Dict[str, Any]]:
-        async with self._open_connection() as conn:
-            row = await conn.fetchrow("SELECT * FROM orders WHERE id = $1", order_id)
-            return self._row_to_dict(row) if row else None
-            
+    from aiogram import Bot
     async def check_thresholds_and_notify(
             self,
             bot: Bot,
@@ -1034,6 +1029,7 @@ class Database:
             admin_group_id: int,
             max_skips: int = 3
         ):
+            """Check skip thresholds and notify admins if exceeded."""
             async with self._open_connection() as conn:
                 dg_info = await conn.fetchrow(
                     "SELECT name, skipped_requests FROM delivery_guys WHERE id = $1",
@@ -1051,52 +1047,11 @@ class Database:
                         f"Delivery Partner **{name}** (ID: `{dg_id}`) has reached the maximum skip threshold ({max_skips} skips today).\n"
                         f"**ACTION REQUIRED**: Review their performance and block if necessary."
                     )
-                    await self.notify_admin(bot, admin_group_id, admin_message)
-
-    async def update_order_status(self, order_id: int, status: str, dg_id: Optional[int] = None) -> None:
-        """Updates the order status and handles time-based fields."""
-
-        sql_parts = ["status = $1", "updated_at = CURRENT_TIMESTAMP"]
-        params = [status]
-        param_counter = 2
-
-        if dg_id:
-            sql_parts.append(f"delivery_guy_id = ${param_counter}")
-            params.append(dg_id)
-            param_counter += 1
-
-        # Handle time-based fields
-        if status in ("accepted", "preparing", "ready"):
-            sql_parts.append("accepted_at = CURRENT_TIMESTAMP")
-            if status == "ready":
-                sql_parts.append("ready_at = CURRENT_TIMESTAMP")
-        elif status == "delivered":
-            sql_parts.append("delivered_at = CURRENT_TIMESTAMP")
-
-        # Build final SQL
-        sql = f"UPDATE orders SET {', '.join(sql_parts)} WHERE id = ${param_counter}"
-        params.append(order_id)
-
-        # Execute inside connection context
-        async with self._open_connection() as conn:
-            await conn.execute(sql, *params)
-     
-    # -------------------- Daily Stats & Gamification --------------------
-
-    async def record_daily_stat_assignment(self, dg_id: int, date_str: str) -> None:
-        """Increments assigned count for a DG's daily stat record."""
-        async with self._open_connection() as conn:
-            # Upsert (INSERT ... ON CONFLICT DO UPDATE) logic
-            await conn.execute(
-                """
-                INSERT INTO daily_stats (dg_id, date, assigned)
-                VALUES ($1, $2, 1)
-                ON CONFLICT(dg_id, date) DO UPDATE SET
-                assigned = daily_stats.assigned + 1,
-                updated_at = CURRENT_TIMESTAMP
-                """,
-                dg_id, date_str,
-            )
+                    try:
+                        await bot.send_message(admin_group_id, admin_message, parse_mode="Markdown")
+                    except Exception as e:
+                        import logging
+                        logging.warning(f"Failed to notify admin group {admin_group_id}: {e}")
 
     async def record_daily_stat_delivery(self, dg_id: int, date_str: str, earnings: float, total_xp: int = 10, total_coins: float = 0.0) -> None:
         """Updates daily_stats and dg gamification stats upon a successful delivery."""

@@ -859,8 +859,7 @@ async def handle_skip_order(call: CallbackQuery):
     # --- 6. Threshold checks ---
     try:
         # Update helper to accept Database instance instead of db_path
-        await db.check_thresholds_and_notify(call.bot, dg_id, ADMIN_GROUP_ID)    
-    except Exception:
+        await db.check_thresholds_and_notify(call.bot, dg_id, ADMIN_GROUP_ID)    except Exception:
         log.exception("Threshold check failed for DG %s", dg_id)
 
     # --- 7. Immediate reassignment + notifications ---
