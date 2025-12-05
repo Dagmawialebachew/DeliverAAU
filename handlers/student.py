@@ -904,10 +904,13 @@ async def final_confirm(cb: CallbackQuery, state: FSMContext):
             log.warning(f"Failed to notify vendor {vendor_chat_id} for order {order_id}: {e}")
             # Optionally notify admin group
             from utils.db_helpers import notify_admin_log
-            await notify_admin_log(cb.bot, settings.ADMIN_DAILY_GROUP_ID,
+            await notify_admin_log(
+                cb.bot,
+                settings.ADMIN_DAILY_GROUP_ID,
                 f"⚠️ Could not notify vendor {vendor.get('name','Unknown')} (chat_id={vendor_chat_id}) "
                 f"about Order #{order_id}. Error: {e}"
             )
+
 
     # 🎬 Cinematic progress sequence
     cinematic_msg = await cb.message.answer("🍳 Coordinating with kitchen...")
