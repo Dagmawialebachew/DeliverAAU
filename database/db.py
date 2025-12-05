@@ -1026,6 +1026,32 @@ class Database:
         async with self._open_connection() as conn:
             row = await conn.fetchrow("SELECT * FROM orders WHERE id = $1", order_id)
             return self._row_to_dict(row) if row else None
+            
+    async def check_thresholds_and_notify(
+            self,
+            bot: Bot,
+            dg_id: int,
+            admin_group_id: int,
+            max_skips: int = 3
+        ):
+            async with self._open_connection() as conn:
+                dg_info = await conn.fetchrow(
+                    "SELECT name, skipped_requests FROM delivery_guys WHERE id = $1",
+                    dg_id
+                )
+                if not dg_info:
+                    return
+
+                name = dg_info["name"]
+                skips = int(dg_info["skipped_requests"] or 0)
+
+                if skips >= max_skips:
+                    admin_message = (
+                        f"🚨 **Reliability Alert!**\n"
+                        f"Delivery Partner **{name}** (ID: `{dg_id}`) has reached the maximum skip threshold ({max_skips} skips today).\n"
+                        f"**ACTION REQUIRED**: Review their performance and block if necessary."
+                    )
+                    await self.notify_admin(bot, admin_group_id, admin_message)
 
     async def update_order_status(self, order_id: int, status: str, dg_id: Optional[int] = None) -> None:
         """Updates the order status and handles time-based fields."""

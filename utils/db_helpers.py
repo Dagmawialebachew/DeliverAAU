@@ -16,6 +16,7 @@ async def increment_skip(self, dg_id: int, max_skips: int = 3) -> int:
         Increments the skip count for a delivery guy, updates last_skip_at,
         and returns the new skipped_requests count. Also records the skip in daily_stats.
         """
+        import datetime
         today_str = datetime.date.today().strftime('%Y-%m-%d')
         
         async with self._open_connection() as conn:

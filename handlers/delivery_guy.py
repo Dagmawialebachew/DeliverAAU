@@ -42,7 +42,6 @@ from utils.db_helpers import (
     calc_acceptance_rate,
     get_all_active_orders_for_dg,
     get_latest_active_order_for_dg,
-    check_thresholds_and_notify,
     add_dg_to_blacklist
 )
 from utils.helpers import eta_and_distance
@@ -860,13 +859,13 @@ async def handle_skip_order(call: CallbackQuery):
     # --- 6. Threshold checks ---
     try:
         # Update helper to accept Database instance instead of db_path
-        await check_thresholds_and_notify(call.bot, db, dg_id, ADMIN_GROUP_ID)
+        await db.check_thresholds_and_notify(call.bot, dg_id, ADMIN_GROUP_ID)    
     except Exception:
         log.exception("Threshold check failed for DG %s", dg_id)
 
     # --- 7. Immediate reassignment + notifications ---
     try:
-        from utils.helpers import send_new_order_offer, notify_student_reassignment
+        from handlers.delivery_guy import send_new_order_offer
         from utils.db_helpers import add_dg_to_blacklist
 
         # Re-fetch order with updated breakdown_json
