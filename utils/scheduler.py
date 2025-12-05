@@ -519,7 +519,9 @@ class BotScheduler:
                         except Exception:
                             rate = 100.0
                         if rate < 80.0:  # alert threshold
-                            driver_alerts.append(f"⚠️ {r['name'] or f'DG #{r['dg_id']}'} • {rate:.1f}% acceptance")
+                            dg_id = r["dg_id"]
+                            name = r["name"] or f"DG #{dg_id}"
+                            driver_alerts.append(f"⚠️ {name} • {rate:.1f}% acceptance")
                 except Exception:
                     log.exception("Failed to compute driver alerts")
 
