@@ -106,10 +106,12 @@ def build_track_keyboard(
         rows.append([left, close_btn])
 
     # Row 2: DG actions (if DG assigned)
+    refresh_btn = InlineKeyboardButton(text="🔁 Refresh", callback_data=f"order:refresh_order:{order_id}")
     if has_dg:
         call_btn = InlineKeyboardButton(text="📞 Contact D.G.", callback_data=f"track:call_dg:{order_id}")
-        rows.append([call_btn])
-
+        rows.append([call_btn, refresh_btn])
+    else:
+        rows.append([refresh_btn])
     # Row 3: Pause/Resume toggle
     # if paused:
     #     resume_btn = InlineKeyboardButton(text="▶️ Resume", callback_data=f"order:resume:{order_id}")
@@ -124,6 +126,33 @@ def build_track_keyboard(
 PAGE_SIZE = 3  # orders per page
 
 
+
+@router.callback_query(F.data.startswith("order:refresh_order:"))
+async def refresh_order_card(callback: CallbackQuery):
+    order_id = int(callback.data.split(":")[-1])
+
+    text, kb = await render_order_summary(order_id)
+    if not kb:
+        await callback.answer("❌ Order not found.", show_alert=True)
+        return
+
+    try:
+        await callback.message.edit_text(
+            text,
+            reply_markup=kb,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+        # If edit succeeds, show a subtle toast
+        await callback.answer("🔄 Order refreshed!")
+    except TelegramBadRequest as e:
+        if "message is not modified" in str(e):
+            # Nothing changed, but acknowledge
+            await callback.answer("✅ Already up to date")
+        else:
+            # Fallback: send a new message
+            await callback.message.answer(text, reply_markup=kb, parse_mode="HTML")
+            await callback.answer("🔄 Refreshed with new message")
 
 @router.callback_query(F.data.startswith("track:call_dg:"))
 async def callback_call_dg(cb: CallbackQuery):

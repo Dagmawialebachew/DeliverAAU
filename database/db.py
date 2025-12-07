@@ -135,6 +135,21 @@ CREATE TABLE IF NOT EXISTS media (
     notes TEXT
 );
 
+
+CREATE TABLE IF NOT EXISTS daily_stats_archive (
+    id SERIAL PRIMARY KEY,
+    dg_id INTEGER NOT NULL,
+    date DATE NOT NULL,
+    deliveries INTEGER DEFAULT 0,
+    earnings DOUBLE PRECISION DEFAULT 0.0,
+    skipped INTEGER DEFAULT 0,
+    assigned INTEGER DEFAULT 0,
+    acceptance_rate DOUBLE PRECISION DEFAULT 0.0,
+    archived_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(dg_id, date)
+);
+
+
 CREATE TABLE IF NOT EXISTS subscriptions (
     id SERIAL PRIMARY KEY,
     user_id INTEGER,
@@ -891,6 +906,34 @@ class Database:
             "xp": xp,
             "coins": coins
         }
+    
+    async def get_top_drivers(self, date: str, limit: int = 3) -> list[dict]:
+        """
+        Returns the top drivers for a given date, ranked by deliveries (then earnings).
+        Uses get_daily_stats_for_dg to compute stats directly from orders.
+        """
+        async with self._open_connection() as conn:
+            # Fetch all delivery guys
+            dgs = await conn.fetch("SELECT id, name FROM delivery_guys")
+
+        results = []
+        for dg in dgs:
+            stats = await self.get_daily_stats_for_dg(dg["id"], date)
+            results.append({
+                "id": dg["id"],
+                "name": dg["name"] or f"DG #{dg['id']}",
+                "deliveries": stats["deliveries"],
+                "earnings": stats["earnings"],
+                "xp": stats["xp"],
+                "coins": stats["coins"],
+            })
+
+        # Sort by deliveries first, then earnings
+        results.sort(key=lambda r: (r["deliveries"], r["earnings"]), reverse=True)
+        print('here is the results that is passed', results[:limit])
+
+        return results[:limit]
+
     async def get_weekly_earnings_for_dg(self, dg_id: int, week_start: str, week_end: str) -> List[Dict[str, Any]]:
         """
         Returns day-by-day breakdown for the week.
@@ -1587,7 +1630,7 @@ class AnalyticsService:
 
 🛵 DELIVERY SQUAD: {data['dg_active']}
 
-    📡 Total Runs: {data['dg_deliveries']}
+    📡 Total Deliveries: {data['dg_deliveries']}
     📈 Acceptance Rate: {data['dg_acceptance_rate']:.0f}%
 
 🧬 RELIABILITY INDEX: {data['reliability_pct']}%

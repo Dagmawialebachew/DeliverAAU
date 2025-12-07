@@ -378,10 +378,17 @@ class BotScheduler:
                 try:
                     await conn.execute(
                         """
-                        INSERT INTO daily_stats_archive (dg_id, date, deliveries, earnings, skipped, assigned, acceptance_rate)
+                        INSERT INTO daily_stats (dg_id, date, deliveries, earnings, skipped, assigned, acceptance_rate)
                         SELECT dg_id, date, deliveries, earnings, skipped, assigned, acceptance_rate
                         FROM daily_stats
                         WHERE date = $1
+                        ON CONFLICT (dg_id, date) DO UPDATE
+                        SET deliveries = EXCLUDED.deliveries,
+                            earnings = EXCLUDED.earnings,
+                            skipped = EXCLUDED.skipped,
+                            assigned = EXCLUDED.assigned,
+                            acceptance_rate = EXCLUDED.acceptance_rate,
+                            updated_at = CURRENT_TIMESTAMP;                        
                         """,
                         yesterday_str
                     )
@@ -448,7 +455,7 @@ class BotScheduler:
 
                     # Acceptance rate
                     try:
-                        acceptance_rate = await self.db.calc_acceptance_rate(dg_id)
+                        acceptance_rate = await calc_acceptance_rate(self.db, dg_id)
                     except Exception:
                         log.exception("Failed to compute acceptance rate for DG %s", dg_id)
                         acceptance_rate = 100.0
@@ -483,30 +490,12 @@ class BotScheduler:
 
                 # Top 3 drivers (today)
                 try:
-                    top_drivers_rows = await conn.fetch(
-                        """
-                        SELECT ds.dg_id, ds.deliveries, ds.earnings, dg.name
-                        FROM daily_stats ds
-                        LEFT JOIN delivery_guys dg ON dg.id = ds.dg_id
-                        WHERE ds.date = $1
-                        ORDER BY ds.deliveries DESC, ds.earnings DESC
-                        LIMIT 3
-                        """,
-                        today_str
-                    )
+                    top_drivers = await self.db.get_top_drivers(today)
                 except Exception:
                     log.exception("Failed to fetch top drivers")
-                    top_drivers_rows = []
+                    top_drivers = []
 
-                top_drivers = []
-                for r in top_drivers_rows:
-                    name = r["name"] or f"DG #{r['dg_id']}"
-                    top_drivers.append({
-                        "id": r["dg_id"],
-                        "name": name,
-                        "deliveries": int(r["deliveries"] or 0),
-                        "earnings": int(r["earnings"] or 0.0)
-                    })
+                
 
                 # Low acceptance alerts (scan drivers with stats today)
                 driver_alerts = []
@@ -522,7 +511,7 @@ class BotScheduler:
                     )
                     for r in low_accept_rows:
                         try:
-                            rate = await self.db.calc_acceptance_rate(r["dg_id"])
+                            rate = await calc_acceptance_rate(self.db, r["dg_id"])
                         except Exception:
                             rate = 100.0
                         if rate < 80.0:  # alert threshold
@@ -580,6 +569,7 @@ class BotScheduler:
                     "",
                     "🏆 **TOP PERFORMERS**:"
                 ]
+                print('here is top_drivers', top_drivers)
 
                 if top_drivers:
                     for idx, td in enumerate(top_drivers, 1):
@@ -863,7 +853,7 @@ class BotScheduler:
                 CronTrigger(hour=23, minute=0),
                 id="admin_summary"
             )
-            # self.scheduler.add_job(self.send_admin_summary, "interval", minutes=0.2)  # run every 1 minute for testing
+            self.scheduler.add_job(self.send_admin_summary, "interval", minutes=0.2)  # run every 1 minute for testing
 
         # Cleanup every 6 hours
         self.scheduler.add_job(
@@ -878,7 +868,6 @@ class BotScheduler:
             CronTrigger(hour=23, minute=5),
             id="dg_daily_summary"
         )
-        # self.scheduler.add_job(self.reset_delivery_guys_and_send_summary, "interval", minutes=0.2)  # run every 1 minute for testing
 
 
         
