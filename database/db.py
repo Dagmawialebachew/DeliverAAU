@@ -1108,7 +1108,6 @@ class Database:
 
     async def increment_skip(self, dg_id: int) -> None:
         """Increment skipped_requests and update last_skip_at when a DG skips/ignores an order."""
-        today_str = datetime.date.today().strftime('%Y-%m-%d')
         async with self._open_connection() as conn:
             await conn.execute(
                 """
@@ -1120,9 +1119,9 @@ class Database:
                 dg_id
             )
 
-    import datetime
 
     async def increment_total_deliveries(self, dg_id: int) -> None:
+        import datetime
         """Increment total_deliveries when a DG successfully delivers an order and update daily_stats."""
         today_str = datetime.date.today().strftime("%Y-%m-%d")
 
@@ -1370,6 +1369,42 @@ class Database:
 
             rows = await conn.fetch(query, *params)
             return [dict(r) for r in rows]
+
+
+    async def get_order(self, order_id: int) -> Optional[Dict[str, Any]]:
+            async with self._open_connection() as conn:
+                row = await conn.fetchrow("SELECT * FROM orders WHERE id = $1", order_id)
+                return self._row_to_dict(row) if row else None
+        
+    
+    async def update_order_status(self, order_id: int, status: str, dg_id: Optional[int] = None) -> None:
+        """Updates the order status and handles time-based fields."""
+
+        sql_parts = ["status = $1", "updated_at = CURRENT_TIMESTAMP"]
+        params = [status]
+        param_counter = 2
+
+        if dg_id:
+            sql_parts.append(f"delivery_guy_id = ${param_counter}")
+            params.append(dg_id)
+            param_counter += 1
+
+        # Handle time-based fields
+        if status in ("accepted", "preparing", "ready"):
+            sql_parts.append("accepted_at = CURRENT_TIMESTAMP")
+            if status == "ready":
+                sql_parts.append("ready_at = CURRENT_TIMESTAMP")
+        elif status == "delivered":
+            sql_parts.append("delivered_at = CURRENT_TIMESTAMP")
+
+        # Build final SQL
+        sql = f"UPDATE orders SET {', '.join(sql_parts)} WHERE id = ${param_counter}"
+        params.append(order_id)
+
+        # Execute inside connection context
+        async with self._open_connection() as conn:
+            await conn.execute(sql, *params)
+     
 
     async def update_order_delivery_guy(
         self,
@@ -1682,8 +1717,8 @@ async def seed_speicific_dg(db: Database) -> None:
     #  total_deliveries, accepted_requests, total_requests,
     #  coins, xp, level)
     delivery_guy = (
-        1001,
-        settings.DG_IDS["Dagmawi"],
+        1004,
+        7112595006,
         "Dagmawi",
         "6kilo",
         "0960306801",   # <- Your phone number here
@@ -1700,7 +1735,7 @@ async def seed_speicific_dg(db: Database) -> None:
         # Reset table
         await conn.execute("""
             DELETE FROM users
-            WHERE user_id = $1 OR telegram_id = $2
+            WHERE id = $1 OR telegram_id = $2
         """, delivery_guy[0], delivery_guy[1])
 
 

@@ -975,17 +975,39 @@ async def action_assign_confirm(cb: CallbackQuery):
         await notify_student(cb.bot, order, status="assigned")
         
         # 4. Notify New DG
-        if dg:
-           msg = (
-            f"📦 You have been manually assigned Order #{order_id} by admin.\n"
-            "Check *My Orders* or use the button below to track."
+        try:
+                items = json.loads(order.get("items_json", "[]")) or []
+                names = [i.get("name", "") if isinstance(i, dict) else str(i) for i in items]
+                from collections import Counter
+                counts = Counter(names)
+                items_str = ", ".join(
+                    f"{name} x{count}" if count > 1 else name
+                    for name, count in counts.items()
+                )
+        except Exception:
+                items_str = "Items unavailable"
+        
+        from handlers.delivery_guy import STATUS_LABELS
+        status_label = STATUS_LABELS.get(order.get("status"), "ℹ️ Unknown status")
+
+
+        if dg:  
+            msg = (
+            f"📦 Order #{order_id}\n"
+            f"📌 Status: {order.get('status')}\n\n"
+            "──────────────────────\n"
+            f"🏠 Pickup: {order.get('pickup')}\n"
+            f"📍 Drop-off: {order.get('dropoff')}\n"
+            f"💰 Subtotal Fee: {order.get('food_subtotal')} birr\n"
+            f"🚚 Delivery fee: {order.get('delivery_fee')} birr\n"
+            "──────────────────────\n"
+            f"💵 Total Payable: {order.get('food_subtotal') + order.get('delivery_fee')} birr\n\n"
+            f"🛒 Items: {items_str}\n\n"
+            "⚡ Manage this order below."
         )
-           kb = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [InlineKeyboardButton(text="📍 Track", callback_data=f"order:track:{order_id}")]
-                ]
-            )
-           await safe_send(cb.bot, dg['telegram_id'], msg, reply_markup=kb)
+          
+            
+            await safe_send(cb.bot, dg['telegram_id'], msg)
         # 5. Notify Previous DG (if reassign)
         if previous_dg_id and previous_dg_id != dg_id:
             prev_dg = await db.get_delivery_guy(previous_dg_id)

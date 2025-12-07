@@ -418,8 +418,12 @@ async def notify_dg_cancelled(bot: Bot, chat_id: int, order_id: int) -> None:
         f"⚠️ Order #{order_id} has been cancelled by the vendor."
     )
 
-async def notify_admin_log(bot: Bot, admin_group_id: int, text: str) -> None:
-    await bot.send_message(admin_group_id, text)
+async def notify_admin_log(bot: Bot, admin_group_id: int, text: str, parse_mode: str = "HTML") -> None:
+    try:
+        await bot.send_message(admin_group_id, text, parse_mode=parse_mode)
+    except Exception as e:
+        import logging
+        logging.warning(f"Failed to notify admin group {admin_group_id}: {e}")
 
 # --- Formatting Functions ---
 

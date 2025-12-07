@@ -193,7 +193,9 @@ async def start(message: Message, state: FSMContext):
         await message.answer(build_profile_card(delivery_guy or user, role="delivery_guy"), parse_mode="Markdown")
 
         from handlers import delivery_guy as dg_handler
-        await message.answer("🛠 Control Center ready 👇", reply_markup=dg_handler.dashboard_reply_keyboard())
+        is_online = bool(delivery_guy.get("active", False))
+
+        await message.answer("🛠 Control Center ready 👇", reply_markup=dg_handler.dashboard_reply_keyboard(is_online=is_online))
         await state.clear()
         return
 

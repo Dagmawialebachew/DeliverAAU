@@ -74,13 +74,14 @@ class BotScheduler:
                 icon = "❌"
 
             from handlers.delivery_guy import order_offer_keyboard, send_new_order_offer
-            from utils.helpers import find_next_candidate, notify_admin_log  # ensure import exists
+            from utils.helpers import find_next_candidate
+            from utils.db_helpers import  notify_admin_log# ensure import exists
             from utils.db_helpers import add_dg_to_blacklist
-            from config import ADMIN_GROUP_ID  # ensure import exists
+               # ensure import exists
 
             async def _admin_notify(event: str, dg: dict | None, extra: str = ""):
                 # Minimal, resilient admin notifier with DG context
-                if not ADMIN_GROUP_ID:
+                if not settings.ADMIN_DAILY_GROUP_ID:
                     return
                 dg_name = dg.get("name") if dg else "Unknown DG"
                 dg_id = dg.get("id") if dg else "N/A"
@@ -93,7 +94,7 @@ class BotScheduler:
                     f"{extra}".strip()
                 )
                 try:
-                    await notify_admin_log(self.bot, ADMIN_GROUP_ID, msg)
+                    await notify_admin_log(self.bot, settings.ADMIN_DAILY_GROUP_ID, msg, parse_mode="HTML")
                 except Exception:
                     log.exception("[ADMIN LOG] Failed to send admin notification for order %s", order_id)
 
@@ -120,10 +121,16 @@ class BotScheduler:
 
                     # Clear DB assignment and mark pending (do NOT rely on status for DG availability logic)
                     async with self.db._open_connection() as conn:
-                        await conn.execute(
-                            "UPDATE orders SET status = $1, delivery_guy_id = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3",
-                            "pending", None, order_id
-                        )
+                            await conn.execute(
+                                """
+                                UPDATE orders
+                                SET delivery_guy_id = $1,
+                                    updated_at = CURRENT_TIMESTAMP
+                                WHERE id = $2
+                                """,
+                                None, order_id
+                            )
+
 
                     # Persist rejection using DG internal ID (blacklist)
                     dg = await _db_get_delivery_guy_by_user(chat_id)
@@ -322,7 +329,7 @@ class BotScheduler:
                     try:
                         await self.bot.send_message(
                             student["telegram_id"],
-                            "❌ **Order Expired**\n"
+                            f"❌ **Order {order_id} Expired**\n"
                             "──────────────────────\n"
                             "⏱ Vendor did not accept in time.\n"
                             "💵 No charges applied.\n"
@@ -672,46 +679,42 @@ class BotScheduler:
         except Exception as e:
             log.exception("Failed to expire unpicked ready orders: %s", e)
 
-        
+        from datetime import datetime, timedelta
+
+
     async def auto_reassign_unaccepted_orders(self) -> None:
         """
-        Periodically checks for 'assigned' orders that were not accepted
-        (e.g., timed out) and sets them back to 'pending' for re-assignment.
+        Periodically checks for orders that have a delivery_guy_id but were not accepted
+        within the timeout window. Resets them to 'pending' and re-offers to next candidate.
         """
         log.info("Running auto-reassign unaccepted orders task.")
         try:
-            # Reassign orders older than 5 minutes that are still in 'assigned' status
             cutoff_time = datetime.now() - timedelta(minutes=5)
 
-            async with self.db._pool.acquire() as conn:                # Fetch unaccepted orders
-                unaccepted_orders = await conn.fetch(
+            async with self.db._open_connection() as conn:
+        # Fetch orders that are unassigned, older than cutoff, and still in valid statuses
+                stuck_orders = await conn.fetch(
                     """
-                    SELECT id, delivery_guy_id
+                    SELECT id, delivery_guy_id, status
                     FROM orders
-                    WHERE status = 'assigned' AND created_at < $1
+                    WHERE delivery_guy_id IS NULL
+                    AND updated_at < $1
+                    AND status = ANY($2)
                     """,
-                    cutoff_time
+                    cutoff_time,
+                    ["preparing", "ready"]
                 )
+            if not stuck_orders:
+                log.info("No unaccepted orders found to reassign.")
+                return
 
-                if not unaccepted_orders:
-                    log.info("No unaccepted orders found to reassign.")
-                    return
+            for row in stuck_orders:
+                order_id, dg_id, status = row["id"], row["delivery_guy_id"], row["status"]
 
-                for row in unaccepted_orders:
-                    order_id, dg_id = row["id"], row["delivery_guy_id"]
 
-                    # 1. Reassign order back to pending
-                    await conn.execute(
-                        """
-                        UPDATE orders
-                        SET status = 'pending', delivery_guy_id = NULL
-                        WHERE id = $1
-                        """,
-                        order_id
-                    )
-
-                    # 2. Set the DG back to active (if they were inactive due to assignment)
-                    if dg_id:
+                # 2. Mark DG back to active
+                if dg_id:
+                    async with self.db._open_connection() as conn:
                         await conn.execute(
                             """
                             UPDATE delivery_guys
@@ -721,12 +724,49 @@ class BotScheduler:
                             dg_id
                         )
 
-                    log.warning("Reassigned timed-out order %s from DG %s.", order_id, dg_id)
+                log.warning("Reassigned timed-out order %s from DG %s.", order_id, dg_id)
+
+                # 3. Notify admin group
+                try:
+                    from utils.db_helpers import notify_admin_log
+                    msg = (
+                        f"⏰ Auto-reassign triggered\n"
+                        f"📦 Order #{order_id} was stuck with DG {dg_id} (status={status}).\n"
+                        f"↩️ Reset to pending for re-offer."
+                    )
+                    await notify_admin_log(self.bot, ADMIN_GROUP_ID, msg)
+                except Exception:
+                    log.exception("[ADMIN LOG] Failed to notify for order %s", order_id)
+
+                # 4. Re-offer to next candidate
+                try:
+                    from utils.helpers import find_next_candidate
+                    from handlers.delivery_guy import send_new_order_offer
+
+                    order = await self.db.get_order(order_id)
+                    if order:
+                        next_dg = await find_next_candidate(self.db, order_id, order)
+                        if next_dg:
+                            await send_new_order_offer(self.bot, next_dg, order)
+                            log.info("[REOFFER] Offered order %s to DG %s", order_id, next_dg["id"])
+                            await notify_admin_log(
+                                self.bot,
+                                ADMIN_GROUP_ID,
+                                f"🔁 Order #{order_id} re-offered to DG {next_dg['id']}."
+                            )
+                        else:
+                            log.warning("[REOFFER] No eligible DG found for order %s", order_id)
+                            await notify_admin_log(
+                                self.bot,
+                                ADMIN_GROUP_ID,
+                                f"⚠️ No eligible DG found for order #{order_id}. Manual assignment required."
+                            )
+                except Exception:
+                    log.exception("[REOFFER] Failed to re-offer order %s", order_id)
 
         except Exception:
             log.exception("Error during auto-reassign task")
-            
-            
+
     async def reset_skips_daily_job(self) -> None:
         """Job wrapper for the daily skip reset function."""
         await reset_skips_daily(self.db.db_path)
@@ -790,7 +830,7 @@ class BotScheduler:
         self.scheduler.add_job(
             self.auto_reassign_unaccepted_orders,
             'interval',
-            minutes=5,
+            minutes=10,
             id='auto_reassign_unaccepted_orders'
         )
         

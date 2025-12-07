@@ -686,11 +686,7 @@ async def send_new_order_offer(bot: Bot, dg: Dict[str, Any], order: Dict[str, An
 
 @router.callback_query(F.data.startswith("accept_order_"))
 async def handle_accept_order(call: CallbackQuery):
-    try:
-        await call.answer("Processing acceptance…")
-    except Exception:
-        pass
-
+  
     order_id = int(call.data.split("_")[-1])
     dg = await _db_get_delivery_guy_by_user(call.from_user.id)
     if not dg:
@@ -835,7 +831,6 @@ async def handle_skip_order(call: CallbackQuery):
 
     # --- 3. Reset order back to pending ---
     try:
-        await db.update_order_status(order_id, "pending")  # delivery_guy_id reset handled inside method
         log.debug("[DEBUG] Order %s reset to pending after skip by DG %s", order_id, dg_id)
     except Exception:
         log.exception("Failed to reset skipped order %s", order_id)
@@ -915,16 +910,17 @@ async def handle_skip_order(call: CallbackQuery):
             log.warning("[REASSIGN] No eligible DG found to offer order %s immediately", order_id)
 
             # Student fallback: pending reassignment
-            try:
-                student_chat_id = await get_student_chat_id(db, order)
-                if student_chat_id:
-                    await call.bot.send_message(
-                        student_chat_id,
-                        "⚠️ Your order is pending reassignment. We’re finding the next available delivery partner.",
-                        parse_mode="Markdown"
-                    )
-            except Exception:
-                log.exception("[NOTIFY] Failed to notify student about pending reassignment for order %s", order_id)
+            # try:
+            #     # student_chat_id = await get_student_chat_id(db, order)
+            #     # if student_chat_id:
+            #     #     await call.bot.send_message(
+            #     #         student_chat_id,
+            #     #         "⚠️ Your order is pending reassignment. We’re finding the next available delivery partner.",
+            #     #         parse_mode="Markdown"
+            #     #     )
+            #     pass
+            # except Exception:
+            #     log.exception("[NOTIFY] Failed to notify student about pending reassignment for order %s", order_id)
 
             # Admin fallback: escalate
             try:
@@ -934,19 +930,7 @@ async def handle_skip_order(call: CallbackQuery):
                 )
             except Exception:
                 log.exception("[NOTIFY] Failed to notify admin about failed re-offer for order %s", order_id)
-
-            # Student fallback
-            try:
-                student_chat_id = await get_student_chat_id(db, order) if order else None
-                if student_chat_id:
-                    await call.bot.send_message(
-                        student_chat_id,
-                        "⚠️ Your order is pending reassignment. We’re finding the next available delivery partner.",
-                        parse_mode="Markdown"
-                    )
-            except Exception:
-                log.exception("Failed to notify student about pending order %s", order_id)
-
+         
             # Admin fallback
             try:
                 await call.bot.send_message(
@@ -1088,9 +1072,7 @@ async def handle_delivered(call: CallbackQuery):
     )
 
     try:
-        await call.message.edit_text(summary_text, reply_markup=None, parse_mode="Markdown")
-        await call.message.answer("Task complete. What's next?", reply_markup=menu_back_keyboard())
-        await call.answer("Delivery complete! 🎉")
+        await call.message.edit_text(summary_text, reply_markup=menu_back_keyboard(), parse_mode="Markdown")
     except TelegramBadRequest:
         await call.answer("Delivery complete! 🎉")
         await call.message.answer(summary_text, reply_markup=menu_back_keyboard(), parse_mode="Markdown")

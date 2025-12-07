@@ -8,6 +8,7 @@ import math
 import datetime
 from datetime import date
 from typing import Optional, List, Dict, Any
+from aiogram.exceptions import TelegramBadRequest
 
 from aiogram import Router, F
 from aiogram.filters import Command
@@ -800,8 +801,18 @@ async def order_mark_ready(cb: CallbackQuery, bot: Bot):
     # Update status and optionally set a timestamp (if you track)
     await db.update_order_status(order_id, "ready")
 
-    await cb.message.edit_text(f"✅ ትዕዛዝ #{order_id} ደርሷል ለመወሰድ ዝግጁ ነው።"
-)
+    try:
+        await cb.message.edit_text(
+            f"✅ ትዕዛዝ #{order_id} ደርሷል ለመወሰድ ዝግጁ ነው።",
+            parse_mode="Markdown"
+        )
+        
+    except TelegramBadRequest as e:
+        if "message is not modified" in str(e):
+            # Safe to ignore, message already has this content
+            pass
+        else:
+            raise
 
     # Notify DG (English, eye-catching, include essential info)
     if order.get("delivery_guy_id"):
