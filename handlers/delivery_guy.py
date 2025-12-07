@@ -969,6 +969,10 @@ async def handle_start_order(call: CallbackQuery):
     if not dg or not order:
         await call.answer("❌ This order is not assigned to you or doesn't exist.", show_alert=True)
         return
+    
+    if order.get("status") == "delivered":
+        await call.answer("✅ Already marked as delivered.", show_alert=True)
+        return
 
     # Update status to 'in_progress'
     try:
@@ -1072,11 +1076,14 @@ async def handle_delivered(call: CallbackQuery):
     )
 
     try:
-        await call.message.edit_text(summary_text, reply_markup=menu_back_keyboard(), parse_mode="Markdown")
-    except TelegramBadRequest:
-        await call.answer("Delivery complete! 🎉")
-        await call.message.answer(summary_text, reply_markup=menu_back_keyboard(), parse_mode="Markdown")
-
+        await call.message.edit_text(summary_text, parse_mode="Markdown")
+    except TelegramBadRequest as e:
+        if "message is not modified" in str(e):
+            # Already updated, just acknowledge
+            await call.answer("Delivery complete! 🎉")
+        else:
+            # Fallback: send a new message
+            await call.message.answer(summary_text, parse_mode="Markdown")
 
 @router.callback_query(F.data.startswith("contact_user_"))
 async def handle_contact_user(call: CallbackQuery):

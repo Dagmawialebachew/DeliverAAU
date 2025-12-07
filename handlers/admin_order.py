@@ -993,6 +993,7 @@ async def action_assign_confirm(cb: CallbackQuery):
 
         if dg:  
             msg = (
+            f"You are manually assigned this order by Admin.....\n\n"
             f"📦 Order #{order_id}\n"
             f"📌 Status: {order.get('status')}\n\n"
             "──────────────────────\n"
