@@ -108,11 +108,12 @@ def cart_keyboard() -> InlineKeyboardMarkup:
 
 def dropoff_keyboard(campus: str) -> InlineKeyboardMarkup:
     presets_map = {
-        "4kilo": ["Dorm", "Library", "Main Gate"],
-        "5kilo": ["Dorm", "Library", "Main Gate"],
-        "6kilo": ["Dorm", "Kennedy", "Main Gate", "False Gate"],
+        "4kilo": ["Library", "Main Gate"],
+        "5kilo": ["Library", "Main Gate"],
+        "6kilo": ["Kennedy", "Main Gate", "False Gate", "Lounge", "Law Cafeteria"],
+        "FBE": ["Library", "Main Gate"],
     }
-    presets = presets_map.get(campus, ["Dorm", "Library", "Main Gate"])
+    presets = presets_map.get(campus, ["Library", "Main Gate"])
     rows: List[List[InlineKeyboardButton]] = []
     buf: List[InlineKeyboardButton] = []
     for p in presets:
@@ -146,7 +147,10 @@ def notes_keyboard() -> InlineKeyboardMarkup:
 async def live_change_campus(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🏛 4 Kilo", callback_data="campus:4kilo"), InlineKeyboardButton(text="📚 5 Kilo", callback_data="campus:5kilo"), InlineKeyboardButton(text="🎓 6 Kilo", callback_data="campus:6kilo")],
+[
+            [InlineKeyboardButton(text="🏛 4kilo", callback_data="campus:4kilo"), InlineKeyboardButton(text="📚 5kilo", callback_data="campus:5kilo")],
+            [InlineKeyboardButton(text="🎓 6kilo", callback_data="campus:6kilo"), InlineKeyboardButton(text="💹 FBE", callback_data="campus:FBE")],
+        ]
         [InlineKeyboardButton(text="⬅️ Back", callback_data="live:change")]
     ])
     await cb.message.edit_text("🏫 Choose a campus for this order:", reply_markup=kb)
@@ -756,6 +760,10 @@ async def ask_final_confirmation(message: Message, state: FSMContext):
     text, subtotal = render_cart(cart_counts, menu)
     delivery_fee = 20.0
     total = subtotal + delivery_fee
+    dropoff = data.get("dropoff", "N/A")
+    campus_text = await db.get_user_campus_by_order(data.get("order_id", 0))
+    dropoff = f"{dropoff} • {campus_text}" if campus_text else dropoff
+    
 
     summary = (
         f"✨ *Final Preview*\n"
@@ -820,6 +828,7 @@ async def final_confirm(cb: CallbackQuery, state: FSMContext):
 
     # Get all order-related data from FSM
     data = await state.get_data()
+    print('here is the data about the order', data)
     menu = data.get("menu", []) or []
     cart_counts: Dict[int,int] = data.get("cart_counts", {})
     live_coords = data.get("live_coords")
@@ -881,12 +890,14 @@ async def final_confirm(cb: CallbackQuery, state: FSMContext):
             f"• {name} x{count}" if count > 1 else f"• {name}"
             for name, count in counts.items()
         ) or "—"
+        campus_text = await db.get_user_campus_by_order(order_id)
+    
 
         vendor_text = (
             f"📦 አዲስ ትዕዛዝ #{order_id}\n"
             f"🛒 ምግቦች:\n{items}\n\n"
             f"💵 ዋጋ: {int(subtotal)} ብር\n"
-            f"📍 መድረሻ: {data.get('dropoff','')}\n\n"
+            f"📍 ካምፓስ: {campus_text}\n\n"
             f"⚡ እባክዎት ትዕዛዙን ይቀበሉ ወይም ይከለክሉ።"
         )
         kb = InlineKeyboardMarkup(
@@ -915,7 +926,11 @@ async def final_confirm(cb: CallbackQuery, state: FSMContext):
     # 🎬 Cinematic progress sequence
     cinematic_msg = await cb.message.answer("🍳 Coordinating with kitchen...")
     await asyncio.sleep(1.3)
-    await cinematic_msg.edit_text("🚴 Waiting for vendor acceptance...")
+    await cinematic_msg.edit_text("🚴 Meal request sent — waiting for confirmation…..")
+    dropoff = data.get('dropoff', 'N/A')
+    campus_text = await db.get_user_campus_by_order(order_id)
+    dropoff = f"{dropoff} • {campus_text}" if campus_text else dropoff
+    
 
     # 🧾 Build order summary preview for student
     cart_text, subtotal = render_cart(cart_counts, menu)
@@ -960,7 +975,7 @@ async def final_confirm(cb: CallbackQuery, state: FSMContext):
                 f"🍴 Vendor: {vendor_name}\n"
                 f"📍 Drop-off: {data.get('dropoff', '')}\n"
                 f"💵 Total: {total_payable:.2f} birr (COD)\n"
-                f"⚡ Status: Waiting for vendor acceptance"
+                f"⚡ Status: Meal request sent — waiting for confirmation…"
             )
             await cb.bot.send_message(settings.ADMIN_DAILY_GROUP_ID, admin_msg, parse_mode="Markdown")
         except Exception:

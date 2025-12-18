@@ -199,6 +199,15 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_
 ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS ready_at TIMESTAMP NULL;
 
+
+ALTER TABLE users
+ADD COLUMN IF NOT EXISTS gender TEXT CHECK (gender IN ('male','female'));
+
+ALTER TABLE delivery_guys
+ADD COLUMN IF NOT EXISTS gender TEXT CHECK (gender IN ('male','female'));
+
+
+
 -- Make sure dg_id is BIGINT
 ALTER TABLE daily_stats ALTER COLUMN dg_id TYPE BIGINT;
 
@@ -280,18 +289,19 @@ class Database:
         first_name: str,
         phone: str,
         campus: str,
+        gender: str = None,
     ) -> int:
         async with self._open_connection() as conn:
             # Use RETURNING id to get the new primary key immediately
             result = await conn.fetchval(
                 """
                 INSERT INTO users
-                (telegram_id, role, first_name, phone, campus, status)
-                VALUES ($1, $2, $3, $4, $5, 'active')
+                (telegram_id, role, first_name, phone, campus, gender, status)
+                VALUES ($1, $2, $3, $4, $5, $6, 'active')
                 ON CONFLICT (telegram_id) DO NOTHING
                 RETURNING id
                 """,
-                telegram_id, role, first_name, phone, campus,
+                telegram_id, role, first_name, phone, campus, gender,
             )
             # If nothing was inserted (due to ON CONFLICT), fetch existing ID
             if result is None:
@@ -850,16 +860,16 @@ class Database:
             return self._row_to_dict(row) if row else None
     
 
-    async def create_delivery_guy(self, user_id: int, name: str, campus: str) -> int:
+    async def create_delivery_guy(self, user_id: int, name: str, campus: str, gender: str = None, phone: str = None) -> int:
         async with self._open_connection() as conn:
             dg_id = await conn.fetchval(
                 """
                 INSERT INTO delivery_guys
-                (user_id, name, campus, active, total_deliveries)
-                VALUES ($1, $2, $3, TRUE, 0)
+                (user_id, name, campus, gender, phone, active, total_deliveries)
+                VALUES ($1, $2, $3, $4, $5, TRUE, 0)
                 RETURNING id
                 """,
-                user_id, name, campus,
+                user_id, name, campus, gender, phone,
             )
             return int(dg_id) if dg_id is not None else 0
             
@@ -1178,6 +1188,8 @@ class Database:
                 """,
                 dg_id
             )
+    
+    
 
         # 2. Update daily_stats table (UPSERT)
         async with self._open_connection() as conn:
@@ -1192,6 +1204,43 @@ class Database:
                 dg_id, today_str
             )
 
+
+    async def get_user_campus_by_order(self, order_id: int) -> Optional[str]:
+        """
+        Fetch the campus of the user who placed a given order
+        and return it as text with the corresponding emoji.
+        
+        Args:
+            order_id (int): The ID of the order.
+
+        Returns:
+            Optional[str]: Campus name with emoji, or None if not found.
+        """
+        # Campus → emoji mapping
+        campus_emojis = {
+            "4kilo": "🏛",
+            "5kilo": "📚",
+            "6kilo": "🎓",
+            "FBE": "💹"
+        }
+
+        async with self._open_connection() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT u.campus
+                FROM orders o
+                JOIN users u ON o.user_id = u.id
+                WHERE o.id = $1
+                """,
+                order_id
+            )
+
+            if not row:
+                return None
+
+            campus = row["campus"]
+            emoji = campus_emojis.get(campus, "")
+            return f"{emoji} {campus}"
 
     async def reset_daily_skip_count(self, dg_id: int) -> None:
         """Resets the DG's `skipped_requests` counter."""
@@ -1760,18 +1809,13 @@ async def seed_speicific_dg(db: Database) -> None:
     #  total_deliveries, accepted_requests, total_requests,
     #  coins, xp, level)
     delivery_guy = (
-        1004,
-        7112595006,
-        "Dagmawi",
-        "6kilo",
-        "0960306801",   # <- Your phone number here
-        True,
-        12,
-        14,
-        16,
-        10,
-        260,
-        3
+        1005,
+        7701933259,
+        "Melat Solomon",
+        "fbe",
+        "0960306801", 
+        "male"# <- Your phone number here
+       
     )
 
     async with db._open_connection() as conn:
@@ -1784,11 +1828,8 @@ async def seed_speicific_dg(db: Database) -> None:
 
         insert_sql = """
             INSERT INTO delivery_guys 
-            (user_id, telegram_id, name, campus, phone, active,
-             total_deliveries, accepted_requests, total_requests,
-             coins, xp, level)
-            VALUES ($1::BIGINT, $2::BIGINT, $3, $4, $5, $6,
-                    $7, $8, $9, $10, $11, $12)
+            (user_id, telegram_id, name, campus, phone, gender)
+            VALUES ($1::BIGINT, $2::BIGINT, $3, $4, $5, $6)
         """
 
         await conn.execute(insert_sql, *delivery_guy)

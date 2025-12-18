@@ -64,11 +64,8 @@ async def settings_option(cb: CallbackQuery, state: FSMContext):
     elif option == "campus":
         # Inline buttons for campus selection
         campus_kb = InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(text="4kilo", callback_data="campus:4kilo"),
-                InlineKeyboardButton(text="5kilo", callback_data="campus:5kilo"),
-                InlineKeyboardButton(text="6kilo", callback_data="campus:6kilo"),
-            ]
+            [InlineKeyboardButton(text="🏛 4kilo", callback_data="campus:4kilo"), InlineKeyboardButton(text="📚 5kilo", callback_data="campus:5kilo")],
+            [InlineKeyboardButton(text="🎓 6kilo", callback_data="campus:6kilo"), InlineKeyboardButton(text="💹 FBE", callback_data="campus:FBE")],
         ])
         await cb.message.answer("🏛 Select your new campus:", reply_markup=campus_kb)
         await state.set_state(SettingsState.editing_campus)

@@ -630,7 +630,7 @@ async def vendor_reject_order(cb: CallbackQuery, bot: Bot):
                 "• The vendor was unavailable or closed\n"
                 "• The item is out of stock\n"
                 "• A delivery partner could not be assigned in time\n\n"
-                "Please try again later or choose another option.")
+                "Please try again later or choose another meal provider.")
 
     # Notify delivery guy if one was already assigned
     if order.get("delivery_guy_id"):
@@ -643,6 +643,10 @@ async def vendor_reject_order(cb: CallbackQuery, bot: Bot):
             )
 
     # Notify admin group
+    dropoff = order.get('dropoff', 'N/A')
+    campus_text = await db.get_user_campus_by_order(order['id'])
+    dropoff = f"{dropoff} • {campus_text}" if campus_text else dropoff
+    
     if ADMIN_GROUP_ID:
         admin_msg = (
             f"⚠️ *Order Cancelled by Vendor*\n"
@@ -650,7 +654,7 @@ async def vendor_reject_order(cb: CallbackQuery, bot: Bot):
             f"🍴 Vendor: {vendor_name}\n"
             f"👤 Customer: {order.get('customer_name','N/A')} ({order.get('customer_phone','N/A')})\n"
             f"🏛 Campus: {order.get('campus','N/A')}\n"
-            f"📍 Drop-off: {order.get('dropoff','')}\n"
+            f"📍 Drop-off: {dropoff}\n"
             f"💵 Total: {order.get('food_subtotal',0) + order.get('delivery_fee',0):.2f} birr\n\n"
             "Status: Cancelled by vendor."
         )
@@ -823,6 +827,9 @@ async def order_mark_ready(cb: CallbackQuery, bot: Bot):
             vendor_name = vendor["name"] if vendor else "Vendor"
             pickup = order.get("pickup") or "Vendor location"
             dropoff = order.get("dropoff") or "Student location"
+            campus_text = await db.get_user_campus_by_order(order['id'])
+            dropoff = f"{dropoff} • {campus_text}" if campus_text else dropoff
+        
             try:
                     items = json.loads(order.get("items_json", "[]")) or []
 
@@ -983,12 +990,14 @@ async def performance_today_orders(message: Message):
     for o in orders:
         items = ", ".join(i.get("name","") for i in json.loads(o.get("items_json") or "[]"))
         status_text = STATUS_AMHARIC.get(o.get("status"), o.get("status"))  # fallback to raw if unknown
+        campus_text = await db.get_user_campus_by_order(o['id'])
+        dropoff = f"{campus_text}" if campus_text else 'N/A'
 
         await message.answer(
             f"📦 ትዕዛዝ #{o['id']} — {status_text}\n"
             f"🛒 ምግቦች: {items}\n\n"
             f"💵 ክፍያ: {int(o.get('food_subtotal', 0))} ብር\n"
-            f"📍 መድረሻ: {o.get('dropoff','')}"
+            f"📍 መድረሻ: {dropoff}"
         )
 
     kb = paginate_orders_kb(page=1, pages=pages, scope="daily", extra_payload=today)
@@ -1017,14 +1026,18 @@ async def perf_daily_page(cb: CallbackQuery):
         return
 
     await cb.message.edit_reply_markup(reply_markup=None)
+  
 
     for o in orders:
         items = ", ".join(i.get("name","") for i in json.loads(o.get("items_json") or "[]"))
+        campus_text = await db.get_user_campus_by_order(o['id'])
+        dropoff = f"{campus_text}" if campus_text else 'N/A'
+
         await cb.message.answer(
             f"📦 ትዕዛዝ #{o['id']} — {o['status']}\n"
             f"🛒 ምግቦች: {items}\n\n"
             f"💵 ክፍያ: {int(o.get('food_subtotal', 0))} ብር\n"
-            f"📍 መድረሻ: {o.get('dropoff','')}"
+            f"📍 መድረሻ: {dropoff}"
         )
 
     kb = paginate_orders_kb(page=page, pages=pages, scope="daily", extra_payload=date)
@@ -1088,11 +1101,14 @@ async def performance_week_orders(message: Message):
     for o in orders:
         items = ", ".join(i.get("name","") for i in json.loads(o.get("items_json") or "[]"))
         status_text = STATUS_AMHARIC.get(o.get("status"), o.get("status"))  # fallback to raw if unknown
+        campus_text = await db.get_user_campus_by_order(o['id'])
+        dropoff = f"{campus_text}" if campus_text else 'N/A'
+
         await message.answer(
             f"📦 ትዕዛዝ #{o['id']} — {status_text}\n"
             f"🛒 ምግቦች: {items}\n\n"
             f"💵 ክፍያ: {int(o.get('food_subtotal', 0))} ብር\n"
-            f"📍 መድረሻ: {o.get('dropoff','')}"
+            f"📍 መድረሻ: {dropoff}"
         )
 
     payload = f"{start_str}:{end_str}"
@@ -1135,11 +1151,14 @@ async def perf_weekly_page(cb: CallbackQuery):
 
     for o in orders:
         items = ", ".join(i.get("name","") for i in json.loads(o.get("items_json") or "[]"))
+        campus_text = await db.get_user_campus_by_order(o['id'])
+        dropoff = f"{campus_text}" if campus_text else 'N/A'
+
         await cb.message.answer(
             f"📦 ትዕዛዝ #{o['id']} — {o['status']}\n"
             f"🛒 ምግቦች: {items}\n\n"
             f"💵 ክፍያ: {int(o.get('food_subtotal', 0))} ብር\n"
-            f"📍 መድረሻ: {o.get('dropoff','')}"
+            f"📍 መድረሻ: {dropoff}"
         )
 
     payload = f"{start_date}:{end_date}"

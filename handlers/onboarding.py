@@ -28,6 +28,8 @@ from app_context import db
 class OnboardingStates(StatesGroup):
     share_phone = State()
     choose_campus = State()
+    choose_gender = State()
+
 
 
 # --- REUSABLE UI COMPONENTS ---
@@ -41,12 +43,22 @@ def contact_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
+def gender_inline_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="👩 Female", callback_data="gender:female"),
+                InlineKeyboardButton(text="👨 Male", callback_data="gender:male"),
+            ]
+        ]
+    )
+
+
 def campus_inline_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🏛 4kilo", callback_data="campus:4kilo")],
-            [InlineKeyboardButton(text="📚 5kilo", callback_data="campus:5kilo")],
-            [InlineKeyboardButton(text="🎓 6kilo", callback_data="campus:6kilo")],
+            [InlineKeyboardButton(text="🏛 4kilo", callback_data="campus:4kilo"), InlineKeyboardButton(text="📚 5kilo", callback_data="campus:5kilo")],
+            [InlineKeyboardButton(text="🎓 6kilo", callback_data="campus:6kilo"), InlineKeyboardButton(text="💹 FBE", callback_data="campus:FBE")],
         ]
     )
 
@@ -135,15 +147,27 @@ def build_profile_card(user: dict, role: str = "student") -> str:
             "🚴 Keep hustling — every delivery powers your reputation ⚡"
         )
 
+    badge = get_xp_badge(level)
+
     return (
         f"🎉 **Welcome, {user.get('first_name', 'User')}!**\n\n"
         f"📱 Phone: {user.get('phone', 'N/A')}\n"
         f"🏛 Campus: {user.get('campus', 'N/A')}\n"
         f"🎓 Role: {role.capitalize()}\n\n"
-        f"💰 Coins: {coins} • 🏆 XP: {xp} • 🔰 Level: {level}\n"
-        f"{progress_bar}\n\n"
+        f"💰 Coins: {coins}\n"
+        f"🏆 XP: {xp} • 🔰 Level {level} • {badge}\n"
+        f"{progress_bar}  \n({xp % 100}/100 XP to next level)\n\n"
         f"💡 Tip: {tip}"
     )
+
+def get_xp_badge(level: int) -> str:
+    if level >= 6:
+        return "🟣 VIP"
+    elif level >= 3:
+        return "🔵 Regular"
+    else:
+        return "🟢 Newbie"
+
 
 
 # --- MENUS ---
@@ -186,7 +210,7 @@ async def start(message: Message, state: FSMContext):
     user = await db.get_user(telegram_id)
     delivery_guy = None if user else await db.get_delivery_guy_by_user(telegram_id)
     if delivery_guy or (user and (user.get("role") or "").lower() == "delivery_guy"):
-        await typing_pause(message, "🚴‍♂️ Welcome back, Campus Hero!")
+        await typing_pause(message, "🚴‍♂️ Welcome back, Campus Star!")
         await asyncio.sleep(0.4)
         await typing_pause(message, "⚡ You keep the campus heartbeat alive — fast meals, real smiles, pure hustle.")
 
@@ -242,7 +266,6 @@ async def handle_contact(message: Message, state: FSMContext):
 
 
 # --- STEP 3: CAMPUS SELECTION ---
-
 @router.callback_query(OnboardingStates.choose_campus, F.data.startswith("campus:"))
 async def handle_campus(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
@@ -250,44 +273,58 @@ async def handle_campus(cb: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     phone = data.get("phone", "")
 
+    await state.update_data(campus=campus, phone=phone)
+
+    await cb.message.answer("⚧ Step 3 of 4 — Select your gender", reply_markup=gender_inline_keyboard())
+    await state.set_state(OnboardingStates.choose_gender)
+
+
+
+@router.callback_query(OnboardingStates.choose_gender, F.data.startswith("gender:"))
+async def handle_gender(cb: CallbackQuery, state: FSMContext):
+    await cb.answer()
+    gender = cb.data.split(":")[1]
+    data = await state.get_data()
+
+    # 🎁 Give starter coins
+    starter_coins = 50
+
     await db.create_user(
         telegram_id=cb.from_user.id,
         role="student",
         first_name=cb.from_user.first_name or "",
-        phone=phone,
-        campus=campus,
+        phone=data.get("phone", ""),
+        campus=data.get("campus", ""),
+        gender=gender,
+        coins=starter_coins,   # <-- reward coins on creation
     )
-
-    try:
-        if settings.ADMIN_DAILY_GROUP_ID:
-            await cb.bot.send_message(
-                settings.ADMIN_DAILY_GROUP_ID,
-                f"📢 New student joined UniBites Delivery!\n\n"
-                f"👤 Name: {cb.from_user.first_name}\n"
-                f"📱 Phone: {phone}\n"
-                f"🏛 Campus: {campus}",
-            )
-    except Exception:
-        pass
 
     await cb.message.answer("✅ Registration complete!")
     await asyncio.sleep(0.5)
-    await typing_pause(cb.message, "🌱 Step 3 of 3 — Setting up your profile…")
+    await typing_pause(cb.message, "🌱 Finalizing your profile…")
     await asyncio.sleep(0.7)
 
     new_user = {
         "first_name": cb.from_user.first_name,
-        "phone": phone,
-        "campus": campus,
-        "coins": 0,
+        "phone": data.get("phone", ""),
+        "campus": data.get("campus", ""),
+        "coins": starter_coins,   # <-- reflect reward
         "xp": 0,
         "level": 1,
+        "gender": gender,
     }
+
+    # 🎉 Tell them about the reward
+    await cb.message.answer(
+        f"🎁 Surprise! You’ve been gifted **{starter_coins} Coins** to kickstart your UniBites journey.\n"
+        "Use them later to unlock perks and play around with rewards ✨"
+    )
 
     await cb.message.answer(build_profile_card(new_user), parse_mode="Markdown")
     await asyncio.sleep(0.8)
     await cb.message.answer("Your dashboard is live 👇", reply_markup=main_menu())
     await state.clear()
+
 
 
 # --- FALLBACKS ---

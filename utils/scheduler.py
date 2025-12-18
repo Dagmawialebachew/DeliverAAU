@@ -199,6 +199,9 @@ class BotScheduler:
 
                     pickup_loc = order.get("pickup")
                     dropoff_loc = order.get("dropoff")
+                    campus_text = await self.db.get_user_campus_by_order(order['id'])
+                    dropoff_loc = f"{dropoff_loc} • {campus_text}" if campus_text else dropoff_loc  
+
                     delivery_fee = order.get("delivery_fee", 0.0)
 
                     breakdown = json.loads(order.get("breakdown_json") or "{}")
@@ -724,6 +727,8 @@ class BotScheduler:
                         f"📦 Order #{order_id} was stuck with DG {dg_id} (status={status}).\n"
                         f"↩️ Reset to pending for re-offer."
                     )
+                    ADMIN_GROUP_ID = settings.ADMIN_DAILY_GROUP_ID
+
                     await notify_admin_log(self.bot, ADMIN_GROUP_ID, msg)
                 except Exception:
                     log.exception("[ADMIN LOG] Failed to notify for order %s", order_id)

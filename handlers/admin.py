@@ -1,3 +1,4 @@
+import html
 import logging
 import contextlib
 import asyncio
@@ -49,6 +50,7 @@ class AdminStates(StatesGroup):
     dg_get_name = State()
     dg_get_phone = State()
     dg_get_campus = State()
+    dg_get_gender = State()   # <-- NEW
     dg_confirm = State()
 
     # Broadcast Protocol
@@ -69,7 +71,7 @@ class AdminReplyState(StatesGroup):
 # ==============================================================================
 def get_main_menu_kb() -> ReplyKeyboardMarkup:
     kb = [
-        [KeyboardButton(text="🏪 Vendors"), KeyboardButton(text="🛵 Delivery Guys")],
+        [KeyboardButton(text="🏪 Vendors"), KeyboardButton(text="🚴 Delivery Guys")],
         [KeyboardButton(text="📦 Orders"), KeyboardButton(text="📈 Analytics")]
         # [KeyboardButton(text="📢 Broadcast"), KeyboardButton(text="💰 Finance")],
         # [KeyboardButton(text="⚙️ Settings"), KeyboardButton(text="🛡 System Status")],
@@ -251,7 +253,7 @@ def get_dg_list_kb(dgs: list) -> InlineKeyboardMarkup:
     for i in range(0, len(numbered_buttons), 3):
         rows.append(numbered_buttons[i:i+3])
     rows.append([
-        InlineKeyboardButton(text="➕ Add Delivery Guy", callback_data="dg_add"),
+        InlineKeyboardButton(text="➕ Add DG", callback_data="dg_add"),
         InlineKeyboardButton(text="⬅️ Back to Main", callback_data="admin_back")
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -285,7 +287,7 @@ def get_campus_kb() -> ReplyKeyboardMarkup:
     """Selection for Campuses."""
     kb = [
         [KeyboardButton(text="6kilo"), KeyboardButton(text="5kilo")],
-        [KeyboardButton(text="4kilo"), KeyboardButton(text="1kilo")],
+        [KeyboardButton(text="4kilo"), KeyboardButton(text="FBE")],
     ]
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True, one_time_keyboard=True)
 
@@ -585,6 +587,421 @@ async def vendor_commit(call: CallbackQuery, state: FSMContext):
         )
 
     await state.clear()
+    
+    
+    
+    
+    
+    
+    
+    
+    
+# =============================================================================
+# Delivery Guy LOGIC
+# =============================================================================
+
+@router.message(F.text == "🚴 Delivery Guys", F.from_user.id.in_(settings.ADMIN_IDS))
+async def admin_dgs_entry(message: Message, state: FSMContext):
+    await state.clear()
+    async with db._open_connection() as conn:
+        rows = await conn.fetch(
+            "SELECT id, name, phone, campus, active, blocked, total_deliveries, accepted_requests, total_requests, skipped_requests FROM delivery_guys ORDER BY id ASC"
+        )
+    if not rows:
+        await message.answer("⚠️ No delivery guys found.", reply_markup=get_main_menu_kb())
+        return
+
+    summary_lines = ["🚴 <b>Delivery Guys</b>", "━━━━━━━━━━━━━━━━━━━━━━"]
+    for i, r in enumerate(rows, start=1):
+        status_emoji = "🟢 Online" if r["active"] else "🔴 Offline"
+        if r["blocked"]:
+            status_emoji = "⛔ Blocked"
+        acceptance_rate = (r["accepted_requests"]/r["total_requests"]*100) if r["total_requests"] else 100
+        summary_lines.append(
+            f"{i}️⃣ <b>{r['name']}</b> ({r['campus']})\n"
+            f"   {status_emoji} • 📊 {acceptance_rate:.1f}% • 📦 {r['total_deliveries']} deliveries\n"
+        )
+    summary_lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+    summary_lines.append("🔍 Select a DG below to view full details")
+
+    dgs = [{"id": r["id"], "name": r["name"]} for r in rows]
+    kb = get_dg_list_kb(dgs)
+    await message.answer("\n".join(summary_lines), reply_markup=kb, parse_mode="HTML")
+@router.callback_query(F.data.startswith("dg_view:"))
+async def dg_view_callback(callback: CallbackQuery, state: FSMContext):
+    dg_id = int(callback.data.split(":")[1])
+    async with db._open_connection() as conn:
+        dg = await conn.fetchrow(
+            "SELECT * FROM delivery_guys WHERE id = $1", dg_id
+        )
+    if not dg:
+        await callback.answer("⚠️ DG not found.", show_alert=True)
+        return
+
+    # Status emoji
+    status_emoji = "🟢 Online" if dg["active"] else "🔴 Offline"
+    if dg["blocked"]:
+        status_emoji = "⛔ Blocked"
+
+    # Acceptance rate
+    acceptance_rate = (dg["accepted_requests"]/dg["total_requests"]*100) if dg["total_requests"] else 100
+
+    # Build card text
+    card_text = (
+        f"🛵 <b>Delivery Guy: {dg['name']}</b>\n"
+        f"📱 Phone: {dg['phone']}\n"
+        f"🏛 Campus: {dg['campus']}\n"
+        f"⚧ Gender: {dg.get('gender','—')}\n"   # <-- NEW LINE
+        f"⚡ Status: {status_emoji}\n"
+        f"📊 Acceptance Rate: {acceptance_rate:.1f}%\n"
+        f"📦 Deliveries: {dg['total_deliveries']} • Skipped: {dg['skipped_requests']}\n"
+        f"🪙 Coins: {dg['coins']} • XP: {dg['xp']} • Level: {dg['level']}\n"
+    )
+
+    kb = get_dg_card_kb(dg_id)
+    await callback.message.edit_text(card_text, reply_markup=kb, parse_mode="HTML")
+    await callback.answer()
+
+def get_dg_card_kb(dg_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✏️ Edit", callback_data=f"dg_edit:{dg_id}"),
+            InlineKeyboardButton(text="⛔ Block", callback_data=f"dg_block:{dg_id}")
+        ],
+        [
+            InlineKeyboardButton(text="🗑 Delete", callback_data=f"dg_delete:{dg_id}"),
+            InlineKeyboardButton(text="📈 Stats", callback_data=f"dg_stats:{dg_id}")
+        ],
+        [
+            InlineKeyboardButton(text="⬅️ Back to List", callback_data="admin_dgs")
+        ]
+    ])
+
+
+
+@router.callback_query(F.data == "dg_add", F.from_user.id.in_(settings.ADMIN_IDS))
+async def dg_add_init(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.answer(
+        "<b>🚴 Delivery Guy Onboarding // STEP 1/5</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "Enter the <b>Telegram ID</b> of the Delivery Agent.",
+        parse_mode="HTML",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    await state.set_state(AdminStates.dg_get_id)
+    await callback.answer()
+
+
+@router.message(AdminStates.dg_get_id)
+async def dg_id_captured(message: Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("⚠️ ID must be numeric. Try again.")
+        return
+    await state.update_data(dg_id=int(message.text))
+    await message.answer("<b>Step 2/5:</b> Enter <b>Full Name</b>.", parse_mode="HTML")
+    await state.set_state(AdminStates.dg_get_name)
+
+@router.message(AdminStates.dg_get_name)
+async def dg_name_captured(message: Message, state: FSMContext):
+    await state.update_data(dg_name=message.text)
+    await message.answer("<b>Step 3/4:</b> Enter <b>Phone Number</b> (e.g., 0911...).", parse_mode="HTML")
+    await state.set_state(AdminStates.dg_get_phone)
+
+@router.message(AdminStates.dg_get_phone)
+async def dg_phone_captured(message: Message, state: FSMContext):
+    await state.update_data(dg_phone=message.text)
+    await message.answer(
+        "<b>Step 4/5:</b> Select <b>Primary Campus</b>.", 
+        parse_mode="HTML", 
+        reply_markup=get_campus_kb()
+    )
+    await state.set_state(AdminStates.dg_get_campus)
+
+
+@router.message(AdminStates.dg_get_campus)
+async def dg_campus_captured(message: Message, state: FSMContext):
+    await state.update_data(dg_campus=message.text)
+    await message.answer(
+        "<b>Step 5/5:</b> Select <b>Gender</b> of the Delivery Agent.",
+        parse_mode="HTML",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="Male"), KeyboardButton(text="Female")]],
+            resize_keyboard=True,
+            one_time_keyboard=True
+        )
+    )
+    await state.set_state(AdminStates.dg_get_gender)
+
+
+@router.message(AdminStates.dg_get_gender)
+async def dg_gender_captured(message: Message, state: FSMContext):
+    await state.update_data(dg_gender=message.text)
+    data = await state.get_data()
+
+    summary = (
+        "<b>📋 VERIFY AGENT PROFILE</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🆔 <b>ID:</b> <code>{data['dg_id']}</code>\n"
+        f"👤 <b>Name:</b> {data['dg_name']}\n"
+        f"📱 <b>Phone:</b> {data['dg_phone']}\n"
+        f"🏛 <b>Campus:</b> {data['dg_campus']}\n"
+        f"⚧ <b>Gender:</b> {data['dg_gender']}\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "<i>Confirm to commit this Delivery Guy to the database?</i>"
+    )
+    await message.answer(summary, parse_mode="HTML", reply_markup=get_confirm_cancel_kb("dg"))
+    await state.set_state(AdminStates.dg_confirm)
+@router.callback_query(F.data == "dg_confirm", AdminStates.dg_confirm)
+async def dg_commit(call: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    try:
+        user_id = await db.get_internal_user_id(data['dg_id'])
+        new_gender = data['dg_gender'].strip().lower()
+
+        if not user_id:
+            user_id = await db.create_user(
+                telegram_id=data['dg_id'], role="delivery",
+                first_name=data['dg_name'], phone=data['dg_phone'],
+                campus=data['dg_campus'], gender=new_gender
+            )
+
+        if await db.get_delivery_guy_by_user(data['dg_id']):
+            await call.message.edit_text("⚠️ <b>Error:</b> Agent already exists.", parse_mode="HTML")
+            await state.clear()
+            return
+        
+        new_gender = data['dg_gender'].strip().lower()
+
+        dg_id = await db.create_delivery_guy(user_id, data['dg_name'], data['dg_campus'], new_gender, data['dg_phone'])
+
+        await call.message.edit_text(
+            f"✅ <b>AGENT ONBOARDED SUCCESSFULLY</b>\n"
+            f"Agent <b>{data['dg_name']}</b> is active.\n"
+            f"System ID: <code>{dg_id}</code>",
+            parse_mode="HTML"
+        )
+        logger.info(f"[ADMIN:DG] Onboarded {data['dg_name']} (System ID: {dg_id})")
+        await call.message.answer("Ready.", reply_markup=get_main_menu_kb())
+
+    except Exception as e:
+        logger.exception("DG Error")
+        await call.message.edit_text(f"💥 System Failure: {e}", parse_mode=None)
+    await state.clear()
+
+
+class DGEditStates(StatesGroup):
+    dg_edit_phone = State()
+    dg_edit_campus = State()
+    dg_edit_status = State()
+    dg_edit_gender = State()
+
+@router.callback_query(F.data.startswith("dg_edit:"))
+async def dg_edit_init(callback: CallbackQuery, state: FSMContext):
+    dg_id = int(callback.data.split(":")[1])
+    await state.update_data(dg_id=dg_id)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✏️ Edit Phone", callback_data=f"dg_edit_phone:{dg_id}"),
+            InlineKeyboardButton(text="🏛 Edit Campus", callback_data=f"dg_edit_campus:{dg_id}")
+        ],
+        [
+            InlineKeyboardButton(text="⚡ Edit Status", callback_data=f"dg_edit_status:{dg_id}"),
+            InlineKeyboardButton(text="⚧ Edit Gender", callback_data=f"dg_edit_gender:{dg_id}")  # <-- NEW
+        ],
+        [
+            InlineKeyboardButton(text="⛔ Block", callback_data=f"dg_block:{dg_id}"),
+            InlineKeyboardButton(text="🗑 Delete", callback_data=f"dg_delete:{dg_id}")
+        ],
+        [
+            InlineKeyboardButton(text="📈 Stats", callback_data=f"dg_stats:{dg_id}"),
+            InlineKeyboardButton(text="⬅️ Back to List", callback_data="admin_dgs")
+        ]
+    ])
+    await callback.message.edit_text("Choose a field to edit:", reply_markup=kb)
+    await callback.answer()
+
+@router.callback_query(F.data == "dg_edit_phone")
+async def dg_edit_phone_start(callback: CallbackQuery, state: FSMContext):
+    await callback.message.answer("Enter new phone number:", reply_markup=ReplyKeyboardRemove())
+    await state.set_state(DGEditStates.dg_edit_phone)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("dg_edit_gender:"))
+async def dg_edit_gender_start(callback: CallbackQuery, state: FSMContext):
+    dg_id = int(callback.data.split(":")[1])
+    await state.update_data(dg_id=dg_id)
+    kb = ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="Male"), KeyboardButton(text="Female")]],
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )
+    await callback.message.answer("Select new gender:", reply_markup=kb)
+    await state.set_state(DGEditStates.dg_edit_gender)
+    await callback.answer()
+
+
+@router.message(DGEditStates.dg_edit_gender)
+async def dg_edit_gender_commit(message: Message, state: FSMContext):
+    data = await state.get_data()
+    new_gender = message.text.strip().lower()
+    if new_gender not in ["male", "female"]:
+        await message.answer("⚠️ Invalid gender. Please choose Male or Female.")
+        return
+
+    async with db._open_connection() as conn:
+        await conn.execute("UPDATE delivery_guys SET gender=$1 WHERE id=$2", new_gender, data["dg_id"])
+
+    await message.answer(f"✅ Gender updated to {new_gender}.", reply_markup=get_main_menu_kb())
+    logger.info(f"[ADMIN:DG] Updated gender for DG {data['dg_id']} → {new_gender}")
+    await state.clear()
+
+
+
+@router.callback_query(F.data.startswith("dg_edit_status:"))
+async def dg_edit_status_start(callback: CallbackQuery, state: FSMContext):
+    dg_id = int(callback.data.split(":")[1])
+    await state.update_data(dg_id=dg_id)
+
+    kb = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🟢 Online"), KeyboardButton(text="🔴 Offline")],
+            [KeyboardButton(text="⛔ Blocked")]
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )
+    await callback.message.answer("Select new status:", reply_markup=kb)
+    await state.set_state(DGEditStates.dg_edit_status)
+    await callback.answer()
+
+
+
+@router.message(DGEditStates.dg_edit_status)
+async def dg_edit_status_commit(message: Message, state: FSMContext):
+    data = await state.get_data()
+    new_status = message.text.strip()
+
+    # Map text → DB fields
+    active, blocked = False, False
+    if "Online" in new_status:
+        active, blocked = True, False
+    elif "Offline" in new_status:
+        active, blocked = False, False
+    elif "Blocked" in new_status:
+        active, blocked = False, True
+    else:
+        await message.answer("⚠️ Invalid status. Please choose Online, Offline, or Blocked.")
+        return
+
+    async with db._open_connection() as conn:
+        await conn.execute(
+            "UPDATE delivery_guys SET active=$1, blocked=$2 WHERE id=$3",
+            active, blocked, data["dg_id"]
+        )
+
+    await message.answer(f"✅ Status updated to {new_status}.", reply_markup=get_main_menu_kb())
+    logger.info(f"[ADMIN:DG] Updated status for DG {data['dg_id']} → {new_status}")
+    await state.clear()
+
+@router.message(DGEditStates.dg_edit_phone)
+async def dg_edit_phone_commit(message: Message, state: FSMContext):
+    data = await state.get_data()
+    async with db._open_connection() as conn:
+        await conn.execute("UPDATE delivery_guys SET phone=$1 WHERE id=$2", message.text, data["dg_id"])
+    await message.answer("✅ Phone updated.", reply_markup=get_main_menu_kb())
+    await state.clear()
+
+
+@router.callback_query(F.data.startswith("dg_block:"))
+async def dg_block(callback: CallbackQuery, state: FSMContext):
+    dg_id = int(callback.data.split(":")[1])
+    async with db._open_connection() as conn:
+        await conn.execute("UPDATE delivery_guys SET blocked=TRUE WHERE id=$1", dg_id)
+    await callback.message.edit_text("⛔ DG blocked successfully.")
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("dg_unblock:"))
+async def dg_unblock(callback: CallbackQuery, state: FSMContext):
+    dg_id = int(callback.data.split(":")[1])
+    async with db._open_connection() as conn:
+        await conn.execute("UPDATE delivery_guys SET blocked=FALSE WHERE id=$1", dg_id)
+    await callback.message.edit_text("✅ DG unblocked successfully.")
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("dg_delete:"))
+async def dg_delete(callback: CallbackQuery, state: FSMContext):
+    dg_id = int(callback.data.split(":")[1])
+    async with db._open_connection() as conn:
+        await conn.execute("DELETE FROM delivery_guys WHERE id=$1", dg_id)
+    await callback.message.edit_text("🗑 DG deleted successfully.")
+    await callback.answer()
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+@router.callback_query(F.data.startswith("dg_stats:"))
+async def dg_stats(callback: CallbackQuery, state: FSMContext):
+    dg_id = int(callback.data.split(":")[1])
+
+    async with db._open_connection() as conn:
+        # Count active orders by status
+        active_rows = await conn.fetch(
+            """
+            SELECT status, COUNT(*) AS count
+            FROM orders
+            WHERE delivery_guy_id = $1
+              AND status IN ('assigned','preparing','ready','in_progress')
+            GROUP BY status
+            """,
+            dg_id
+        )
+
+        # Fetch lifetime stats
+        dg = await conn.fetchrow(
+            """
+            SELECT total_deliveries, accepted_requests, total_requests, skipped_requests
+            FROM delivery_guys
+            WHERE id = $1
+            """,
+            dg_id
+        )
+
+    if not dg:
+        await callback.message.edit_text("⚠️ DG not found.")
+        await callback.answer()
+        return
+
+    # Build stats summary
+    lines = ["📈 <b>Delivery Guy Stats</b>", "━━━━━━━━━━━━━━━━━━━━━━"]
+
+    if active_rows:
+        lines.append("🟢 <b>Active Orders</b>")
+        status_map = {
+            "assigned": "📌 Assigned",
+            "preparing": "👨‍🍳 Preparing",
+            "ready": "✅ Ready",
+            "in_progress": "🚚 In Progress"
+        }
+        for r in active_rows:
+            lines.append(f"{status_map.get(r['status'], r['status'])}: {r['count']}")
+    else:
+        lines.append("🟢 No active orders.")
+
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+
+    acceptance_rate = (dg["accepted_requests"] / dg["total_requests"] * 100) if dg["total_requests"] else 100
+    lines.append(f"📦 Total Deliveries: {dg['total_deliveries']}")
+    lines.append(f"📊 Acceptance Rate: {acceptance_rate:.1f}%")
+    lines.append(f"⏭ Skipped Requests: {dg['skipped_requests']}")
+
+    # Inline keyboard with back button
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Back", callback_data=f"dg_view:{dg_id}")]
+    ])
+
+    await callback.message.edit_text("\n".join(lines), parse_mode="HTML", reply_markup=kb)
+    await callback.answer()
 # ==============================================================================
 # 🛵 PROTOCOL: DELIVERY FLEET ONBOARDING
 # ==============================================================================
@@ -648,11 +1065,11 @@ async def dg_commit(call: CallbackQuery, state: FSMContext, db: Database):
     data = await state.get_data()
     try:
         user_id = await db.get_internal_user_id(data['dg_id'])
-        if not user_id:
-            user_id = await db.create_user(
-                telegram_id=data['dg_id'], role="delivery", 
-                first_name=data['dg_name'], phone=data['dg_phone'], campus=data['dg_campus']
-            )
+        # if not user_id:
+        #     user_id = await db.create_user(
+        #         telegram_id=data['dg_id'], role="delivery", 
+        #         first_name=data['dg_name'], phone=data['dg_phone'], campus=data['dg_campus']
+        #     )
         
         # Check existing DG
         if await db.get_delivery_guy_by_user(data['dg_id']):

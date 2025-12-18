@@ -28,9 +28,9 @@ from app_context import db
 
 # Status mapping with stage index
 STATUS_MAP = {
-    "pending":    ("🕒 Waiting for vendor", 1),
+    "pending":    ("🕒 Meal request sent — waiting for confirmation…", 1),
     "assigned":   ("🙋 Delivery partner assigned", 2),
-    "preparing":  ("👨‍🍳 Vendor is preparing", 2),
+    "preparing":  ("👨‍🍳 The café is cooking up your order", 2),
     "ready":      ("📦 Ready for pickup", 3),
     "on_the_way": ("🚴 Delivery partner on the way", 4),
     "in_progress":("🚴 Delivery in progress", 4),
@@ -300,22 +300,24 @@ async def _fetch_past_orders_page_for_user(user_internal_id: int, page: int = 0)
     try:
         async with db._open_connection() as conn:
             # Count delivered orders
+            # Count delivered + cancelled
             total = await conn.fetchval(
-                "SELECT COUNT(*) FROM orders WHERE user_id = $1 AND status = 'delivered'",
+                "SELECT COUNT(*) FROM orders WHERE user_id = $1 AND status IN ('delivered', 'cancelled')",
                 user_internal_id
             ) or 0
 
-            # Fetch paginated delivered orders
+            # Fetch paginated delivered + cancelled orders
             rows = await conn.fetch(
                 """
                 SELECT * FROM orders
-                WHERE user_id = $1 AND status = 'delivered'
+                WHERE user_id = $1 AND status IN ('delivered', 'cancelled')
                 ORDER BY updated_at DESC
                 LIMIT $2 OFFSET $3
                 """,
                 user_internal_id, PAST_PAGE_SIZE, offset
             )
             orders = [dict(r) for r in rows]
+
     except Exception:
         orders = []
         total = 0
@@ -327,16 +329,18 @@ async def _fetch_single_past_order(order_id: int) -> Optional[Dict[str, Any]]:
     try:
         async with db._open_connection() as conn:
             row = await conn.fetchrow(
-                "SELECT * FROM orders WHERE id = $1 AND status = 'delivered'",
+                "SELECT * FROM orders WHERE id = $1 AND status IN ('delivered', 'cancelled')",
                 order_id
             )
             return dict(row) if row else None
     except Exception:
         return None
     
+    
+
 @router.callback_query(lambda c: c.data.startswith("past:view:"))
 async def handle_past_order_view(callback: CallbackQuery):
-    """Show full receipt-like breakdown of one delivered order + rating prompt."""
+    """Show full receipt-like breakdown of one past order (delivered or cancelled)."""
     try:
         _, _, order_id_str = callback.data.split(":")
         order_id = int(order_id_str)
@@ -346,7 +350,7 @@ async def handle_past_order_view(callback: CallbackQuery):
 
     order = await _fetch_single_past_order(order_id)
     if not order:
-        await callback.answer("Order not found or not delivered yet.", show_alert=True)
+        await callback.answer("Order not found.", show_alert=True)
         return
 
     # Parse breakdown
@@ -356,58 +360,68 @@ async def handle_past_order_view(callback: CallbackQuery):
     except Exception:
         items = []
 
+    # Status handling
+    status = (order.get("status") or "").lower()
+    if status == "delivered":
+        status_str = "✅ Delivered"
+    elif status == "cancelled":
+        status_str = "❌ Cancelled"
+    else:
+        status_str = status.capitalize() or "—"
+
     # Receipt text layout
     text_lines = [
         "🧾 **Order Receipt**",
         "──────────────────────────",
         f"**Order ID:** #{order_id}",
-        f"**Status:** ✅ Delivered",
+        f"**Status:** {status_str}",
     ]
 
-    if order.get("delivered_at"):
+    if status == "delivered" and order.get("delivered_at"):
         text_lines.append(f"**Delivered At:** {order['delivered_at']}")
+    if status == "cancelled" and order.get("updated_at"):
+        text_lines.append(f"**Cancelled At:** {order['updated_at']}")
 
     text_lines.append("\n🍴 **Items:**")
     if items:
-        # collapse duplicates into "Tea x2, Burger x1"
         counts = Counter(items)
         for name, count in counts.items():
-            if count > 1:
-                text_lines.append(f" • {name} x{count}")
-            else:
-                text_lines.append(f" • {name}")
+            text_lines.append(f" • {name} x{count}" if count > 1 else f" • {name}")
     else:
         text_lines.append(" • (details unavailable)")
 
     subtotal = order.get("food_subtotal") or 0
     delivery_fee = order.get("delivery_fee") or 0
-    
+    total = subtotal + delivery_fee if subtotal or delivery_fee else order.get("total", 0)
+
     text_lines.append(
         f"\n💳 **Payment:** {order.get('payment_method', 'N/A').capitalize()}\n"
-        f"💰 **Total:** {subtotal + delivery_fee} birr"
+        f"💰 **Total:** {total} birr"
     )
 
     if subtotal and delivery_fee:
         text_lines.append(f"\nSubtotal: {subtotal} birr\nDelivery Fee: {delivery_fee} birr")
 
-    text_lines.append("\nThank you for choosing DeliverAAU! 🌍")
-    text_lines.append("\n⭐ Please rate your overall experience:")
+    # Footer
+    if status == "delivered":
+        text_lines.append("\nThank you for choosing DeliverAAU! 🌍")
+        text_lines.append("\n⭐ Please rate your overall experience:")
+    else:
+        text_lines.append("\nThis order was cancelled. ❌")
 
-    # Inline buttons: Back + Rating
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="⭐1", callback_data=f"rate_vendor:{order_id}:1"),
-                InlineKeyboardButton(text="⭐2", callback_data=f"rate_vendor:{order_id}:2"),
-                InlineKeyboardButton(text="⭐3", callback_data=f"rate_vendor:{order_id}:3"),
-                InlineKeyboardButton(text="⭐4", callback_data=f"rate_vendor:{order_id}:4"),
-                InlineKeyboardButton(text="⭐5", callback_data=f"rate_vendor:{order_id}:5"),
-            ],
-            [
-                InlineKeyboardButton(text="⬅️ Back", callback_data="past:back"),
-            ]
-        ]
-    )
+    # Inline buttons
+    kb_rows = []
+    if status == "delivered":
+        kb_rows.append([
+            InlineKeyboardButton(text="⭐1", callback_data=f"rate_vendor:{order_id}:1"),
+            InlineKeyboardButton(text="⭐2", callback_data=f"rate_vendor:{order_id}:2"),
+            InlineKeyboardButton(text="⭐3", callback_data=f"rate_vendor:{order_id}:3"),
+            InlineKeyboardButton(text="⭐4", callback_data=f"rate_vendor:{order_id}:4"),
+            InlineKeyboardButton(text="⭐5", callback_data=f"rate_vendor:{order_id}:5"),
+        ])
+    kb_rows.append([InlineKeyboardButton(text="⬅️ Back", callback_data="past:back")])
+
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
 
     try:
         await callback.message.edit_text(
@@ -423,9 +437,44 @@ async def handle_past_order_view(callback: CallbackQuery):
             parse_mode="Markdown",
             disable_web_page_preview=True,
         )
-    await callback.answer()
+    try:
+        await callback.answer()
+    except Exception:
+        pass
+
+
+@router.callback_query(lambda c: c.data.startswith("past:page:"))
+async def handle_past_orders_pagination(callback: CallbackQuery):
+    try:
+        # Always take the last part as the page number
+        page_str = callback.data.split(":")[-1]
+        page = int(page_str)
+    except Exception as e:
+        await callback.answer("Invalid page.", show_alert=True)
+        return
+
+    user = await db.get_user(callback.from_user.id)
+    if not user:
+        print(f"[Pagination] No user found for Telegram id={callback.from_user.id}")
+        await callback.message.answer("⚠️ Please /start to register first.", reply_markup=main_menu())
+        return
+
+    # Fetch orders and total
+    orders, total = await _fetch_past_orders_page_for_user(user["id"], page)
+    total_pages = max(1, (total + PAST_PAGE_SIZE - 1) // PAST_PAGE_SIZE)
     
-    
+    # Clamp page to valid range
+    if page < 0:
+        page = 0
+    elif page >= total_pages:
+        page = total_pages - 1
+
+    await send_past_orders_page(callback, user["id"], page)
+    try:
+        await callback.answer()
+    except Exception as e:
+        print(f"[Pagination] callback.answer failed: {e}")
+
 @router.callback_query(lambda c: c.data == "past:back")
 async def handle_past_back(callback: CallbackQuery, state: FSMContext = None):
     await callback.answer("Returning to your orders…", show_alert=False)
@@ -438,16 +487,17 @@ async def handle_past_back(callback: CallbackQuery, state: FSMContext = None):
     try:
         await send_past_orders_page(callback, user["id"], page=0)
     except Exception as e:
-        print("Error returning to past orders:", e)
         await callback.message.answer("⚠️ Couldn't load your past orders right now. Please try again.")
-
 async def send_past_orders_page(message_or_callback, user_id: int, page: int):
-    """Display paginated delivered orders — calmer, receipt-style design (HTML mode)."""
+    """Display paginated past orders (delivered + cancelled) — calmer, receipt-style design (HTML mode)."""
     orders, total = await _fetch_past_orders_page_for_user(user_id, page)
     if not orders:
-        text = "🧾 No completed orders yet.\n\n✨ Once your meals are delivered, they'll appear here."
+        text = "🧾 No past orders yet.\n\n✨ Once your meals are delivered or cancelled, they'll appear here."
         if isinstance(message_or_callback, CallbackQuery):
-            await message_or_callback.answer()
+            try:
+                await message_or_callback.answer()
+            except Exception:
+                pass
             await message_or_callback.message.edit_text(text)
         else:
             await message_or_callback.answer(text)
@@ -468,7 +518,6 @@ async def send_past_orders_page(message_or_callback, user_id: int, page: int):
 
         if items:
             counts = Counter(items)
-            # Show up to 3 items with counts
             items_preview = " • ".join(
                 f"{name} x{count}" if count > 1 else name
                 for name, count in list(counts.items())[:3]
@@ -483,8 +532,17 @@ async def send_past_orders_page(message_or_callback, user_id: int, page: int):
             else o.get("total", "—")
         )
 
+        # Status handling
+        status = o.get("status", "").lower()
+        if status == "delivered":
+            status_str = "✅ Delivered"
+        elif status == "cancelled":
+            status_str = "❌ Cancelled"
+        else:
+            status_str = status.capitalize() or "—"
+
         lines.append(
-            f"#{o['id']} — ✅ Delivered\n"
+            f"#{o['id']} — {status_str}\n"
             f"   🍴 {items_preview}\n"
             f"   💳 {payment_method} | 💰 {total_cost} birr\n"
         )
@@ -514,7 +572,10 @@ async def send_past_orders_page(message_or_callback, user_id: int, page: int):
 
     text = "\n".join(lines) + "\n\n🧾 Tap an order above to view its full receipt."
     if isinstance(message_or_callback, CallbackQuery):
-        await message_or_callback.answer()
+        try:
+            await message_or_callback.answer()
+        except Exception:
+            pass
         try:
             await message_or_callback.message.edit_text(
                 text,
@@ -651,16 +712,38 @@ async def send_orders_page(message_or_callback, user_id: int, page: int):
             disable_web_page_preview=True,
         )
 
-
-# --- Pagination callbacks ---
-@router.callback_query(F.data.startswith("orders:page:"))
-async def orders_page_callback(cb: CallbackQuery):
-    page = int(cb.data.split(":")[-1])
-    user = await db.get_user(cb.from_user.id)
-    if not user:
-        await cb.answer("⚠️ Please /start to register first.")
+@router.callback_query(lambda c: c.data.startswith("past:page:"))
+async def handle_past_orders_pagination(callback: CallbackQuery):
+    try:
+        _, _, page_str = callback.data.split(":")
+        page = int(page_str)
+    except Exception:
+        await callback.answer("Invalid page.", show_alert=True)
         return
-    await send_orders_page(cb, user["id"], page)
+
+    user = await db.get_user(callback.from_user.id)
+    if not user:
+        await callback.message.answer("⚠️ Please /start to register first.", reply_markup=main_menu())
+        return
+
+    try:
+        await send_past_orders_page(callback, user["id"], page)
+    except Exception as e:
+        await callback.message.answer("⚠️ Couldn't load your past orders right now. Please try again.")
+
+    try:
+        await callback.answer()
+    except Exception:
+        pass
+
+
+@router.callback_query(lambda c: c.data == "past:noop")
+async def handle_past_orders_noop(callback: CallbackQuery):
+    # Just acknowledge so Telegram doesn’t complain
+    try:
+        await callback.answer()
+    except Exception:
+        pass
 
 
 @router.callback_query(F.data == "orders:close")
@@ -701,21 +784,21 @@ async def order_view_from_dashboard(cb: CallbackQuery):
 # --- Optional: long-running single-order tracker (silent background refresh) ---
 @router.callback_query(F.data.startswith("order:track:"))
 async def order_track_long(cb: CallbackQuery):
+    # Answer once, immediately
     try:
-        await cb.answer()
+        await cb.answer("⏳ Tracking started…")
     except Exception:
-        pass  # ignore if already expired
+        pass
+
     order_id = int(cb.data.split(":")[2])
     order = await db.get_order(order_id)
     if not order:
-        await cb.answer()
         try:
             await cb.message.edit_text("❌ Order not found.")
         except Exception:
             await cb.message.answer("❌ Order not found.")
         return
 
-    await cb.answer()
     editable_msg = None
     tick = 0
     refresh_interval = 40
@@ -724,7 +807,10 @@ async def order_track_long(cb: CallbackQuery):
     paused = False
 
     try:
-        await cb.message.answer("🔎 Tracking your order — live updates will refresh here.", reply_markup=track_menu_keyboard())
+        await cb.message.answer(
+            "🔎 Tracking your order — live updates will refresh here.",
+            reply_markup=track_menu_keyboard()
+        )
     except Exception:
         pass
 
@@ -733,13 +819,19 @@ async def order_track_long(cb: CallbackQuery):
 
         try:
             if editable_msg is None:
-                editable_msg = await cb.message.answer(text, reply_markup=kb, disable_web_page_preview=True)
+                editable_msg = await cb.message.answer(
+                    text, reply_markup=kb, disable_web_page_preview=True
+                )
             else:
                 try:
-                    await editable_msg.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
+                    await editable_msg.edit_text(
+                        text, reply_markup=kb, disable_web_page_preview=True
+                    )
                 except TelegramBadRequest as e:
                     if "message is not modified" not in str(e):
-                        editable_msg = await cb.message.answer(text, reply_markup=kb, disable_web_page_preview=True)
+                        editable_msg = await cb.message.answer(
+                            text, reply_markup=kb, disable_web_page_preview=True
+                        )
         except Exception:
             break
 
@@ -755,12 +847,18 @@ async def order_track_long(cb: CallbackQuery):
         rounds += 1
         tick += 1
 
-        if rounds == 12: refresh_interval = 10
-        elif rounds == 36: refresh_interval = 30
+        if rounds == 12:
+            refresh_interval = 10
+        elif rounds == 36:
+            refresh_interval = 30
 
         if paused:
             try:
-                await editable_msg.edit_text(text + "\n\n⏸ Live updates paused. Tap ▶️ Resume to continue.", reply_markup=kb, disable_web_page_preview=True)
+                await editable_msg.edit_text(
+                    text + "\n\n⏸ Live updates paused. Tap ▶️ Resume to continue.",
+                    reply_markup=kb,
+                    disable_web_page_preview=True
+                )
             except Exception:
                 pass
             break
@@ -876,6 +974,10 @@ async def show_order_detail(callback: CallbackQuery):
     # 7) Totals: ensure numeric
     food_subtotal = order.get("food_subtotal") or 0
     delivery_fee = order.get("delivery_fee") or 0
+    dropoff = order.get('dropoff', 'N/A')
+    campus_text = await db.get_user_campus_by_order(order['id'])
+    dropoff = f"{dropoff} • {campus_text}" if campus_text else dropoff
+    
     try:
         total_birr = (float(food_subtotal) if not isinstance(food_subtotal, (int, float)) else food_subtotal) + \
                      (float(delivery_fee) if not isinstance(delivery_fee, (int, float)) else delivery_fee)
@@ -889,7 +991,7 @@ async def show_order_detail(callback: CallbackQuery):
         f"──────────────────────────\n"
         f"{eta_text}\n" if eta_text else ""       
         f"🏠 Pickup: {order.get('pickup','N/A')}\n"
-        f"📍 Drop‑off: {order.get('dropoff','N/A')}\n\n"
+        f"📍 Drop‑off: {dropoff}\n\n"
         f"🍴 Items:\n{items_str}\n\n"
         f"💰 Subtotal: {food_subtotal} birr\n"
         f"🚚 Delivery Fee: {delivery_fee} birr\n"

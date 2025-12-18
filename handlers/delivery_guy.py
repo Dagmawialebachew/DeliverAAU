@@ -385,11 +385,11 @@ async def handle_status_toggle_inline(cb: CallbackQuery):
 # --------------------------
 
 STATUS_LABELS = {
-    "pending": "⏳ Awaiting vendor confirmation",
-    "assigned": "📌 Assigned (waiting vendor acceptance)",
-    "preparing": "👨‍🍳 Vendor is preparing",
+    "pending": "⏳ Meal request sent — waiting for confirmation…",
+    "assigned": "📌 Assigned (waiting cafes acceptance)",
+    "preparing": "👨‍🍳 Your meal is being prepared",
     "ready": "✅ Ready for pickup",
-    "accepted": "👨‍🍳 Vendor is preparing",
+    "accepted": "👨‍🍳 Your meal is being prepared",
     "in_progress": "🚚 On the way",
     "delivered": "🎉 Delivered",
     "cancelled": "❌ Cancelled",
@@ -417,13 +417,19 @@ async def _send_my_orders_view(bot: Bot, dg: Dict[str, Any], message: Message):
             subtotal_fee = int(order.get('food_subtotal', 0))   # ✅ fixed
             delivery_fee = int(order.get('delivery_fee', 0))
             status_label = STATUS_LABELS.get(order.get("status"), "ℹ️ Unknown status")
+            dropoff = order.get('dropoff', 'N/A')
+            campus_text = await db.get_user_campus_by_order(order['id'])
+
+# Combine dropoff + campus
+            dropoff = f"{dropoff} • {campus_text}" if campus_text else dropoff
+    
 
             order_text = (
                 f"📦 *Order #{order['id']}*\n"
                 f"📌 Status: {status_label}\n\n"
                 "──────────────────────\n"
                 f"🏠 Pickup: *{order.get('pickup')}*\n"
-                f"📍 Drop-off: *{order.get('dropoff')}*\n"
+                f"📍 Drop-off: *{dropoff}*\n"
                 f"💰 Subtotal Fee: *{subtotal_fee} birr*\n"
                 f"🚚 _Delivery fee:_ *{delivery_fee} birr*\n"
                 "──────────────────────\n"
@@ -622,7 +628,12 @@ log = logging.getLogger(__name__)
 async def send_new_order_offer(bot: Bot, dg: Dict[str, Any], order: Dict[str, Any]) -> None:
     order_id = order['id']
     pickup_loc = order.get('pickup')
-    dropoff_loc = order.get('dropoff')
+    dropoff = order.get('dropoff')
+    campus_text = await db.get_user_campus_by_order(order['id'])
+
+# Combine dropoff + campus
+    dropoff_loc= f"{dropoff} • {campus_text}" if campus_text else dropoff
+    
     delivery_fee = order.get('delivery_fee', 0.0)
 
     initial_minutes = EXPIRY_SECONDS // 60
@@ -745,13 +756,18 @@ async def handle_accept_order(call: CallbackQuery):
             )
         except Exception:
             items_str = "Items unavailable"
+            
+        dropoff = order.get('dropoff', 'N/A')
+        campus_text = await db.get_user_campus_by_order(order['id'])
+        dropoff = f"{dropoff} • {campus_text}" if campus_text else dropoff
+    
 
         message_text = (
             f"📦 Order #{order_id}\n"
-            f"📌 Status: {'✅ Ready for pickup' if order['status']=='ready' else '👨‍🍳 Vendor is preparing...'}\n\n"
+            f"📌 Status: {'✅ Ready for pickup' if order['status']=='ready' else '👨‍🍳 The meal is being prepared...'}\n\n"
             "──────────────────────\n"
             f"🏠 Pickup: {order.get('pickup')}\n"
-            f"📍 Drop-off: {order.get('dropoff')}\n"
+            f"📍 Drop-off: {dropoff}\n"
             f"💰 Subtotal Fee: {subtotal} birr\n"
             f"🚚 Delivery fee: {delivery_fee} birr\n"
             "──────────────────────\n"
@@ -985,6 +1001,11 @@ async def handle_start_order(call: CallbackQuery):
     # Notify student
     updated_order = await db.get_order(order_id) 
     await notify_student(call.bot, updated_order, "on_the_way") 
+    dropoff = order.get('dropoff', 'N/A')
+    campus_text = await db.get_user_campus_by_order(order['id'])
+    dropoff = f"{dropoff} • {campus_text}" if campus_text else dropoff
+    
+    
     
     # Edit message to show new actions
     message_text = (
@@ -992,7 +1013,7 @@ async def handle_start_order(call: CallbackQuery):
         f"**Order #{order_id}**\n"
         "──────────────────────\n"
         f"🏠 Pickup: {order.get('pickup')}\n"
-        f"📍 Drop-off: {order.get('dropoff')}\n"
+        f"📍 Drop-off: {dropoff}\n"
         f"💵 Total: {order.get('food_subtotal',0) + order.get('delivery_fee',0)} birr\n\n"
         "⚡ You’re on the move — send **Live Updates** to keep students in the loop!"
     )
@@ -1008,7 +1029,6 @@ async def handle_start_order(call: CallbackQuery):
     except TelegramBadRequest:
         await call.answer("Status updated.")
 
-
 @router.callback_query(F.data.startswith("delivered_"))
 async def handle_delivered(call: CallbackQuery):
     order_id = int(call.data.split('_')[-1])
@@ -1019,7 +1039,7 @@ async def handle_delivered(call: CallbackQuery):
         return
 
     delivery_fee = float(order.get("delivery_fee") or 0)
-    
+
     try:
         # Update order status to delivered
         await db.update_order_status(order_id, "delivered", dg["id"])
@@ -1030,36 +1050,45 @@ async def handle_delivered(call: CallbackQuery):
         log.exception("Failed to mark delivered for order %s", order_id)
         await call.answer("❌ Failed to update order status.", show_alert=True)
         return
-        
-    # Award XP/Coins
+
+    # Award XP/Coins (compute values)
     xp_gained = XP_PER_DELIVERY if ENABLE_XP else 0
     coins_gained = delivery_fee * COIN_RATIO if ENABLE_COINS else 0.0
+
+    # Record daily stat exactly once (include rewards if any)
     try:
-        if xp_gained > 0 or coins_gained > 0:
-            await db.record_daily_stat_delivery(dg["id"], datetime.now().strftime('%Y-%m-%d'), delivery_fee, xp_gained, coins_gained)
+        await db.record_daily_stat_delivery(
+            dg["id"],
+            datetime.now().strftime('%Y-%m-%d'),
+            delivery_fee,
+            xp_gained if xp_gained > 0 else None,
+            coins_gained if coins_gained > 0 else None
+        )
+
+        # Re-fetch DG to check XP/level changes (only if XP system enabled)
+        if xp_gained > 0:
             updated_dg = await _db_get_delivery_guy_by_user(call.from_user.id)
             if updated_dg and hasattr(db, "auto_compute_level"):
                 new_level = await db.auto_compute_level(updated_dg["xp"])
                 if new_level != updated_dg.get("level"):
-                    # Update level
                     await db.update_delivery_guy_level(dg["id"], new_level)
     except Exception:
-        log.exception("Failed to award XP/Coins for order %s", order_id)
-
-    # Record Daily Stat
-    await db.record_daily_stat_delivery(dg["id"], datetime.now().strftime('%Y-%m-%d'), delivery_fee)
+        log.exception("Failed to award XP/Coins or record daily stat for order %s", order_id)
 
     # Notify student
-    await notify_student(call.bot, order, "delivered")
-    
+    try:
+        await notify_student(call.bot, order, "delivered")
+    except Exception:
+        log.exception("Failed to notify student for order %s", order_id)
+
     # Daily summary
-    today_stats = await db.get_daily_stats(
-    dg["id"], datetime.now().strftime("%Y-%m-%d")
-) or {"deliveries": 0, "earnings": 0.0, "skipped": 0, "assigned": 0, "acceptance_rate": 0.0}
-    deliveries_today = today_stats.get("deliveries", 1)
-    earnings_today = today_stats.get("earnings", delivery_fee)
+    today_stats = await db.get_daily_stats(dg["id"], datetime.now().strftime("%Y-%m-%d")) or {
+        "deliveries": 0, "earnings": 0.0, "skipped": 0, "assigned": 0, "acceptance_rate": 0.0
+    }
+    deliveries_today = today_stats.get("deliveries", 0)
+    earnings_today = today_stats.get("earnings", 0.0)
     acceptance_rate = await db.calc_vendor_reliability_for_day(dg["id"])
-    
+
     reliability = "Excellent 🚀" if acceptance_rate >= 90 else ("Good 👍" if acceptance_rate >= 80 else "Fair")
 
     summary_text = (
@@ -1069,6 +1098,7 @@ async def handle_delivered(call: CallbackQuery):
         "📊 **Your Daily Progress**\n"
         f"🚚 Deliveries today: *{deliveries_today}*\n"
         f"💵 Earnings: *{int(earnings_today)} birr*\n"
+        "⚖️ Acceptance Rate: *{int(acceptance_rate)}%* ({reliability})\n\n"
         "🎁 **Rewards Earned**\n"
         f"✨ +{xp_gained} XP\n"
         f"💰 +{coins_gained:.2f} Coins\n\n"
@@ -1079,10 +1109,8 @@ async def handle_delivered(call: CallbackQuery):
         await call.message.edit_text(summary_text, parse_mode="Markdown")
     except TelegramBadRequest as e:
         if "message is not modified" in str(e):
-            # Already updated, just acknowledge
             await call.answer("Delivery complete! 🎉")
         else:
-            # Fallback: send a new message
             await call.message.answer(summary_text, parse_mode="Markdown")
 
 @router.callback_query(F.data.startswith("contact_user_"))
@@ -1140,13 +1168,17 @@ async def handle_refresh_order(call: CallbackQuery):
     delivery_fee = order.get("delivery_fee", 0)
     total_payable = subtotal + delivery_fee
     status_label = STATUS_LABELS.get(order.get("status"), "ℹ️ Unknown status")
+    dropoff = order.get('dropoff', 'N/A')
+    campus_text = await db.get_user_campus_by_order(order['id'])
+    dropoff = f"{dropoff} • {campus_text}" if campus_text else dropoff
+    
 
     message_text = (
         f"📦 Order #{order_id}\n"
         f"📌 Status: {status_label}\n\n"
         "──────────────────────\n"
         f"🏠 Pickup: {order.get('pickup')}\n"
-        f"📍 Drop-off: {order.get('dropoff')}\n"
+        f"📍 Drop-off: {dropoff}\n"
         f"💰 Subtotal Fee: {subtotal} birr\n"
         f"🚚 Delivery fee: {delivery_fee} birr\n"
         "──────────────────────\n"
@@ -1210,14 +1242,29 @@ async def _lookup_student_telegram(order: Dict[str, Any]) -> Optional[int]:
         return None
 
 
+def get_xp_badge(level: int) -> str:
+    if level >= 6:
+        return "🟣 VIP"
+    elif level >= 3:
+        return "🔵 Regular"
+    else:
+        return "🟢 Newbie"
+
+
+
 async def notify_student(bot, order: Dict[str, Any], status: str) -> None:
     """Sends status update to the student with cinematic flair + track button."""
     student_tg = await _lookup_student_telegram(order)
+    
     if not student_tg:
         log.debug("notify_student: no telegram id found for order %s", order.get("id"))
         return
 
     order_id = order.get("id")
+    dropoff = order.get('dropoff', 'N/A')
+    campus_text = await db.get_user_campus_by_order(order['id'])
+    dropoff = f"{dropoff} • {campus_text}" if campus_text else dropoff
+    
     eta_line = ""
 
     # If we have coords, compute ETA dynamically
@@ -1246,27 +1293,42 @@ async def notify_student(bot, order: Dict[str, Any], status: str) -> None:
     "──────────────────────\n"
     f"📦 *Order #{order.get('id')}*\n"
     f"👤 Partner: *{dg_name}* ({campus})\n"
-    f"📍 Drop-off: {order.get('dropoff')}\n\n"
+    f"📍 Drop-off: {dropoff}\n\n"
     "🧭 Track every step in *📍 Track Order*.\n\n"
     "✨ Sit back, relax — your food is on its way!"
 )
 
             await bot.send_message(student_tg, msg, reply_markup=kb, parse_mode="Markdown")
         elif status == "delivered":
-    # Reward student immediately for completing the order
             order_id = order.get("id")
             student_id = order.get("user_id")
+
             if student_id:
                 async with db._open_connection() as conn:
-                    await conn.execute(
-                        "UPDATE users SET xp = xp + 10 WHERE id=$1",
+                    row = await conn.fetchrow(
+                        """
+                        UPDATE users
+                        SET
+                            xp = xp + 10,
+                            level = ((xp + 10) / 100) + 1
+                        WHERE id = $1
+                        RETURNING xp, level;
+                        """,
                         student_id
                     )
+
+                xp = row["xp"]
+                level = row["level"]
+                badge = get_xp_badge(level)
+
                 await bot.send_message(
                     student_tg,
                     f"🎉 Order #{order_id} delivered!\n"
-                    f"🔥 You earned +10 XP for ordering with our bot."
+                    f"🔥 +10 XP earned\n"
+                    f"🏆 Level {level} · {badge}\n"
+                    f"✨ Total XP: {xp}"
                 )
+
 
             # Rating prompt
             kb = InlineKeyboardMarkup(

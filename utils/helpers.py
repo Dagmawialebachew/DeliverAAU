@@ -187,6 +187,64 @@ def render_cart(cart_counts: dict, menu: list) -> tuple[str, float]:
     return cart_text, subtotal
 
 
+
+async def rank_candidates(db, order: Dict[str, Any], candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Apply dorm+gender preference, shuffle, and reliability scoring to candidates.
+    Returns a sorted list of candidates with detailed logging.
+    """
+    import random
+
+    logging.info(f"[RANK] Starting candidate ranking for Order {order.get('id')} with {len(candidates)} candidates")
+
+    # Shuffle to avoid bias
+    random.shuffle(candidates)
+    logging.info("[RANK] Candidates shuffled to avoid bias")
+
+    # Dorm + gender preference
+    pickup_text = (order.get("pickup") or "").lower()
+    dropoff_text = (order.get("dropoff") or "").lower()
+    is_dorm_related = any(word in pickup_text for word in ["dorm", "dormitory", "residence", "hall"]) \
+                      or any(word in dropoff_text for word in ["dorm", "dormitory", "residence", "hall"])
+
+    student = await db.get_user_by_id(order["user_id"])
+    student_gender = (student.get("gender") or "").lower()
+    logging.info(f"[RANK] Student gender={student_gender}, dorm_related={is_dorm_related}")
+
+    if is_dorm_related and student_gender == "female":
+        female_candidates = [dg for dg in candidates if (dg.get("gender") or "").lower() == "female"]
+        logging.info(f"[RANK] Dorm+female rule applied → {len(female_candidates)} female DGs found")
+        if female_candidates:
+            candidates = female_candidates
+        else:
+            logging.info("[RANK] No female DGs available, fallback to general pool")
+
+    # Reliability scoring
+    for dg in candidates:
+        total = dg.get("total_requests", 0)
+        accepted = dg.get("accepted_requests", 0)
+        deliveries = dg.get("total_deliveries", 0)
+        skipped = dg.get("skipped_requests", 0)
+
+        acceptance_rate = (accepted / total) if total > 0 else 1.0
+        # Weighted score: 50% acceptance, 30% deliveries, -20% skips
+        score = (acceptance_rate * 50) + (deliveries * 0.3) - (skipped * 0.2)
+        dg["score"] = score
+
+        logging.info(
+            f"[RANK] DG {dg.get('name','?')} "
+            f"(id={dg.get('id')}) → total={total}, accepted={accepted}, skipped={skipped}, deliveries={deliveries}, "
+            f"acceptance_rate={acceptance_rate:.2f}, score={score:.2f}"
+        )
+
+    # Sort by score descending
+    candidates.sort(key=lambda x: x["score"], reverse=True)
+    logging.info("[RANK] Candidates sorted by reliability score")
+
+    return candidates
+
+
+
 async def assign_delivery_guy(
     db,
     order_id: int,
@@ -260,6 +318,16 @@ async def assign_delivery_guy(
             AND COALESCE(dac.in_progress_count,0) = 0
         """
         candidates = [dict(r) for r in await conn.fetch(query, rejected_dg_ids, max_active_orders)]
+        logging.info(f"[QUERY] rejected_dg_ids={rejected_dg_ids} max_active_orders={max_active_orders}")
+        rows = await conn.fetch(query, rejected_dg_ids, max_active_orders)
+        logging.info(f"[QUERY] returned {len(rows)} candidates")
+        for r in rows:
+            dg = dict(r)
+            logging.info(
+                f"[CAND] id={dg.get('id')} name={dg.get('name')} campus={dg.get('campus')} "
+                f"gender={dg.get('gender')} active={dg.get('active')} blocked={dg.get('blocked')} "
+                f"active_orders={dg.get('active_orders')} in_progress_orders={dg.get('in_progress_orders')}"
+            )
 
         if not candidates:
             logging.warning(f"[NO CANDIDATES] Order {order_id}")
@@ -268,40 +336,45 @@ async def assign_delivery_guy(
         logging.info(f"[CANDIDATES] {len(candidates)} DGs available")
 
         # -----------------------------
-        # 4. Match Logic
+        # 4. Rank candidates (shuffle + dorm/gender + reliability score)
+        # -----------------------------
+        candidates = await rank_candidates(db, order, candidates)
+
+        # -----------------------------
+        # 5. Match Logic (GPS or campus)
         # -----------------------------
         chosen = None
         breakdown = breakdown or {}
+        student = await db.get_user_by_id(order["user_id"])
+        if not student:
+            logging.warning(f"[MATCH] No student found for order {order_id}")
+            return None
         drop_lat, drop_lon = breakdown.get("drop_lat"), breakdown.get("drop_lon")
 
-        # ---- If GPS exists → use distance ranking ----
         if drop_lat and drop_lon:
             logging.info("[MATCH] Using distance")
             best_dist = float("inf")
             for dg in candidates:
                 if dg.get("last_lat") and dg.get("last_lon"):
                     d = await haversine(dg["last_lat"], dg["last_lon"], drop_lat, drop_lon)
+                    logging.info(f"[MATCH] DG {dg.get('name')} distance={d:.2f} km")
                     if d < best_dist:
                         best_dist = d
                         chosen = dg
-
-            if not chosen:
+            if not chosen and candidates:
                 chosen = candidates[0]
-
-        # ---- No GPS → Campus match ----
+                logging.info(f"[MATCH] No GPS match, fallback to {chosen.get('name')}")
         else:
             logging.info("[MATCH] Campus fallback")
-
-            student = await db.get_user_by_id(order["user_id"])
-            student_campus = student.get("campus")
-
+            student_campus = student.get("campus") if student else None
             for dg in candidates:
                 if dg.get("campus") == student_campus:
                     chosen = dg
+                    logging.info(f"[MATCH] Campus match → {dg.get('name')}")
                     break
-
-            if not chosen:
+            if not chosen and candidates:
                 chosen = candidates[0]
+                logging.info(f"[MATCH] No campus match, fallback to {chosen.get('name')}")
 
         if not chosen:
             logging.warning(f"[ABORT] No DG chosen for order {order_id}")
@@ -313,11 +386,11 @@ async def assign_delivery_guy(
         # 5. Assign DG to order
         # -----------------------------
         breakdown.setdefault("pending_offer_dg_ids", []).append(dg_id)
-        
+
         await conn.execute(
-    "UPDATE orders SET breakdown_json = $1 WHERE id = $2",
-    json.dumps(breakdown), order_id
-)
+            "UPDATE orders SET breakdown_json = $1 WHERE id = $2",
+            json.dumps(breakdown), order_id
+        )
         await conn.execute(
             "UPDATE delivery_guys SET total_requests = total_requests + 1 WHERE id = $1",
             dg_id
@@ -363,9 +436,6 @@ async def assign_delivery_guy(
 
     logging.info(f"[END] Assignment for order {order_id}")
     return chosen
-
-
-
 async def find_next_candidate(db, order_id: int, order: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
     Returns the next eligible delivery guy dict to offer the order to,
@@ -415,7 +485,14 @@ async def find_next_candidate(db, order_id: int, order: Dict[str, Any]) -> Optio
         if not candidates:
             return None
 
+        logging.info(f"[CANDIDATES] {len(candidates)} DGs available for retry")
+
+        # 🔎 NEW STEP: rank candidates (shuffle + dorm/gender + reliability scoring)
+        candidates = await rank_candidates(db, order, candidates)
+
+        # -----------------------------
         # Matching logic: prefer distance if coords exist, else campus match
+        # -----------------------------
         try:
             breakdown = breakdown or {}
             drop_lat, drop_lon = breakdown.get("drop_lat"), breakdown.get("drop_lon")
@@ -425,11 +502,13 @@ async def find_next_candidate(db, order_id: int, order: Dict[str, Any]) -> Optio
                 for dg in candidates:
                     if dg.get("last_lat") and dg.get("last_lon"):
                         d = await haversine(dg["last_lat"], dg["last_lon"], drop_lat, drop_lon)
+                        logging.info(f"[MATCH] DG {dg.get('name')} distance={d:.2f} km")
                         if d < best_dist:
                             best_dist = d
                             chosen = dg
-                if not chosen:
+                if not chosen and candidates:
                     chosen = candidates[0]
+                    logging.info(f"[MATCH] No GPS match, fallback to {chosen.get('name')}")
             else:
                 # campus fallback
                 student = await db.get_user_by_id(order["user_id"])
@@ -437,12 +516,20 @@ async def find_next_candidate(db, order_id: int, order: Dict[str, Any]) -> Optio
                 for dg in candidates:
                     if dg.get("campus") == student_campus:
                         chosen = dg
+                        logging.info(f"[MATCH] Campus match → {dg.get('name')}")
                         break
-                if not chosen:
+                if not chosen and candidates:
                     chosen = candidates[0]
+                    logging.info(f"[MATCH] No campus match, fallback to {chosen.get('name')}")
+
+            if chosen:
+                logging.info(
+                    f"[CHOSEN] Next candidate → DG {chosen.get('name')} "
+                    f"(id={chosen.get('id')}, score={chosen.get('score',0):.2f})"
+                )
             return chosen
         except Exception:
-            log.exception("[FIND_CANDIDATE] Error selecting candidate for order %s", order_id)
+            logging.exception("[FIND_CANDIDATE] Error selecting candidate for order %s", order_id)
             return candidates[0] if candidates else None
 
 # Global tracker for student notifications

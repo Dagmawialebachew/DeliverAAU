@@ -248,26 +248,32 @@ def render_orders_list(orders: List[Dict], page: int, total_count: int, page_siz
 
     return "\n".join(text_lines), InlineKeyboardMarkup(inline_keyboard=kb_rows)
 
-def render_order_card(
+async def render_order_card(
     order: Dict,
     page: int,
     filter_key: str,
     vendor: Optional[Dict],
     customer: Optional[Dict],
-    delivery_guy: Optional[Dict] = None,   # pass in DG info if available
+    delivery_guy: Optional[Dict] = None,
 ) -> Tuple[str, InlineKeyboardMarkup]:
+
     """Renders the detailed view of a single order."""    
-    
+
     # Data parsing
     order_id = order['id']
     status = order.get('status', 'unknown')
     total = (order.get('food_subtotal') or 0) + (order.get('delivery_fee') or 0)
     pickup = order.get('pickup', 'N/A')
     dropoff = order.get('dropoff', 'N/A')
+    campus_text = await db.get_user_campus_by_order(order['id'])
+
+# Combine dropoff + campus
+    dropoff_with_campus = f"{dropoff} • {campus_text}" if campus_text else dropoff
     
     customer_name = customer.get('first_name', 'Unknown') if customer else 'Unknown'
     customer_phone = customer.get('phone', 'N/A') if customer else 'N/A'
     vendor_name = vendor.get('name', 'Unknown') if vendor else 'Unknown'
+    
     
     try:
         items = json.loads(order.get("items_json") or "[]")
@@ -324,7 +330,7 @@ def render_order_card(
         f"🏪 <b>Vendor:</b> {vendor_name}\n"
         "╠══════════════════════════╣\n"
         f"📍 <b>Pickup:</b> {pickup}\n"
-        f"🎯 <b>Dropoff:</b> {dropoff}\n"
+        f"🎯 <b>Dropoff:</b> {dropoff_with_campus}\n"
         "╠══════════════════════════╣\n"
         "🍽️ <b>Items:</b>\n"
         f"{items_str}\n"
@@ -389,42 +395,41 @@ def render_dg_list(
     filter_key: str
 ) -> Tuple[str, InlineKeyboardMarkup]:
     """Renders a paginated Delivery Guy list for assignment with hype neon UI."""
-    
+
     total_pages = max(1, math.ceil(total_count / page_size))
 
-    # 🔥 Neon header
+    # Base header
     text = (
         f"⚡️ <b>Assign Delivery Guy</b>\n"
         f"📦 Order <b>#{order_id}</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         f"📄 Page <b>{page + 1}</b> / {total_pages}\n"
-        "🛵 Choose the best Delivery Guy below:\n"
     )
 
     kb_rows = []
 
-    # 🔥 Delivery Guy rows
-    for dg in candidates:
-        name = dg.get("name", "Unknown")
-        campus = dg.get("campus", "N/A")
-        active_orders = dg.get("accepted_requests", 0)
+    if candidates:
+        text += "🛵 Choose the best Delivery Guy below:\n"
+        for dg in candidates:
+            name = dg.get("name", "Unknown")
+            campus = dg.get("campus", "N/A")
+            active_orders = dg.get("accepted_requests", 0)
 
-        btn_text = (
-            f"🛵 {name} • {campus} | 📊 Active: {active_orders}"
-        )
+            btn_text = f"🛵 {name} • {campus} | 📊 Active: {active_orders}"
 
-        kb_rows.append([
-            InlineKeyboardButton(
-                text=btn_text,
-                callback_data=(
-                    f"admin:order:assign_confirm:{order_id}:dg:{dg['id']}:page:{parent_page}:filter:{filter_key}"
+            kb_rows.append([
+                InlineKeyboardButton(
+                    text=btn_text,
+                    callback_data=(
+                        f"admin:order:assign_confirm:{order_id}:dg:{dg['id']}:page:{parent_page}:filter:{filter_key}"
+                    )
                 )
-            )
-        ])
+            ])
+    else:
+        text += "⚠️ No available Delivery Guys at the moment.\n"
 
-    # 🔥 Pagination + Cancel
+    # Pagination + Cancel
     nav_row = []
-
     if page > 0:
         nav_row.append(
             InlineKeyboardButton(
@@ -455,26 +460,29 @@ def render_dg_list(
 # -------------------------------------------------------------------------
 # 3. Handlers
 # -------------------------------------------------------------------------
-
 @router.message(F.text == "📦 Orders")
 @router.callback_query(F.data == "admin:orders:root")
 async def admin_orders_menu(event: Message | CallbackQuery):
-    """Top-level entry point for Admin Orders Dashboard."""
     is_callback = isinstance(event, CallbackQuery)
     message = event.message if is_callback else event
-    user = event.from_user
-    
-    # 1. Fetch Counts
+
+    # ✅ ANSWER CALLBACK IMMEDIATELY
+    if is_callback:
+        try:
+            await event.answer()
+        except aiogram.exceptions.TelegramBadRequest:
+            return  # old / invalid callback → silently ignore
+
+    # 1. Fetch Counts (can be slow, now safe)
     try:
         active_count = await _db_count_orders(["pending", "assigned", "preparing", "ready", "in_progress"])
         pending_count = await _db_count_orders(["pending"])
         preparing_count = await _db_count_orders(["preparing"])
         ready_count = await _db_count_orders(["ready"])
-        # No DG Assigned = Active AND delivery_guy_id IS NULL
         no_dg_count = await _db_count_orders(["assigned", "preparing", "ready"], delivery_guy_null=True)
         delivered_count = await _db_count_orders(["delivered"])
         cancelled_count = await _db_count_orders(["cancelled"])
-        
+
         counts = {
             "active": active_count,
             "pending": pending_count,
@@ -488,18 +496,14 @@ async def admin_orders_menu(event: Message | CallbackQuery):
         log.exception(f"Error fetching order counts: {e}")
         counts = {}
 
-        # 2. Render
+    # 2. Render
     text, kb = render_admin_summary(counts)
 
     if is_callback:
         try:
             await message.edit_text(text, reply_markup=kb, parse_mode="HTML")
-            await event.answer("🔄 Refreshed")
         except aiogram.exceptions.TelegramBadRequest as e:
-            if "message is not modified" in str(e):
-                # Show a popup instead of crashing
-                await event.answer("✅ Already up to date")
-            else:
+            if "message is not modified" not in str(e):
                 raise
     else:
         await message.answer(text, reply_markup=kb, parse_mode="HTML")
@@ -602,7 +606,7 @@ async def admin_order_view(cb: CallbackQuery):
         if order.get("delivery_guy_id"):
             delivery_guy = await db.get_delivery_guy(order["delivery_guy_id"])
          
-        text, kb = render_order_card(order, page, filter_key, vendor, customer, delivery_guy)
+        text, kb = await render_order_card(order, page, filter_key, vendor, customer, delivery_guy)
         
         await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
         
@@ -761,6 +765,11 @@ async def action_ready(cb: CallbackQuery):
                 vendor_name = vendor["name"] if vendor else "Vendor"
                 pickup = order.get("pickup") or "Vendor location"
                 dropoff = order.get("dropoff") or "Student location"
+                campus_text = await db.get_user_campus_by_order(order['id'])
+
+# Combine dropoff + campus
+                dropoff = f"{dropoff} • {campus_text}" if campus_text else dropoff
+    
 
                 try:
                     items = json.loads(order.get("items_json", "[]")) or []
@@ -989,6 +998,12 @@ async def action_assign_confirm(cb: CallbackQuery):
         
         from handlers.delivery_guy import STATUS_LABELS
         status_label = STATUS_LABELS.get(order.get("status"), "ℹ️ Unknown status")
+        dropoff = order.get('dropoff', 'N/A')
+        campus_text = await db.get_user_campus_by_order(order['id'])
+
+# Combine dropoff + campus
+        dropoff = f"{dropoff} • {campus_text}" if campus_text else dropoff
+    
 
 
         if dg:  
@@ -998,7 +1013,7 @@ async def action_assign_confirm(cb: CallbackQuery):
             f"📌 Status: {order.get('status')}\n\n"
             "──────────────────────\n"
             f"🏠 Pickup: {order.get('pickup')}\n"
-            f"📍 Drop-off: {order.get('dropoff')}\n"
+            f"📍 Drop-off: {dropoff}\n"
             f"💰 Subtotal Fee: {order.get('food_subtotal')} birr\n"
             f"🚚 Delivery fee: {order.get('delivery_fee')} birr\n"
             "──────────────────────\n"
