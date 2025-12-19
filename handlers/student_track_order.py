@@ -1079,8 +1079,14 @@ async def back_to_summary(callback: CallbackQuery):
 # --- Inline Refresh / Close passthrough ---
 @router.callback_query(F.data.startswith("order:refresh:"))
 async def refresh_order_card(callback: CallbackQuery):
-    await back_to_summary(callback)
+    # Acknowledge immediately to avoid timeout
+    try:
+        await callback.answer("⏳ Refreshing…")
+    except Exception:
+        pass
 
+    # Then continue with your summary logic
+    await back_to_summary(callback)
 
 
 

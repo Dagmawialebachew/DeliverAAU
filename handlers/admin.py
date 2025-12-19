@@ -627,31 +627,35 @@ async def admin_dgs_entry(message: Message, state: FSMContext):
     dgs = [{"id": r["id"], "name": r["name"]} for r in rows]
     kb = get_dg_list_kb(dgs)
     await message.answer("\n".join(summary_lines), reply_markup=kb, parse_mode="HTML")
+    
+    
 @router.callback_query(F.data.startswith("dg_view:"))
 async def dg_view_callback(callback: CallbackQuery, state: FSMContext):
+    # Answer immediately
+    try:
+        await callback.answer()
+    except Exception:
+        pass
+
     dg_id = int(callback.data.split(":")[1])
     async with db._open_connection() as conn:
-        dg = await conn.fetchrow(
-            "SELECT * FROM delivery_guys WHERE id = $1", dg_id
-        )
+        dg = await conn.fetchrow("SELECT * FROM delivery_guys WHERE id = $1", dg_id)
+
     if not dg:
-        await callback.answer("⚠️ DG not found.", show_alert=True)
+        await callback.message.answer("⚠️ DG not found.")
         return
 
-    # Status emoji
     status_emoji = "🟢 Online" if dg["active"] else "🔴 Offline"
     if dg["blocked"]:
         status_emoji = "⛔ Blocked"
 
-    # Acceptance rate
     acceptance_rate = (dg["accepted_requests"]/dg["total_requests"]*100) if dg["total_requests"] else 100
 
-    # Build card text
     card_text = (
         f"🛵 <b>Delivery Guy: {dg['name']}</b>\n"
         f"📱 Phone: {dg['phone']}\n"
         f"🏛 Campus: {dg['campus']}\n"
-        f"⚧ Gender: {dg.get('gender','—')}\n"   # <-- NEW LINE
+        f"⚧ Gender: {dg.get('gender','—')}\n"
         f"⚡ Status: {status_emoji}\n"
         f"📊 Acceptance Rate: {acceptance_rate:.1f}%\n"
         f"📦 Deliveries: {dg['total_deliveries']} • Skipped: {dg['skipped_requests']}\n"
@@ -659,8 +663,19 @@ async def dg_view_callback(callback: CallbackQuery, state: FSMContext):
     )
 
     kb = get_dg_card_kb(dg_id)
-    await callback.message.edit_text(card_text, reply_markup=kb, parse_mode="HTML")
-    await callback.answer()
+
+    from aiogram.exceptions import TelegramBadRequest
+    try:
+        await callback.message.edit_text(card_text, reply_markup=kb, parse_mode="HTML")
+    except TelegramBadRequest as e:
+        if "message is not modified" in str(e):
+            # Ignore silently
+            pass
+        else:
+            raise
+    except Exception:
+        await callback.message.answer(card_text, reply_markup=kb, parse_mode="HTML")
+
 
 def get_dg_card_kb(dg_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -678,9 +693,14 @@ def get_dg_card_kb(dg_id: int) -> InlineKeyboardMarkup:
     ])
 
 
-
 @router.callback_query(F.data == "dg_add", F.from_user.id.in_(settings.ADMIN_IDS))
 async def dg_add_init(callback: CallbackQuery, state: FSMContext):
+    # Answer immediately
+    try:
+        await callback.answer()
+    except Exception:
+        pass
+
     await state.clear()
     await callback.message.answer(
         "<b>🚴 Delivery Guy Onboarding // STEP 1/5</b>\n"
@@ -690,7 +710,6 @@ async def dg_add_init(callback: CallbackQuery, state: FSMContext):
         reply_markup=ReplyKeyboardRemove()
     )
     await state.set_state(AdminStates.dg_get_id)
-    await callback.answer()
 
 
 @router.message(AdminStates.dg_get_id)
