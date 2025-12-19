@@ -2,6 +2,7 @@ import asyncio
 import logging
 import json 
 from datetime import datetime, timedelta
+from typing import Optional, Tuple
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from aiogram import Bot
@@ -14,6 +15,7 @@ from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
     CallbackQuery,
 )
+import pytz
 from database.db import AnalyticsService, Database
 from config import settings
 from handlers.delivery_guy import _db_get_delivery_guy_by_user
@@ -23,6 +25,10 @@ from utils.vendor_scheduler import VendorJobs
 ADMIN_IDS = settings.ADMIN_IDS
 ADMIN_GROUP_ID = settings.ADMIN_SUMMRY_GROUP_ID
 log = logging.getLogger(__name__)
+CONCURRENCY_LIMIT = asyncio.Semaphore(10)
+from handlers.delivery_guy import order_offer_keyboard, send_new_order_offer, _db_get_delivery_guy_by_user
+from utils.helpers import find_next_candidate
+from utils.db_helpers import add_dg_to_blacklist, notify_admin_log
 
     
 def go_online_keyboard(ticket_id: str = None):
@@ -38,314 +44,293 @@ class BotScheduler:
         """
         self.db = db
         self.bot = bot
-        self.scheduler = AsyncIOScheduler()
+        self.scheduler = AsyncIOScheduler(timezone=pytz.timezone("Africa/Addis_Ababa"))
 
     # -----------------------------------------------
     # 🆕 NEW: Live Offer Countdown Job (Phase 2)
     # -----------------------------------------------
-
+    
     async def update_order_offers(self) -> None:
         """
-        Periodically updates pending DG offers (safer version).
-        Preserves original behavior but:
-        - Skips run if no pending offers
-        - Batches admin notifications
-        - Guards edit_message_text calls
-        - Staggers re-offers to avoid bursts
-        - Handles TelegramRetryAfter and other Telegram errors gracefully
+        Fast, safe updater for pending DG offers.
+
+        Phase A (concurrent/read-only):
+        - Update countdown text for active offers (fast UI edits)
+        - Return markers for expired/blocked/missing offers
+
+        Phase B (serial/write-heavy):
+        - Resolve expired/blocked offers:
+            - clear DB assignment
+            - blacklist DG if applicable
+            - increment skip
+            - re-offer to next candidate
+            - send admin notifications (batched)
         """
-        # Early exit if nothing to do
+        # Quick bail out
         if not PENDING_OFFERS:
             log.debug("[OFFERS] No pending offers, skipping update run")
             return
 
-        offers_to_check = list(PENDING_OFFERS.items())
-        log.debug("[OFFERS] Checking %d pending offers", len(offers_to_check))
+        offers_snapshot = list(PENDING_OFFERS.items())
+        log.debug("[OFFERS] Checking %d pending offers (snapshot)", len(offers_snapshot))
 
-        # Collect admin events and flush once at the end (or earlier on flood)
+        # admin events collected here, flushed at the end of the whole run
         admin_events: list[str] = []
 
-        async def _flush_admin_events():
-            if not admin_events or not settings.ADMIN_DAILY_GROUP_ID:
-                admin_events.clear()
-                return
-            # Build a compact summary (limit length to avoid huge messages)
-            summary = "\n\n".join(admin_events[:12])
-            if len(admin_events) > 12:
-                summary += f"\n\n…and {len(admin_events)-12} more events."
+        # helpers imported locally to avoid circular imports at module load
+       
+        # optional concurrency limit if you defined one earlier (Semaphore)
+        semaphore = globals().get("CONCURRENCY_LIMIT") or getattr(self, "CONCURRENCY_LIMIT", None)
+
+        # Build the text for UI (kept small and read-only)
+        def build_offer_text(pickup: str, dropoff: str, fee: int, countdown: str, icon: str) -> str:
+            return (
+                "🚴‍♂️ **New Order Incoming!**\n\n"
+                f"📍 **Pickup**: {pickup}\n"
+                f"🏠 **Drop-off**: {dropoff}\n"
+                f"💰 **Delivery Fee**: {fee} birr\n"
+                f"{icon} **Expires in**: {countdown}\n"
+            )
+
+        async def ui_worker(order_id: int, offer: dict) -> Optional[Tuple[str, int, dict, Optional[str]]]:
+            """
+            Read-only worker that returns:
+            - None if everything OK (no further action)
+            - ("expired", order_id, offer, countdown) for expired offers
+            - ("remove", order_id, offer, None) if order missing or corrupted
+            - ("blocked", order_id, offer, None) if TelegramForbidden encountered
+            """
             try:
-                await notify_admin_log(self.bot, settings.ADMIN_DAILY_GROUP_ID, summary, parse_mode="HTML")
-            except TelegramRetryAfter as e:
-                log.warning("[ADMIN] Flood control when sending admin summary, retry after %s", e.retry_after)
-                # Keep admin_events for next run; do not clear
-                return
-            except Exception:
-                log.exception("[ADMIN] Failed to send admin summary")
-            admin_events.clear()
+                assigned_at = offer.get("assigned_at")
+                expiry_seconds = int(offer.get("expiry_seconds", 0))
+                chat_id = offer.get("chat_id")
+                message_id = offer.get("message_id")
 
-        # Iterate offers
-        for order_id, offer in offers_to_check:
-            # Defensive defaults
-            chat_id = offer.get("chat_id")
-            message_id = offer.get("message_id")
-            assigned_at = offer.get("assigned_at")
-            expiry_seconds = offer.get("expiry_seconds", 0)
+                # validate basic metadata
+                if not assigned_at or not chat_id or not message_id:
+                    return ("remove", order_id, offer, None)
 
-            # Validate essential metadata
-            if not chat_id or not message_id or not assigned_at:
-                log.warning("[OFFERS] Offer %s missing metadata, removing", order_id)
-                PENDING_OFFERS.pop(order_id, None)
-                continue
-
-            try:
-                elapsed_time = (datetime.now() - assigned_at).total_seconds()
-                remaining_seconds = max(0, int(expiry_seconds - elapsed_time))
-                minutes, seconds = divmod(remaining_seconds, 60)
+                elapsed = (datetime.now() - assigned_at).total_seconds()
+                remaining = max(0, int(expiry_seconds - elapsed))
+                minutes, seconds = divmod(remaining, 60)
                 countdown = f"{minutes:02d}:{seconds:02d}"
 
-                log.debug("[OFFERS] Order %s for DG %s: remaining=%s (%s)", order_id, chat_id, remaining_seconds, countdown)
+                # determine icon
+                icon = "⏳" if remaining > 120 else "⚠️" if remaining > 30 else "❌"
 
-                if remaining_seconds > 120:
-                    icon = "⏳"
-                elif remaining_seconds > 30:
-                    icon = "⚠️"
-                else:
-                    icon = "❌"
+                # expired → let serial resolver handle DB writes / re-offer
+                if remaining <= 0:
+                    return ("expired", order_id, offer, countdown)
 
-                # Local helpers and imports (kept as in original)
-                from handlers.delivery_guy import order_offer_keyboard, send_new_order_offer
-                from utils.helpers import find_next_candidate
-                from utils.db_helpers import notify_admin_log, add_dg_to_blacklist
-
-                async def _admin_notify(event: str, dg: dict | None, extra: str = ""):
-                    if not settings.ADMIN_DAILY_GROUP_ID:
-                        return
-                    dg_name = dg.get("name") if dg else "Unknown DG"
-                    dg_id = dg.get("id") if dg else "N/A"
-                    dg_campus = dg.get("campus") if dg else "N/A"
-                    dg_user = dg.get("telegram_id") if dg else chat_id
-                    msg = (
-                        f"{event}\n"
-                        f"📦 Order #{order_id}\n"
-                        f"🚴 DG: {dg_name} (id={dg_id}, campus={dg_campus}, chat_id={dg_user})\n"
-                        f"{extra}".strip()
-                    )
-                    # Queue admin events instead of sending immediately
-                    admin_events.append(msg)
-
-                # --- Offer expired ---
-                if remaining_seconds <= 0:
-                    log.warning("[OFFERS] Order offer %s expired for DG %s.", order_id, chat_id)
-
-                    expired_text = (
-                        "⏰ **Offer Expired!**\n\n"
-                        f"📦 Order #{order_id} has been automatically returned to the pool."
-                    )
-                    # Best-effort edit; ignore harmless failures
-                    try:
-                        await self.bot.edit_message_text(
-                            chat_id=chat_id,
-                            message_id=message_id,
-                            text=expired_text,
-                            reply_markup=None,
-                            parse_mode="Markdown"
-                        )
-                    except TelegramBadRequest as e:
-                        if "message is not modified" not in str(e):
-                            log.debug("[OFFERS] Failed to edit expired message for order %s: %s", order_id, e)
-                    except TelegramRetryAfter as e:
-                        log.warning("[OFFERS] Flood control editing expired message for order %s: retry after %s", order_id, e.retry_after)
-                    except Exception:
-                        log.exception("[OFFERS] Unexpected error editing expired message for order %s", order_id)
-
-                    # Clear DB assignment quickly (short-lived connection)
-                    try:
-                        async with self.db._open_connection() as conn:
-                            await conn.execute(
-                                """
-                                UPDATE orders
-                                SET delivery_guy_id = $1,
-                                    updated_at = CURRENT_TIMESTAMP
-                                WHERE id = $2
-                                """,
-                                None, order_id
-                            )
-                    except Exception:
-                        log.exception("[OFFERS] Failed to clear delivery_guy_id for order %s", order_id)
-
-                    # Persist rejection using DG internal ID (blacklist)
-                    try:
-                        dg = await _db_get_delivery_guy_by_user(chat_id)
-                        if dg:
-                            try:
-                                await add_dg_to_blacklist(self.db, order_id, dg["id"])
-                            except Exception:
-                                log.exception("[BLACKLIST] Failed to add DG %s to blacklist for order %s", dg["id"], order_id)
-                    except Exception:
-                        dg = None
-                        log.exception("[OFFERS] Failed to lookup DG for blacklist for order %s", order_id)
-
-                    # Stop tracking this offer
-                    PENDING_OFFERS.pop(order_id, None)
-
-                    # Queue admin notification (expired)
-                    await _admin_notify(
-                        event="⏰ Offer expired (ignored until timeout)",
-                        dg=dg,
-                        extra=f"🕒 Last countdown seen: {countdown}\n↩️ Returned to pool."
-                    )
-
-                    # Re-offer to next candidate (staggered to avoid bursts)
-                    try:
-                        order = await self.db.get_order(order_id)
-                        if order:
-                            log.debug("[REOFFER] Finding next candidate for order %s", order_id)
-                            next_dg = await find_next_candidate(self.db, order_id, order)
-                            if next_dg:
-                                try:
-                                    await asyncio.sleep(0.5)  # small stagger
-                                    await send_new_order_offer(self.bot, next_dg, order)
-                                    log.info("[REOFFER] Offered order %s to DG %s", order_id, next_dg.get("id"))
-                                    await _admin_notify(
-                                        event="🔁 Re-offered to next candidate",
-                                        dg=next_dg,
-                                        extra="Awaiting DG response."
-                                    )
-                                except TelegramRetryAfter as e:
-                                    log.warning("[REOFFER] Flood control when re-offering order %s: retry after %s", order_id, e.retry_after)
-                                    admin_events.append(f"❗ Re-offer delayed for Order #{order_id} due to flood control")
-                                except Exception:
-                                    log.exception("[REOFFER] Failed to send offer for order %s to DG %s", order_id, next_dg.get("id"))
-                                    await _admin_notify(
-                                        event="❗ Re-offer failed",
-                                        dg=next_dg,
-                                        extra="Check logs for details."
-                                    )
-                            else:
-                                log.warning("[REOFFER] No eligible DG found for order %s", order_id)
-                                await _admin_notify(
-                                    event="⚠️ No eligible DG found",
-                                    dg=None,
-                                    extra="Manual admin assignment may be required."
-                                )
-                    except Exception:
-                        log.exception("[REOFFER] Error during re-offer flow for order %s", order_id)
-
-                    # Move to next offer
-                    continue
-
-                # --- Offer still active: update countdown display ---
+                # nothing changed
                 if countdown == offer.get("last_countdown"):
-                    # nothing changed; skip
-                    continue
+                    return None
+
                 offer["last_countdown"] = countdown
 
-                # Fetch order (lightweight)
+                # read order (read-only)
                 order = await self.db.get_order(order_id)
                 if not order:
-                    log.debug("[OFFERS] Order %s not found in DB, removing from tracker", order_id)
-                    PENDING_OFFERS.pop(order_id, None)
-                    await _admin_notify(
-                        event="⚠️ Offer tracking stopped (order missing)",
-                        dg=None,
-                        extra="Order not found in DB."
-                    )
+                    return ("remove", order_id, offer, None)
+
+                # fetch campus (read-only helper) — OK in concurrent phase
+                campus_text = await self.db.get_user_campus_by_order(order_id)
+                dropoff = order.get("dropoff", "N/A")
+                if campus_text:
+                    dropoff = f"{dropoff} • {campus_text}"
+
+                pickup = order.get("pickup", "N/A")
+                fee = int(order.get("delivery_fee", 0))
+
+                # optional concurrency semaphore around heavy network call (edit_message_text)
+                if semaphore:
+                    async with semaphore:
+                        try:
+                            await self.bot.edit_message_text(
+                                chat_id=offer["chat_id"],
+                                message_id=offer["message_id"],
+                                text=build_offer_text(pickup, dropoff, fee, countdown, icon),
+                                reply_markup=order_offer_keyboard(order_id, expiry_min=expiry_seconds // 60),
+                                parse_mode="Markdown",
+                            )
+                        except TelegramBadRequest as e:
+                            # if message is not modified, ignore; otherwise log and mark for removal
+                            if "message is not modified" in str(e):
+                                return None
+                            log.warning("[OFFERS:UI] BadRequest editing offer %s: %s", order_id, e)
+                            return ("remove", order_id, offer, None)
+                        except TelegramForbiddenError:
+                            # treat as blocked — serial resolver will blacklist/re-offer
+                            return ("blocked", order_id, offer, None)
+                        except TelegramRetryAfter as e:
+                            log.warning("[OFFERS:UI] Flood control editing offer %s: retry after %s", order_id, e.retry_after)
+                            # keep the offer in place; we'll try again next run
+                            return None
+                        except Exception as e:
+                            log.exception("[OFFERS:UI] Unexpected error editing offer %s", order_id)
+                            return None
+                else:
+                    # no semaphore
+                    try:
+                        await self.bot.edit_message_text(
+                            chat_id=offer["chat_id"],
+                            message_id=offer["message_id"],
+                            text=build_offer_text(pickup, dropoff, fee, countdown, icon),
+                            reply_markup=order_offer_keyboard(order_id, expiry_min=expiry_seconds // 60),
+                            parse_mode="Markdown",
+                        )
+                    except TelegramBadRequest as e:
+                        if "message is not modified" in str(e):
+                            return None
+                        log.warning("[OFFERS:UI] BadRequest editing offer %s: %s", order_id, e)
+                        return ("remove", order_id, offer, None)
+                    except TelegramForbiddenError:
+                        return ("blocked", order_id, offer, None)
+                    except TelegramRetryAfter as e:
+                        log.warning("[OFFERS:UI] Flood control editing offer %s: retry after %s", order_id, e.retry_after)
+                        return None
+                    except Exception:
+                        log.exception("[OFFERS:UI] Unexpected error editing offer %s", order_id)
+                        return None
+
+                # UI update done successfully
+                log.debug("[OFFERS:UI] Countdown updated for order %s", order_id)
+                return None
+
+            except Exception:
+                log.exception("[OFFERS:UI] Worker crashed for order %s", order_id)
+                return ("remove", order_id, offer, None)
+
+        # run UI updates concurrently
+        ui_tasks = [ui_worker(oid, off) for oid, off in offers_snapshot]
+        results = []
+        if ui_tasks:
+            gathered = await asyncio.gather(*ui_tasks, return_exceptions=True)
+            # normalize results: keep only tuples (status, order_id, offer, optional_countdown)
+            for res in gathered:
+                if isinstance(res, Exception):
+                    # log but continue
+                    log.exception("[OFFERS] UI task exception: %s", res)
                     continue
+                if res:
+                    results.append(res)
 
-                pickup_loc = order.get("pickup")
-                dropoff_loc = order.get("dropoff")
-                campus_text = await self.db.get_user_campus_by_order(order['id'])
-                dropoff_loc = f"{dropoff_loc} • {campus_text}" if campus_text else dropoff_loc
-
-                delivery_fee = order.get("delivery_fee", 0.0)
-                breakdown = json.loads(order.get("breakdown_json") or "{}")
-                drop_lat = breakdown.get("drop_lat")
-                drop_lon = breakdown.get("drop_lon")
-                dropoff_display = (
-                    f"Live location ({drop_lat:.6f},{drop_lon:.6f})"
-                    if drop_lat and drop_lon else dropoff_loc
-                )
-
-                new_message_text = (
-                    "🚴‍♂️ **New Order Incoming!**\n\n"
-                    f"📍 **Pickup**: {pickup_loc}\n"
-                    f"🏠 **Drop-off**: {dropoff_display}\n"
-                    f"💰 **Delivery Fee**: {int(delivery_fee)} birr\n"
-                    f"{icon} **Expires in**: {countdown}\n"
-                )
-
-                kb = order_offer_keyboard(order_id, expiry_min=expiry_seconds // 60)
-
+        # results now contain expired / remove / blocked tuples to resolve in serial phase
+        async def _resolve_expired_or_blocked(marker: str, order_id: int, offer: dict, countdown: Optional[str]):
+            """
+            Serial resolver that performs DB writes, blacklist, skip increment,
+            admin notification, and re-offer. Keeps the same logic you had before.
+            """
+            chat_id = offer.get("chat_id")
+            try:
+                # mark DB assignment cleared
                 try:
-                    await self.bot.edit_message_text(
-                        chat_id=chat_id,
-                        message_id=message_id,
-                        text=new_message_text,
-                        reply_markup=kb,
-                        parse_mode="Markdown"
-                    )
-                    log.debug("[OFFERS] Countdown updated for order %s", order_id)
-                except TelegramBadRequest as e:
-                    if "message is not modified" in str(e):
-                        # expected when nothing changed; ignore
-                        pass
-                    else:
-                        log.warning("[OFFERS] Failed to edit offer message for order %s: %s", order_id, e)
-                        admin_events.append(f"❗ Failed to edit offer message for Order #{order_id}: {e}")
-                        # Remove offer to avoid repeated failing edits
-                        PENDING_OFFERS.pop(order_id, None)
-                except TelegramRetryAfter as e:
-                    log.warning("[OFFERS] Flood control when editing offer message for order %s: retry after %s", order_id, e.retry_after)
-                    admin_events.append(f"❗ Edit delayed for Order #{order_id} due to flood control")
+                    async with self.db._open_connection() as conn:
+                        await conn.execute(
+                            """
+                            UPDATE orders
+                            SET delivery_guy_id = $1,
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE id = $2
+                            """,
+                            None, order_id
+                        )
                 except Exception:
-                    log.exception("[OFFERS] Unexpected error editing offer message for order %s", order_id)
-                    admin_events.append(f"❗ Unexpected edit error for Order #{order_id}")
+                    log.exception("[OFFERS:RESOLVE] Failed to clear delivery_guy_id for order %s", order_id)
 
-            except TelegramForbiddenError:
-                # DG blocked the bot; remove offer and blacklist
-                log.warning("[OFFERS] DG %s blocked the bot; removing offer %s", chat_id, order_id)
-                PENDING_OFFERS.pop(order_id, None)
+                # try to map chat_id -> DG internal record
+                dg = None
                 try:
                     dg = await _db_get_delivery_guy_by_user(chat_id)
-                    if dg:
-                        try:
-                            await add_dg_to_blacklist(self.db, order_id, dg["id"])
-                        except Exception:
-                            log.exception("[BLACKLIST] Failed to add DG %s to blacklist for order %s", dg["id"], order_id)
-                        try:
-                            await self.db.increment_skip(dg["id"])
-                        except Exception:
-                            log.exception("[OFFERS] Failed to increment skip for DG %s", dg.get("id"))
-                        admin_events.append(f"🚫 DG {dg.get('id')} blocked the bot for Order #{order_id}")
                 except Exception:
-                    log.exception("[OFFERS] Error handling DG block for order %s", order_id)
+                    log.exception("[OFFERS:RESOLVE] Failed to lookup DG by chat_id %s for order %s", chat_id, order_id)
 
-                # Try to re-offer to next candidate (staggered)
+                # blacklist if we have a DG (best-effort)
+                if dg:
+                    try:
+                        await add_dg_to_blacklist(self.db, order_id, dg["id"])
+                    except Exception:
+                        log.exception("[BLACKLIST] Failed to add DG %s to blacklist for order %s", dg.get("id"), order_id)
+
+                # Remove from tracking
+                PENDING_OFFERS.pop(order_id, None)
+
+                # Admin event
+                reason = "blocked bot" if marker == "blocked" else "offer expired"
+                msg = (
+                    f"{'🚫 DG blocked' if marker == 'blocked' else '⏰ Offer expired'}\n"
+                    f"📦 Order #{order_id}\n"
+                    f"🚴 DG: {dg.get('name') if dg else 'Unknown'} (id={dg.get('id') if dg else 'N/A'}, chat_id={chat_id})\n"
+                    f"🕒 Last countdown seen: {countdown or 'N/A'}\n"
+                )
+                admin_events.append(msg)
+
+                # increment skip for the DG if present
+                if dg:
+                    try:
+                        await self.db.increment_skip(dg["id"])
+                    except Exception:
+                        log.exception("[OFFERS:RESOLVE] Failed to increment skip for DG %s", dg.get("id"))
+
+                # Re-offer to next candidate (serialized)
                 try:
                     order = await self.db.get_order(order_id)
                     if order:
                         next_dg = await find_next_candidate(self.db, order_id, order)
                         if next_dg:
                             try:
+                                # small stagger to avoid bursting Telegram
                                 await asyncio.sleep(0.5)
                                 await send_new_order_offer(self.bot, next_dg, order)
-                                admin_events.append(f"🔁 Re-offered Order #{order_id} to DG {next_dg.get('id')} after block")
+                                admin_events.append(f"🔁 Re-offered Order #{order_id} to DG {next_dg.get('id')}")
+                                log.info("[OFFERS:RESOLVE] Re-offered order %s to %s", order_id, next_dg.get("id"))
+                            except TelegramRetryAfter as e:
+                                log.warning("[OFFERS:RESOLVE] Flood control when re-offering order %s: retry after %s", order_id, e.retry_after)
+                                admin_events.append(f"❗ Re-offer delayed for Order #{order_id} due to flood control")
                             except Exception:
-                                log.exception("[REOFFER] Failed to re-offer after block for order %s", order_id)
-                                admin_events.append(f"❗ Re-offer failed after block for Order #{order_id}")
+                                log.exception("[OFFERS:RESOLVE] Failed to send re-offer for order %s", order_id)
+                                admin_events.append(f"❗ Re-offer failed for Order #{order_id}")
+                        else:
+                            admin_events.append(f"⚠️ No eligible DG found for Order #{order_id}")
+                    else:
+                        admin_events.append(f"⚠️ Order #{order_id} not found when resolving expired/blocked offer")
                 except Exception:
-                    log.exception("[REOFFER] Error during re-offer after block for order %s", order_id)
+                    log.exception("[OFFERS:RESOLVE] Error during re-offer flow for order %s", order_id)
 
             except Exception:
-                log.exception("[OFFERS] Unexpected error updating offer %s", order_id)
+                log.exception("[OFFERS:RESOLVE] Unexpected failure resolving offer %s", order_id)
+                # Ensure we don't leak PENDING_OFFERS for this order
                 PENDING_OFFERS.pop(order_id, None)
-                admin_events.append(f"❗ Unexpected error updating offer #{order_id}; tracking stopped")
 
-        # End loop: flush admin events once (best-effort)
-        try:
-            await _flush_admin_events()
-        except Exception:
-            log.exception("[ADMIN] Failed to flush admin events at end of run")
+        # SERIAL phase: resolve problematic offers one by one
+        if results:
+            log.debug("[OFFERS] Resolving %d problematic offers serially", len(results))
+        for item in results:
+            try:
+                marker, order_id, offer, countdown = item
+                if marker in ("expired", "blocked"):
+                    await _resolve_expired_or_blocked(marker, order_id, offer, countdown)
+                elif marker == "remove":
+                    # just remove tracking and notify admin minimally
+                    PENDING_OFFERS.pop(order_id, None)
+                    admin_events.append(f"⚠️ Offer tracking stopped for Order #{order_id} (order missing or invalid)")
+            except Exception:
+                log.exception("[OFFERS] Exception while resolving result: %s", item)
+
+        # flush admin events (best-effort)
+        if admin_events and settings.ADMIN_DAILY_GROUP_ID:
+            try:
+                summary = "\n\n".join(admin_events[:12])
+                if len(admin_events) > 12:
+                    summary += f"\n\n…and {len(admin_events)-12} more events."
+                try:
+                    await notify_admin_log(self.bot, settings.ADMIN_DAILY_GROUP_ID, summary, parse_mode="HTML")
+                except TelegramRetryAfter as e:
+                    log.warning("[ADMIN] Flood control when sending admin summary, retry after %s", e.retry_after)
+                except Exception:
+                    log.exception("[ADMIN] Failed to send admin summary")
+            except Exception:
+                log.exception("[ADMIN] Final admin flush failed")
     #----------------------------------
     # 🆕 NEW: Core System Jobs (Section 7)
     # -----------------------------------------------
@@ -885,7 +870,7 @@ class BotScheduler:
         self.scheduler.add_job(
             self.update_order_offers,
             'interval',
-            seconds=20,
+            seconds=120,
             id='update_order_offers'
         )
         

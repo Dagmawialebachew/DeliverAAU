@@ -219,6 +219,11 @@ ADD COLUMN IF NOT EXISTS cancel_reason TEXT NULL;
 
 -- Optional: index to speed up expiry checks
 CREATE INDEX IF NOT EXISTS idx_orders_expires ON orders(expires_at);
+CREATE INDEX IF NOT EXISTS idx_orders_vendor_created ON orders(vendor_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_orders_pending_created
+ON orders(created_at)
+WHERE status = 'pending';
+
 
 
 """
