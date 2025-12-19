@@ -130,8 +130,12 @@ def build_profile_card(user: dict, role: str = "student") -> str:
     coins = user.get("coins", 0)
     xp = user.get("xp", 0)
     level = user.get("level", 1)
-    filled = int((xp % 100) / 10)
-    progress_bar = "▰" * filled + "▱" * (10 - filled)
+    bar_length = 15
+    filled = int(level)
+    print('here is filled', filled)
+    
+    progress_bar = "▰" * filled + "▱" * (bar_length - filled)
+
     tip = random.choice(STUDENT_TIPS)
 
     if role == "delivery_guy":
