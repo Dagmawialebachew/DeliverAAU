@@ -290,18 +290,19 @@ class Database:
         phone: str,
         campus: str,
         gender: str = None,
+        xp: int = 0,
     ) -> int:
         async with self._open_connection() as conn:
             # Use RETURNING id to get the new primary key immediately
             result = await conn.fetchval(
                 """
                 INSERT INTO users
-                (telegram_id, role, first_name, phone, campus, gender, status)
-                VALUES ($1, $2, $3, $4, $5, $6, 'active')
+                (telegram_id, role, first_name, phone, campus, gender, status, xp)
+                VALUES ($1, $2, $3, $4, $5, $6, 'active', $7)
                 ON CONFLICT (telegram_id) DO NOTHING
                 RETURNING id
                 """,
-                telegram_id, role, first_name, phone, campus, gender,
+                telegram_id, role, first_name, phone, campus, gender, xp
             )
             # If nothing was inserted (due to ON CONFLICT), fetch existing ID
             if result is None:
@@ -1074,38 +1075,74 @@ class Database:
             )
             return int(order_id) if order_id is not None else 0
 
+    from datetime import datetime
     from aiogram import Bot
+
     async def check_thresholds_and_notify(
-            self,
-            bot: Bot,
-            dg_id: int,
-            admin_group_id: int,
-            max_skips: int = 3
-        ):
-            """Check skip thresholds and notify admins if exceeded."""
-            async with self._open_connection() as conn:
-                dg_info = await conn.fetchrow(
-                    "SELECT name, skipped_requests FROM delivery_guys WHERE id = $1",
-                    dg_id
+        self,
+        bot: Bot,
+        dg_id: int,
+        admin_group_id: int,
+        max_skips: int = 3
+    ):
+        """Check today's skip count and notify DG/admin if threshold exceeded."""
+        today = datetime.now().strftime("%Y-%m-%d")
+
+        async with self._open_connection() as conn:
+            stats = await conn.fetchrow(
+                "SELECT skipped FROM daily_stats WHERE dg_id=$1 AND date=$2",
+                dg_id, today
+            )
+            skips_today = int(stats["skipped"]) if stats else 0
+
+        # Fetch DG info with telegram_id
+        try:
+            dg_info = await self.get_delivery_guy_by_id(dg_id)
+        except ValueError:
+            print(f"[check_thresholds_and_notify] DG {dg_id} not found in DB")
+            return
+
+        tg_id = dg_info.get("telegram_id")
+        name = dg_info.get("name")
+
+        if not tg_id:
+            print(f"[check_thresholds_and_notify] DG {dg_id} has no telegram_id stored")
+            return
+
+        # DG feedback
+        try:
+            if skips_today == 0:
+                await bot.send_message(
+                    tg_id,
+                    "✅ Great job! No skips today — keep it up 🚀"
                 )
-                if not dg_info:
-                    return
+            elif skips_today < max_skips:
+                await bot.send_message(
+                    tg_id,
+                    f"⚠️ You’ve skipped {skips_today} orders today.\n"
+                    f"Stay reliable to keep receiving orders."
+                )
+            else:
+                await bot.send_message(
+                    tg_id,
+                    f"🚨 You’ve reached the skip limit ({max_skips}).\n"
+                    f"Further skips may affect your reliability."
+                )
+        except Exception as e:
+            print(f"Failed to notify DG {dg_id} ({name}) about skips: {e}")
 
-                name = dg_info["name"]
-                skips = int(dg_info["skipped_requests"] or 0)
-
-                if skips >= max_skips:
-                    admin_message = (
-                        f"🚨 **Reliability Alert!**\n"
-                        f"Delivery Partner **{name}** (ID: `{dg_id}`) has reached the maximum skip threshold ({max_skips} skips today).\n"
-                        f"**ACTION REQUIRED**: Review their performance and block if necessary."
-                    )
-                    try:
-                        await bot.send_message(admin_group_id, admin_message, parse_mode="Markdown")
-                    except Exception as e:
-                        import logging
-                        logging.warning(f"Failed to notify admin group {admin_group_id}: {e}")
-
+        # Admin alert if threshold exceeded
+        if skips_today >= max_skips:
+            admin_message = (
+                f"🚨 **Reliability Alert!**\n"
+                f"Delivery Partner **{name}** (ID: {dg_id}) has reached {skips_today} skips today.\n"
+                f"**ACTION REQUIRED**: Review their performance and block if necessary."
+            )
+            try:
+                await bot.send_message(admin_group_id, admin_message, parse_mode="Markdown")
+            except Exception as e:
+                print(f"Failed to notify admin group {admin_group_id}: {e}")
+                
     async def record_daily_stat_delivery(self, dg_id: int, date_str: str, earnings: float, total_xp: int = 10, total_coins: float = 0.0) -> None:
         """Updates daily_stats and dg gamification stats upon a successful delivery."""
         
@@ -1159,9 +1196,12 @@ class Database:
                 dg_id
             )
 
+    
     async def increment_skip(self, dg_id: int) -> None:
-        """Increment skipped_requests and update last_skip_at when a DG skips/ignores an order."""
+        """Increment both lifetime skipped_requests and today's skipped count."""
+        today = datetime.now().strftime("%Y-%m-%d")
         async with self._open_connection() as conn:
+            # 1. Update lifetime stats
             await conn.execute(
                 """
                 UPDATE delivery_guys
@@ -1170,6 +1210,18 @@ class Database:
                 WHERE id = $1
                 """,
                 dg_id
+            )
+
+            # 2. Upsert into daily_stats
+            await conn.execute(
+                """
+                INSERT INTO daily_stats (dg_id, date, skipped, updated_at)
+                VALUES ($1, $2, 1, CURRENT_TIMESTAMP)
+                ON CONFLICT (dg_id, date)
+                DO UPDATE SET skipped = daily_stats.skipped + 1,
+                            updated_at = CURRENT_TIMESTAMP
+                """,
+                dg_id, today
             )
 
 
@@ -1696,52 +1748,47 @@ class AnalyticsService:
 async def seed_vendors(db: Database) -> None:
     vendors = [
         {
-            "telegram_id": settings.VENDOR_IDS["Tg house"],
-            "name": "Tg house (Test Vendor)",
+            "telegram_id": 100000001,
+            "name": "Wesagn Ertb",
             "menu": [
-                {"id": 1, "name": "🍝 Pasta Bolognese", "price": 90, "category": "Mains"},
-                {"id": 2, "name": "🥚 Enkulal Firfir", "price": 100, "category": "Fasting"},
-                {"id": 3, "name": "🥘 Shiro Tegabino", "price": 120, "category": "Fasting"},
-                {"id": 4, "name": "🥗 Mixed Salad", "price": 80, "category": "Specials"},
-                {"id": 5, "name": "☕ Macchiato", "price": 50, "category": "Drinks"},
-                {"id": 6, "name": "🍵 Tea", "price": 20, "category": "Drinks"},
-                {"id": 7, "name": "🥪 Club Sandwich", "price": 110, "category": "Non Fasting"},
-                {"id": 8, "name": "🍕 Mini Pizza", "price": 150, "category": "Specials"},
+                {"id": 1, "name": "Normal Ertb", "price": 90, "category": "Mains"},
+                {"id": 2, "name": "Special Ertb", "price": 120, "category": "Mains"},
+               
             ],
         },
-        {
-            "telegram_id": settings.VENDOR_IDS["Abudabi"],
-            "name": "Abudabi",
-            "menu": [
-                {"id": 1, "name": "🥙 Chicken Shawarma", "price": 110, "category": "Non Fasting"},
-                {"id": 2, "name": "🥙 Falafel Wrap", "price": 85, "category": "Fasting"},
-                {"id": 3, "name": "🍟 French Fries", "price": 40, "category": "Specials"},
-                {"id": 4, "name": "🥤 Orange Juice", "price": 50, "category": "Drinks"},
-                {"id": 5, "name": "🥤 Mango Juice", "price": 55, "category": "Drinks"},
-                {"id": 6, "name": "🥤 Coke", "price": 30, "category": "Drinks"},
-                {"id": 7, "name": "🍲 Lentil Soup", "price": 70, "category": "Fasting"},
-            ],
-        },
-        {
-            "telegram_id": random.randint(100000000, 999999999),
-            "name": "Selam Fast Food",
-            "menu": [
-                {"id": 1, "name": "🍔 Cheeseburger", "price": 95, "category": "Mains"},
-                {"id": 2, "name": "🌭 Hotdog", "price": 70, "category": "Mains"},
-                {"id": 3, "name": "🍗 Chicken Nuggets (6pc)", "price": 80, "category": "Specials"},
-                {"id": 4, "name": "🍕 Slice of Pizza", "price": 60, "category": "Mains"},
-                {"id": 5, "name": "🍦 Ice Cream", "price": 35, "category": "Specials"},
-                {"id": 6, "name": "🥤 Sprite", "price": 30, "category": "Drinks"},
-                {"id": 7, "name": "🥤 Fanta", "price": 30, "category": "Drinks"},
-            ],
-        },
+        # {
+        #     "telegram_id": settings.VENDOR_IDS["Abudabi"],
+        #     "name": "Abudabi",
+        #     "menu": [
+        #         {"id": 1, "name": "🥙 Chicken Shawarma", "price": 110, "category": "Non Fasting"},
+        #         {"id": 2, "name": "🥙 Falafel Wrap", "price": 85, "category": "Fasting"},
+        #         {"id": 3, "name": "🍟 French Fries", "price": 40, "category": "Specials"},
+        #         {"id": 4, "name": "🥤 Orange Juice", "price": 50, "category": "Drinks"},
+        #         {"id": 5, "name": "🥤 Mango Juice", "price": 55, "category": "Drinks"},
+        #         {"id": 6, "name": "🥤 Coke", "price": 30, "category": "Drinks"},
+        #         {"id": 7, "name": "🍲 Lentil Soup", "price": 70, "category": "Fasting"},
+        #     ],
+        # },
+        # {
+        #     "telegram_id": random.randint(100000000, 999999999),
+        #     "name": "Selam Fast Food",
+        #     "menu": [
+        #         {"id": 1, "name": "🍔 Cheeseburger", "price": 95, "category": "Mains"},
+        #         {"id": 2, "name": "🌭 Hotdog", "price": 70, "category": "Mains"},
+        #         {"id": 3, "name": "🍗 Chicken Nuggets (6pc)", "price": 80, "category": "Specials"},
+        #         {"id": 4, "name": "🍕 Slice of Pizza", "price": 60, "category": "Mains"},
+        #         {"id": 5, "name": "🍦 Ice Cream", "price": 35, "category": "Specials"},
+        #         {"id": 6, "name": "🥤 Sprite", "price": 30, "category": "Drinks"},
+        #         {"id": 7, "name": "🥤 Fanta", "price": 30, "category": "Drinks"},
+        #     ],
+        # },
     ]
     
     
 
     async with db._open_connection() as conn:
     # Delete all existing vendors
-        await conn.execute("TRUNCATE TABLE vendors RESTART IDENTITY CASCADE")
+        # await conn.execute("TRUNCATE TABLE vendors RESTART IDENTITY CASCADE")
 
         # Now insert fresh seed data
         for v in vendors:

@@ -47,8 +47,8 @@ def gender_inline_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="👩 Female", callback_data="gender:female"),
                 InlineKeyboardButton(text="👨 Male", callback_data="gender:male"),
+                InlineKeyboardButton(text="👩 Female", callback_data="gender:female"),
             ]
         ]
     )
@@ -225,10 +225,21 @@ async def start(message: Message, state: FSMContext):
 
     # --- RETURNING STUDENT EXPERIENCE ---
     if user:
-        await typing_pause(message, "👋 Welcome back to **UniBites Delivery** 🎓🍔")        
-        await asyncio.sleep(0.3)
-        await typing_pause(message, "Fuel your day, support your peers — fast, easy, right from your campus 🏛")
+        from datetime import datetime
 
+        hour = datetime.now().hour
+
+        if hour < 12:
+            greeting = "🌞 Good morning!"
+        elif hour < 18:
+            greeting = "🌤 Good afternoon!"
+        else:
+            greeting = "🌙 Good evening!"
+
+        await message.answer(
+            f"{greeting} \n\n👋 Welcome back to UniBites Delivery ",
+            parse_mode="HTML"
+        )
         await message.answer(build_profile_card(user), parse_mode="Markdown")
         await message.answer("Choose your next move:", reply_markup=main_menu())
         await state.clear()
@@ -287,7 +298,7 @@ async def handle_gender(cb: CallbackQuery, state: FSMContext):
     data = await state.get_data()
 
     # 🎁 Give starter coins
-    starter_coins = 50
+    starter_xp = 50
 
     await db.create_user(
         telegram_id=cb.from_user.id,
@@ -296,7 +307,7 @@ async def handle_gender(cb: CallbackQuery, state: FSMContext):
         phone=data.get("phone", ""),
         campus=data.get("campus", ""),
         gender=gender,
-        coins=starter_coins,   # <-- reward coins on creation
+        xp=starter_xp,   # <-- reward XP on creation
     )
 
     await cb.message.answer("✅ Registration complete!")
@@ -308,15 +319,15 @@ async def handle_gender(cb: CallbackQuery, state: FSMContext):
         "first_name": cb.from_user.first_name,
         "phone": data.get("phone", ""),
         "campus": data.get("campus", ""),
-        "coins": starter_coins,   # <-- reflect reward
-        "xp": 0,
+        "coins": 50,   # <-- reflect reward
+        "xp": starter_xp,
         "level": 1,
         "gender": gender,
     }
 
     # 🎉 Tell them about the reward
     await cb.message.answer(
-        f"🎁 Surprise! You’ve been gifted **{starter_coins} Coins** to kickstart your UniBites journey.\n"
+        f"🎁 Surprise! You’ve been gifted **{starter_xp} XP and 50 Coins** to kickstart your UniBites journey.\n"
         "Use them later to unlock perks and play around with rewards ✨"
     )
 

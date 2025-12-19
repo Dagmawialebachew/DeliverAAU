@@ -942,8 +942,8 @@ async def final_confirm(cb: CallbackQuery, state: FSMContext):
         f"💵 Total: *{total_payable:.2f} birr*\n\n"
         f"📍 Drop-off: *{data.get('dropoff', '')}*\n"
         f"{('📝 Notes: ' + data.get('notes', '')) if data.get('notes') else ''}\n\n"
-        "✅ Your order has been sent to the vendor.\n"
-        "👨‍🍳 Once the vendor confirms, a delivery guy will be assigned to bring your meal.\n"
+        "✅ Your order has been sent to the kitchen.\n"
+        "👨‍🍳 Once the cafe confirms, a delivery guy will be assigned to bring your meal.\n"
         "\n🧭 Track your order anytime in *📍 Track Order*."
     )
 

@@ -515,78 +515,127 @@ async def vendor_new_orders_page(cb: CallbackQuery):
 # -----------------------------
 # ✅ Accept / Reject actions
 # -----------------------------
+from aiogram import Bot
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.exceptions import TelegramBadRequest
+from datetime import datetime
+
 @router.callback_query(F.data.startswith("vendor:accept:"))
 async def vendor_accept_order(cb: CallbackQuery, bot: Bot):
-    await cb.answer()
+    # 1) Answer immediately to avoid "query is too old"
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
     order_id = int(cb.data.split(":")[-1])
     order = await db.get_order(order_id)
     if not order:
         await cb.message.answer("⚠️ ትዕዛዝ አልተገኘም።")
         return
-    
+
+    # 2) Expiry check
     expires_at = order.get("expires_at")
-    from datetime import datetime
     if expires_at and expires_at < datetime.utcnow():
-        await cb.message.answer("❌ ይህ ትዕዛዝ አልተቀበለም፣ ጊዜው አልፎበታል።")
-        await notify_admin_log(bot, ADMIN_GROUP_ID, f"⚠️ Vendor tried to accept expired Order #{order_id}")
+        try:
+            await cb.message.answer("❌ ይህ ትዕዛዝ አልተቀበለም፣ ጊዜው አልፎበታል።")
+        except Exception as e:
+            print(f"[vendor_accept_order] Failed to notify vendor about expired order #{order_id}: {e}")
+        try:
+            await notify_admin_log(bot, ADMIN_GROUP_ID, f"⚠️ Vendor tried to accept expired Order #{order_id}")
+        except Exception as e:
+            print(f"[vendor_accept_order] Failed to notify admin about expired order #{order_id}: {e}")
         return
 
-    # Update status and timestamp
-    await db.update_order_status(order_id, "preparing")
+    # 3) Update status and timestamp
+    try:
+        await db.update_order_status(order_id, "preparing")
+    except Exception as e:
+        print(f"[vendor_accept_order] Failed to update order status for #{order_id}: {e}")
+        await cb.message.answer("❌ Failed to update order status. Try again.")
+        return
+
     try:
         await db.set_order_timestamp(order_id, "accepted_at")
-    except Exception:
-        import logging
-        logging.getLogger(__name__).error(f"Failed to set accepted_at for order #{order_id}")
+    except Exception as e:
+        print(f"[vendor_accept_order] Failed to set accepted_at for order #{order_id}: {e}")
 
+    # 4) Vendor info
     vendor = await db.get_vendor(order["vendor_id"])
     vendor_name = vendor["name"] if vendor else "Vendor"
 
-    # Vendor sees confirmation in Amharic
-    await cb.message.edit_text(
-        f"⚙️ ትዕዛዙ {order_id} በመዘጋጀት ላይ ነው።\n\n⬅️ ወደ ዳሽቦርድ"
-    )
+    # 5) Edit vendor message safely
+    try:
+        await cb.message.edit_text(
+            f"⚙️ ትዕዛዙ {order_id} በመዘጋጀት ላይ ነው።\n\n⬅️ ወደ ዳሽቦርድ"
+        )
+    except TelegramBadRequest as e:
+        # message too old or already edited -> send a new message
+        try:
+            await cb.message.answer(
+                f"⚙️ ትዕዛዙ {order_id} በመዘጋጀት ላይ ነው።\n\n⬅️ ወደ ዳሽቦርድ"
+            )
+        except Exception as ex:
+            print(f"[vendor_accept_order] Failed to notify vendor after edit failure for #{order_id}: {ex}")
+    except Exception as e:
+        print(f"[vendor_accept_order] Unexpected error editing vendor message for #{order_id}: {e}")
 
-    # Student cinematic progress
-    student_chat_id = await db.get_student_chat_id(order)
-   
-    # Assign delivery guy
+    # 6) Student cinematic progress
+    try:
+        student_chat_id = await db.get_student_chat_id(order)
+    except Exception as e:
+        student_chat_id = None
+        print(f"[vendor_accept_order] Failed to get student chat id for order #{order_id}: {e}")
+
+    # 7) Assign delivery guy (scheduler should not notify student)
     from utils.helpers import assign_delivery_guy, render_cart
-    chosen = await assign_delivery_guy(
+    try:
+        chosen = await assign_delivery_guy(
             db=db,
             order_id=order_id,
             bot=bot,
-            notify_student=False  # scheduler must NOT notify student
+            notify_student=False
         )
-    # Build final preview for student
-    cart_text, subtotal = render_cart(order.get("cart_counts", {}), order.get("menu", []))
+    except Exception as e:
+        chosen = None
+        print(f"[vendor_accept_order] assign_delivery_guy failed for order #{order_id}: {e}")
+
+    # 8) Build final preview for student
+    try:
+        cart_text, subtotal = render_cart(order.get("cart_counts", {}), order.get("menu", []))
+    except Exception as e:
+        cart_text, subtotal = ("", 0)
+        print(f"[vendor_accept_order] render_cart failed for order #{order_id}: {e}")
+
     total_payable = order.get("food_subtotal", 0) + order.get("delivery_fee", 0)
-
     final_preview = (
-    f"🎉 *Order #{order_id} Confirmed by {vendor_name}!* \n"
-    "──────────────────────\n"
-    "👨‍🍳 Your meal is now being prepared with care...\n"
-)
-    final_preview += (
-        "\n🚴 A delivery partner will be assigned soon.\n"
+        f"🎉 *Order #{order_id} Confirmed by {vendor_name}!* \n"
+        "──────────────────────\n"
+        "👨‍🍳 Your meal is now being prepared with care...\n\n"
+        "🚴 A delivery partner will be assigned soon.\n"
     )
-
     preview_kb = InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text="📍 Track", callback_data=f"order:track:{order_id}")]]
     )
 
     if student_chat_id:
-        await safe_send(bot, student_chat_id, final_preview, reply_markup=preview_kb)
+        try:
+            await safe_send(bot, student_chat_id, final_preview, reply_markup=preview_kb)
+        except Exception as e:
+            print(f"[vendor_accept_order] Failed to send final preview to student for order #{order_id}: {e}")
 
-    # Notify delivery guy if assigned
+    # 9) Optional: notify assigned delivery guy (kept commented out)
     # if chosen and chosen.get("telegram_id"):
-    #     await safe_send(
-    #         bot,
-    #         chosen["telegram_id"],
-    #         f"📦 New pickup assigned!\nOrder #{order_id} from {vendor_name} is preparing.\nGet ready for pickup soon!"
-    #     )
+    #     try:
+    #         await safe_send(
+    #             bot,
+    #             chosen["telegram_id"],
+    #             f"📦 New pickup assigned!\nOrder #{order_id} from {vendor_name} is preparing.\nGet ready for pickup soon!"
+    #         )
+    #     except Exception as e:
+    #         print(f"[vendor_accept_order] Failed to notify chosen DG for order #{order_id}: {e}")
 
-    # Admin log
+    # 10) Admin log (use print on failures)
     if ADMIN_GROUP_ID:
         if chosen:
             admin_msg = (
@@ -595,59 +644,94 @@ async def vendor_accept_order(cb: CallbackQuery, bot: Bot):
             )
         else:
             admin_msg = (
-                f"⚠️ Vendor {vendor_name} accepted Order #{order_id}, "
-                "but no delivery guy was assigned."
+                f"⚠️ Vendor {vendor_name} accepted Order #{order_id}, but no delivery guy was assigned."
             )
-        await notify_admin_log(bot, ADMIN_GROUP_ID, admin_msg)
-
-
+        try:
+            await notify_admin_log(bot, ADMIN_GROUP_ID, admin_msg)
+        except Exception as e:
+            print(f"[vendor_accept_order] Failed to notify admin for order #{order_id}: {e}")
+            
+            
 # 🚫 Vendor Reject Handler
+
 @router.callback_query(F.data.startswith("vendor:reject:"))
 async def vendor_reject_order(cb: CallbackQuery, bot: Bot):
-    await cb.answer()
+    # 1) Answer immediately to avoid "query too old"
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
     order_id = int(cb.data.split(":")[-1])
     order = await db.get_order(order_id)
     if not order:
+        # Use answer or send a message; don't call cb.answer() again
         await cb.message.answer("⚠️ ትዕዛዝ አልተገኘም።")
         return
 
-    # Update status
+    # 2) Update status in DB first
     await db.update_order_status(order_id, "cancelled")
+
+    # Optionally clear assigned delivery guy on the order
+    if order.get("delivery_guy_id"):
+        try:
+            await db.clear_order_delivery_guy(order_id)  # implement if needed
+        except Exception:
+            # Not fatal; log and continue
+            print("Failed to clear delivery_guy_id for order %s", order_id)
 
     vendor = await db.get_vendor(order["vendor_id"])
     vendor_name = vendor["name"] if vendor else "Vendor"
 
-    # Vendor sees cancellation confirmation
-    await cb.message.edit_text(f"❌ ትዕዛዝ #{order_id} ተሰርዘዋል።")
+    # 3) Edit vendor message safely
+    try:
+        await cb.message.edit_text(f"❌ ትዕዛዝ #{order_id} ተሰርዘዋል።")
+    except TelegramBadRequest:
+        # message cannot be edited (too old or already edited) -> send a new message
+        try:
+            await cb.message.answer(f"❌ ትዕዛዝ #{order_id} ተሰርዘዋል።")
+        except Exception:
+            print("Failed to notify vendor about cancellation for order %s", order_id)
 
-    # Notify student
-    student_chat_id = await db.get_student_chat_id(order)
-    if student_chat_id:
-            await cb.bot.send_message(
-                student_chat_id,
-                f"❌ Sorry, your order #{order_id} could not be accepted.\n\n"
-                "This may happen if:\n"
-                "• The vendor was unavailable or closed\n"
-                "• The item is out of stock\n"
-                "• A delivery partner could not be assigned in time\n\n"
-                "Please try again later or choose another meal provider.")
-
-    # Notify delivery guy if one was already assigned
-    if order.get("delivery_guy_id"):
-        dg = await db.get_delivery_guy(order["delivery_guy_id"])
-        if dg:
+    # 4) Notify student (use safe_send wrapper)
+    try:
+        student_chat_id = await db.get_student_chat_id(order_id)  # prefer order_id if helper expects it
+        if student_chat_id:
             await safe_send(
                 bot,
-                dg["telegram_id"],  # use telegram_id not user_id for consistency
-                f"⚠️ Order #{order_id} was cancelled by {vendor_name}. Please return to dashboard."
+                student_chat_id,
+                (
+                    f"❌ Sorry, your order #{order_id} could not be accepted.\n\n"
+                    "This may happen if:\n"
+                    "• The vendor was unavailable or closed\n"
+                    "• The item is out of stock\n"
+                    "• A delivery partner could not be assigned in time\n\n"
+                    "Please try again later or choose another meal provider."
+                )
             )
+    except Exception:
+        print("Failed to notify student for cancelled order %s", order_id)
 
-    # Notify admin group
-    dropoff = order.get('dropoff', 'N/A')
-    campus_text = await db.get_user_campus_by_order(order['id'])
-    dropoff = f"{dropoff} • {campus_text}" if campus_text else dropoff
-    
-    if ADMIN_GROUP_ID:
+    # 5) Notify assigned delivery guy (if any)
+    try:
+        if order.get("delivery_guy_id"):
+            dg = await db.get_delivery_guy(order["delivery_guy_id"])
+            if dg and dg.get("telegram_id"):
+                await safe_send(
+                    bot,
+                    dg["telegram_id"],
+                    f"⚠️ Order #{order_id} was cancelled by {vendor_name}. Please return to dashboard."
+                )
+    except Exception:
+        print("Failed to notify delivery guy for cancelled order %s", order_id)
+
+    # 6) Admin log (single, wrapped send)
+    try:
+        dropoff = order.get('dropoff', 'N/A')
+        campus_text = await db.get_user_campus_by_order(order['id'])
+        dropoff = f"{dropoff} • {campus_text}" if campus_text else dropoff
+        total = order.get('food_subtotal', 0) + order.get('delivery_fee', 0)
+
         admin_msg = (
             f"⚠️ *Order Cancelled by Vendor*\n"
             f"📦 Order ID: #{order_id}\n"
@@ -655,10 +739,13 @@ async def vendor_reject_order(cb: CallbackQuery, bot: Bot):
             f"👤 Customer: {order.get('customer_name','N/A')} ({order.get('customer_phone','N/A')})\n"
             f"🏛 Campus: {order.get('campus','N/A')}\n"
             f"📍 Drop-off: {dropoff}\n"
-            f"💵 Total: {order.get('food_subtotal',0) + order.get('delivery_fee',0):.2f} birr\n\n"
+            f"💵 Total: {total:.2f} birr\n\n"
             "Status: Cancelled by vendor."
         )
-        await notify_admin_log(bot, ADMIN_GROUP_ID, admin_msg)
+        if ADMIN_GROUP_ID:
+            await notify_admin_log(bot, ADMIN_GROUP_ID, admin_msg, parse_mode="Markdown")
+    except Exception:
+        print("Failed to notify admin about cancelled order %s", order_id)
 
 # -----------------------------
 # ⚙️ Preparing Orders (preparing) + pagination

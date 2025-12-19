@@ -937,16 +937,6 @@ async def handle_skip_order(call: CallbackQuery):
             #     pass
             # except Exception:
             #     log.exception("[NOTIFY] Failed to notify student about pending reassignment for order %s", order_id)
-
-            # Admin fallback: escalate
-            try:
-                await call.bot.send_message(
-                    ADMIN_GROUP_ID,
-                    f"⚠️ Order #{order_id} was skipped by DG {dg['name']} and could not be re-offered automatically."
-                )
-            except Exception:
-                log.exception("[NOTIFY] Failed to notify admin about failed re-offer for order %s", order_id)
-         
             # Admin fallback
             try:
                 await call.bot.send_message(
@@ -1043,7 +1033,7 @@ async def handle_delivered(call: CallbackQuery):
     try:
         # Update order status to delivered
         await db.update_order_status(order_id, "delivered", dg["id"])
-        await db.increment_total_deliveries(dg["id"])
+        # await db.increment_total_deliveries(dg["id"])
         # Update DG stats (total deliveries, active flag)
         await db.set_delivery_guy_online(dg["id"])
     except Exception:
@@ -1087,7 +1077,7 @@ async def handle_delivered(call: CallbackQuery):
     }
     deliveries_today = today_stats.get("deliveries", 0)
     earnings_today = today_stats.get("earnings", 0.0)
-    acceptance_rate = await db.calc_vendor_reliability_for_day(dg["id"])
+    acceptance_rate = await calc_acceptance_rate(db, dg["id"])
 
     reliability = "Excellent 🚀" if acceptance_rate >= 90 else ("Good 👍" if acceptance_rate >= 80 else "Fair")
 
@@ -1098,7 +1088,7 @@ async def handle_delivered(call: CallbackQuery):
         "📊 **Your Daily Progress**\n"
         f"🚚 Deliveries today: *{deliveries_today}*\n"
         f"💵 Earnings: *{int(earnings_today)} birr*\n"
-        "⚖️ Acceptance Rate: *{int(acceptance_rate)}%* ({reliability})\n\n"
+        f"⚖️ Acceptance Rate: *{int(acceptance_rate)}%* ({reliability})\n\n"
         "🎁 **Rewards Earned**\n"
         f"✨ +{xp_gained} XP\n"
         f"💰 +{coins_gained:.2f} Coins\n\n"
@@ -1129,13 +1119,18 @@ async def handle_contact_user(call: CallbackQuery):
 
     phone = student.get("phone")
     first_name = student.get("first_name", "Student")
+    last_name = student.get("last_name", "")
 
     if phone:
-        await call.message.answer_contact(phone_number=phone, first_name=first_name)
-        await call.answer("📱 Contact shared.")
+        # Send as plain text so it can be copied
+        contact_text = (
+            f"👤 {first_name} {last_name}\n"
+            f"📱 {phone}"
+        )
+        await call.message.answer(contact_text, parse_mode="HTML")
+        await call.answer("📱 Phone number shared.")
     else:
         await call.answer("❌ No phone number available for this student.", show_alert=True)
-
 
 @router.callback_query(F.data.startswith("refresh_order_"))
 async def handle_refresh_order(call: CallbackQuery):
@@ -1322,12 +1317,21 @@ async def notify_student(bot, order: Dict[str, Any], status: str) -> None:
                 badge = get_xp_badge(level)
 
                 await bot.send_message(
-                    student_tg,
-                    f"🎉 Order #{order_id} delivered!\n"
-                    f"🔥 +10 XP earned\n"
-                    f"🏆 Level {level} · {badge}\n"
-                    f"✨ Total XP: {xp}"
-                )
+            student_tg,
+            (
+                f"🎉 <b>Order #{order_id} Delivered!</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                "🙏 Thank you for ordering with <b>UniBites Delivery</b> 🚴‍♂️\n"
+                "We’re proud to keep campus life effortless and connected.\n\n"
+                f"🔥 +10 XP earned\n"
+                f"🏆 Level {level} · {badge}\n"
+                f"✨ Total XP: <b>{xp}</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                "⚡ UniBites Delivery — fast meals, real smiles, pure hustle."
+            ),
+            parse_mode="HTML"
+        )
+
 
 
             # Rating prompt

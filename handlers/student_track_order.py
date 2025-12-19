@@ -155,24 +155,45 @@ async def refresh_order_card(callback: CallbackQuery):
             await callback.answer("🔄 Refreshed with new message")
 
 @router.callback_query(F.data.startswith("track:call_dg:"))
-async def callback_call_dg(cb: CallbackQuery):
-    await cb.answer()
-    order_id = int(cb.data.split(":")[-1])
+async def handle_contact_dg(call: CallbackQuery):
+    await call.answer()
+
+    # Parse order_id correctly from colon-separated callback_data
+    try:
+        order_id = int(call.data.split(':')[-1])
+    except ValueError:
+        await call.answer("❌ Invalid order ID format.", show_alert=True)
+        return
+
     order = await db.get_order(order_id)
     if not order:
-        await cb.message.answer("❌ Order not found.")
+        await call.answer("❌ Order not found.", show_alert=True)
         return
+
     if not order.get("delivery_guy_id"):
-        await cb.message.answer("⚠️ No delivery partner assigned yet.")
+        await call.answer("⚠️ No delivery partner assigned yet.", show_alert=True)
         return
+
     dg = await db.get_delivery_guy(order["delivery_guy_id"])
     if not dg:
-        await cb.message.answer("⚠️ Delivery partner not found.")
+        await call.answer("⚠️ Delivery partner not found.", show_alert=True)
         return
-    phone = dg.get("phone") or dg.get("user_id")  # fallback to user_id if phone absent
-    name = dg.get("name", "Delivery Partner")
-    # Send the contact info as a secure DM message (not broadcast); user chose this action
-    await cb.message.answer(f"📞 {name} — contact: {phone}")
+
+    phone = dg.get("phone")
+    first_name = dg.get("name", "Delivery Partner")
+    last_name = ""  # optional
+
+    if phone:
+        # One message: name and phone, phone isolated on its own line
+        contact_text = (
+            f"👤 {first_name} {last_name}\n"
+            f"{phone}"
+        )
+        await call.message.answer(contact_text)
+        await call.answer("📱 Delivery partner contact shared.")
+    else:
+        await call.answer("❌ No phone number available for this delivery partner.", show_alert=True)
+
 
 ACTIVE_STATUSES = ('pending', 'assigned', 'preparing', 'ready', 'in_progress')
 

@@ -422,22 +422,39 @@ async def edit_vendor_id(callback: CallbackQuery, state: FSMContext):
     await state.set_state(AdminStates.vendor_get_id)
     await callback.answer()
 
+
 @router.message(AdminStates.vendor_get_id)
 async def vendor_id_updated(message: Message, state: FSMContext):
     if not message.text.isdigit():
         await message.answer("⚠️ ID must be numeric. Try again.")
         return
-    await state.update_data(v_id=int(message.text))
 
-    # Refresh preview card
+    await state.update_data(v_id=int(message.text))
     data = await state.get_data()
-    await render_vendor_edit_preview(
-            bot=message.bot,
-            chat_id=message.chat.id,
-            message_id=data["card_message_id"],
-            data=data
+
+    if data.get("edit_mode"):
+        # Edit mode → refresh preview card
+        if "card_message_id" in data:
+            await render_vendor_edit_preview(
+                bot=message.bot,
+                chat_id=message.chat.id,
+                message_id=data["card_message_id"],
+                data=data
+            )
+        else:
+            # Fallback if card_message_id is missing
+            await message.answer("⚠️ Preview card not found, continuing with edit flow.")
+        await state.set_state(AdminStates.vendor_confirm)
+    else:
+        # Add mode → continue to next step
+        await message.answer(
+            "<b>🏪 VENDOR DEPLOYMENT // STEP 2/3</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "Enter the <b>Display Name</b> for this Vendor.\n"
+            "<i>(e.g., 'Juice Hub 5kilo')</i>",
+            parse_mode="HTML"
         )
-    await state.set_state(AdminStates.vendor_confirm)
+        await state.set_state(AdminStates.vendor_get_name)
 
 
 @router.callback_query(F.data == "edit_vendor_name", AdminStates.vendor_edit_menu)
@@ -451,14 +468,30 @@ async def vendor_name_updated(message: Message, state: FSMContext):
     await state.update_data(v_name=message.text)
     data = await state.get_data()
 
-    await render_vendor_edit_preview(
-        bot=message.bot,
-        chat_id=message.chat.id,
-        message_id=data["card_message_id"],
-        data=data
-    )
-
-    await state.set_state(AdminStates.vendor_confirm)
+    if data.get("edit_mode"):
+        # Edit mode → refresh preview card
+        if "card_message_id" in data:
+            await render_vendor_edit_preview(
+                bot=message.bot,
+                chat_id=message.chat.id,
+                message_id=data["card_message_id"],
+                data=data
+            )
+        else:
+            await message.answer("⚠️ Preview card not found, continuing with edit flow.")
+        await state.set_state(AdminStates.vendor_confirm)
+    else:
+        # Add mode → show review summary instead of preview card
+        summary = (
+            "<b>📋 REVIEW DEPLOYMENT DATA</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🆔 <b>Telegram ID:</b> <code>{data['v_id']}</code>\n"
+            f"🏷 <b>Name:</b> {data['v_name']}\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "<i>Confirm to commit this Vendor to the database?</i>"
+        )
+        await message.answer(summary, parse_mode="HTML", reply_markup=get_confirm_cancel_kb("vendor"))
+        await state.set_state(AdminStates.vendor_confirm)
 
 
 @router.callback_query(F.data == "edit_vendor_status", AdminStates.vendor_edit_menu)
@@ -526,7 +559,97 @@ async def vendor_name_captured(message: Message, state: FSMContext):
     
   
   
-  
+@router.callback_query(F.data.startswith("vendor_status:"))
+async def vendor_status_view(callback: CallbackQuery):
+    vendor_id = int(callback.data.split(":")[1])
+
+    async with db._open_connection() as conn:
+        vendor = await conn.fetchrow(
+            "SELECT id, name, status, rating_avg, rating_count FROM vendors WHERE id=$1",
+            vendor_id
+        )
+
+    if not vendor:
+        await callback.answer("⚠️ Vendor not found.", show_alert=True)
+        return
+
+    status_emoji = (
+        "🟢 Active" if vendor["status"] == "active"
+        else "🟡 Busy" if vendor["status"] == "busy"
+        else "🔴 Offline"
+    )
+
+    stats_text = (
+        f"<b>📊 Vendor Stats</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🏷 <b>Name:</b> {vendor['name']}\n"
+        f"📊 <b>Status:</b> {status_emoji}\n"
+        f"⭐ <b>Rating:</b> {round(vendor['rating_avg'],1)} ({vendor['rating_count']} ratings)\n"
+        "━━━━━━━━━━━━━━━━━━━━━━"
+    )
+
+    await callback.message.edit_text(
+        stats_text,
+        parse_mode="HTML",
+        reply_markup=get_vendor_card_kb(vendor_id)
+    )
+    await callback.answer()
+
+# INIT: show confirmation prompt
+@router.callback_query(F.data.startswith("vendor_delete:") & ~F.data.endswith("_confirm"))
+async def vendor_delete_init(callback: CallbackQuery, state: FSMContext):
+    try:
+        vendor_id_str = callback.data.split(":")[1]
+        vendor_id = int(vendor_id_str)
+    except Exception:
+        await callback.answer("❌ Invalid vendor ID format.", show_alert=True)
+        return
+
+    async with db._open_connection() as conn:
+        vendor = await conn.fetchrow("SELECT id, name FROM vendors WHERE id=$1", vendor_id)
+
+    if not vendor:
+        await callback.answer("⚠️ Vendor not found.", show_alert=True)
+        return
+
+    confirm_text = (
+        f"⚠️ <b>Confirm Deletion</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🏷 Vendor: {vendor['name']}\n"
+        f"🆔 ID: {vendor['id']}\n\n"
+        "<i>This action is irreversible. Proceed?</i>"
+    )
+
+    await callback.message.edit_text(
+        confirm_text,
+        parse_mode="HTML",
+        reply_markup=get_confirm_cancel_kb(f"vendor_delete:{vendor_id}")
+    )
+    await callback.answer()
+
+
+# CONFIRM: actually delete
+@router.callback_query(F.data.startswith("vendor_delete:") & F.data.endswith("_confirm"))
+async def vendor_delete_confirm(callback: CallbackQuery):
+    try:
+        vendor_id_str = callback.data.split(":")[1].split("_")[0]
+        vendor_id = int(vendor_id_str)
+    except Exception:
+        await callback.answer("❌ Invalid vendor ID format.", show_alert=True)
+        return
+
+    async with db._open_connection() as conn:
+        await conn.execute("DELETE FROM vendors WHERE id=$1", vendor_id)
+
+    await callback.message.answer(
+    f"🗑 Vendor #{vendor_id} deleted successfully.",
+    parse_mode="HTML",
+    reply_markup=get_main_menu_kb()  # ReplyKeyboardMarkup is fine here
+)
+
+    await callback.answer("Vendor deleted.")
+
+
 @router.callback_query(
     (F.data == "vendor_confirm") | (F.data == "vendor_edit_confirm"),
     AdminStates.vendor_confirm
@@ -599,18 +722,7 @@ async def vendor_commit(call: CallbackQuery, state: FSMContext):
 # =============================================================================
 # Delivery Guy LOGIC
 # =============================================================================
-
-@router.message(F.text == "🚴 Delivery Guys", F.from_user.id.in_(settings.ADMIN_IDS))
-async def admin_dgs_entry(message: Message, state: FSMContext):
-    await state.clear()
-    async with db._open_connection() as conn:
-        rows = await conn.fetch(
-            "SELECT id, name, phone, campus, active, blocked, total_deliveries, accepted_requests, total_requests, skipped_requests FROM delivery_guys ORDER BY id ASC"
-        )
-    if not rows:
-        await message.answer("⚠️ No delivery guys found.", reply_markup=get_main_menu_kb())
-        return
-
+def build_dg_list_text(rows) -> str:
     summary_lines = ["🚴 <b>Delivery Guys</b>", "━━━━━━━━━━━━━━━━━━━━━━"]
     for i, r in enumerate(rows, start=1):
         status_emoji = "🟢 Online" if r["active"] else "🔴 Offline"
@@ -623,11 +735,50 @@ async def admin_dgs_entry(message: Message, state: FSMContext):
         )
     summary_lines.append("━━━━━━━━━━━━━━━━━━━━━━")
     summary_lines.append("🔍 Select a DG below to view full details")
+    return "\n".join(summary_lines)
 
+
+def build_dg_list_kb(rows) -> InlineKeyboardMarkup:
     dgs = [{"id": r["id"], "name": r["name"]} for r in rows]
-    kb = get_dg_list_kb(dgs)
-    await message.answer("\n".join(summary_lines), reply_markup=kb, parse_mode="HTML")
-    
+    kb = get_dg_list_kb(dgs)  # reuse your existing helper
+    return kb
+
+
+@router.message(F.text == "🚴 Delivery Guys", F.from_user.id.in_(settings.ADMIN_IDS))
+async def admin_dgs_entry(message: Message, state: FSMContext):
+    await state.clear()
+    async with db._open_connection() as conn:
+        rows = await conn.fetch(
+            "SELECT id, name, phone, campus, active, blocked, total_deliveries, accepted_requests, total_requests, skipped_requests FROM delivery_guys ORDER BY id ASC"
+        )
+    if not rows:
+        await message.answer("⚠️ No delivery guys found.", reply_markup=get_main_menu_kb())
+        return
+
+    await message.answer(build_dg_list_text(rows), reply_markup=build_dg_list_kb(rows), parse_mode="HTML")
+
+
+@router.callback_query(F.data == "admin_dgs")
+async def dg_back_to_list(callback: CallbackQuery, state: FSMContext):
+    try:
+        await callback.answer()
+    except Exception:
+        pass
+    await state.clear()
+
+    async with db._open_connection() as conn:
+        rows = await conn.fetch(
+            "SELECT id, name, phone, campus, active, blocked, total_deliveries, accepted_requests, total_requests, skipped_requests FROM delivery_guys ORDER BY id ASC"
+        )
+    if not rows:
+        await callback.message.edit_text("⚠️ No delivery guys found.", reply_markup=get_main_menu_kb(), parse_mode="HTML")
+        return
+
+    try:
+        await callback.message.edit_text(build_dg_list_text(rows), reply_markup=build_dg_list_kb(rows), parse_mode="HTML")
+    except Exception:
+        await callback.message.answer(build_dg_list_text(rows), reply_markup=build_dg_list_kb(rows), parse_mode="HTML")
+
     
 @router.callback_query(F.data.startswith("dg_view:"))
 async def dg_view_callback(callback: CallbackQuery, state: FSMContext):
@@ -950,14 +1101,58 @@ async def dg_unblock(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
+# --- Delete Confirmation Flow ---
+def get_delete_confirm_kb(dg_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Confirm Delete", callback_data=f"dg_delete_confirm:{dg_id}"),
+            InlineKeyboardButton(text="❌ Cancel", callback_data=f"dg_view:{dg_id}")
+        ]
+    ])
+
 @router.callback_query(F.data.startswith("dg_delete:"))
-async def dg_delete(callback: CallbackQuery, state: FSMContext):
+async def dg_delete_init(callback: CallbackQuery, state: FSMContext):
+    dg_id = int(callback.data.split(":")[1])
+    await callback.message.edit_text(
+        f"⚠️ Are you sure you want to delete DG <code>{dg_id}</code>?",
+        parse_mode="HTML",
+        reply_markup=get_delete_confirm_kb(dg_id)
+    )
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("dg_delete_confirm:"))
+async def dg_delete_confirm(callback: CallbackQuery, state: FSMContext):
     dg_id = int(callback.data.split(":")[1])
     async with db._open_connection() as conn:
         await conn.execute("DELETE FROM delivery_guys WHERE id=$1", dg_id)
     await callback.message.edit_text("🗑 DG deleted successfully.")
     await callback.answer()
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+# --- Edit Campus Flow ---
+@router.callback_query(F.data.startswith("dg_edit_campus:"))
+async def dg_edit_campus_init(callback: CallbackQuery, state: FSMContext):
+    dg_id = int(callback.data.split(":")[1])
+    await state.update_data(dg_id=dg_id)
+    await callback.message.edit_text(
+        "🏛 Enter the new campus for this Delivery Guy:",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    await state.set_state(DGEditStates.dg_edit_campus)
+    await callback.answer()
+
+@router.message(DGEditStates.dg_edit_campus)
+async def dg_edit_campus_captured(message: Message, state: FSMContext):
+    data = await state.get_data()
+    new_campus = message.text.strip()
+    async with db._open_connection() as conn:
+        await conn.execute(
+            "UPDATE delivery_guys SET campus=$1 WHERE id=$2",
+            new_campus, data["dg_id"]
+        )
+    await message.answer(f"✅ Campus updated to <b>{new_campus}</b>.", parse_mode="HTML", reply_markup=get_main_menu_kb())
+    await state.clear()
+
+
 
 @router.callback_query(F.data.startswith("dg_stats:"))
 async def dg_stats(callback: CallbackQuery, state: FSMContext):
@@ -1229,24 +1424,91 @@ async def block_dg_execute(call: CallbackQuery, state: FSMContext, db: Database,
 # ==============================================================================
 @router.message(F.text == "📈 Analytics", F.from_user.id.in_(settings.ADMIN_IDS))
 async def analytics_view(message: Message):
-    # Mock data - Replace with DB calls
-    stats = {
-        "users": 5230,
-        "orders_today": 142,
-        "active_fleet": 18,
-        "conversion": "4.2%"
-    }
-    
+    async with db._open_connection() as conn:
+        # Users
+        users_total = await conn.fetchval("SELECT COUNT(*) FROM users")
+        users_active = await conn.fetchval("SELECT COUNT(*) FROM users WHERE status='active'")
+        users_blocked = await conn.fetchval("SELECT COUNT(*) FROM users WHERE status!='active'")
+
+        # Orders
+        orders_today = await conn.fetchval("SELECT COUNT(*) FROM orders WHERE created_at::date=CURRENT_DATE")
+        completed_orders = await conn.fetchval("SELECT COUNT(*) FROM orders WHERE status='delivered' AND created_at::date=CURRENT_DATE")
+        cancelled_orders = await conn.fetchval("SELECT COUNT(*) FROM orders WHERE status='cancelled' AND created_at::date=CURRENT_DATE")
+        avg_order_value = await conn.fetchval("SELECT AVG(food_subtotal+delivery_fee) FROM orders WHERE status='delivered' AND created_at::date=CURRENT_DATE")
+        revenue_today = await conn.fetchval("SELECT COALESCE(SUM(food_subtotal+delivery_fee),0) FROM orders WHERE status='delivered' AND created_at::date=CURRENT_DATE")
+
+        # Fleet
+        active_fleet = await conn.fetchval("SELECT COUNT(*) FROM delivery_guys WHERE active=TRUE AND blocked=FALSE")
+        total_fleet = await conn.fetchval("SELECT COUNT(*) FROM delivery_guys")
+        fleet_utilization = f"{(active_fleet/total_fleet*100):.1f}%" if total_fleet else "0%"
+        avg_acceptance_rate = await conn.fetchval(
+            "SELECT AVG(acceptance_rate) FROM daily_stats WHERE date::date = CURRENT_DATE"
+        )
+
+        # Vendors
+        vendors_total = await conn.fetchval("SELECT COUNT(*) FROM vendors")
+        vendors_active = await conn.fetchval("SELECT COUNT(*) FROM vendors WHERE status='active'")
+        top_vendor = await conn.fetchrow("""
+            SELECT v.name, COUNT(*) AS orders
+            FROM orders o
+            JOIN vendors v ON o.vendor_id=v.id
+            WHERE o.created_at::date=CURRENT_DATE
+            GROUP BY v.name
+            ORDER BY orders DESC LIMIT 1
+        """)
+
+        # Ratings
+        avg_delivery_rating = await conn.fetchval("SELECT AVG(stars) FROM ratings WHERE type='delivery'")
+        avg_vendor_rating = await conn.fetchval("SELECT AVG(stars) FROM ratings WHERE type='vendor'")
+        ratings_today = await conn.fetchval("SELECT COUNT(*) FROM ratings WHERE created_at::date=CURRENT_DATE")
+
+        # System health
+        jobs_today = await conn.fetchval("SELECT COUNT(*) FROM jobs_log WHERE created_at::date=CURRENT_DATE")
+        tickets_open = await conn.fetchval("SELECT COUNT(*) FROM tickets WHERE status='open'")
+        subs_active = await conn.fetchval("SELECT COUNT(*) FROM subscriptions WHERE status='active'")
+
+    conversion_rate = f"{(completed_orders/orders_today*100):.1f}%" if orders_today else "0%"
+
     txt = (
-        "<b>📈 LIVE TELEMETRY</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"👥 <b>Total Users:</b> <code>{stats['users']}</code>\n"
-        f"📦 <b>Orders (24h):</b> <code>{stats['orders_today']}</code>\n"
-        f"🛵 <b>Fleet Active:</b> <code>{stats['active_fleet']}</code>\n"
-        f"📊 <b>Conversion:</b> <code>{stats['conversion']}</code>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "<i>Data updated: Just now</i>"
-    )
+    "<b>📈 LIVE TELEMETRY</b>\n"
+    "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    "👥 <b>Users</b>\n"
+    f"   • Total: <code>{users_total}</code>\n"
+    f"   • Active: <code>{users_active}</code>\n"
+    f"   • Blocked: <code>{users_blocked}</code>\n\n"
+
+    "📦 <b>Orders (Today)</b>\n"
+    f"   • Total: <code>{orders_today}</code>\n"
+    f"   • Completed: ✅ {completed_orders}\n"
+    f"   • Cancelled: ❌ {cancelled_orders}\n"
+    f"   • Conversion: <code>{conversion_rate}</code>\n"
+    f"   • Avg Value: {avg_order_value:.1f} ETB\n"
+    f"   • Revenue: {revenue_today} ETB\n\n"
+
+    "🚴 <b>Fleet</b>\n"
+    f"   • Active: <code>{active_fleet}</code> / {total_fleet}\n"
+    f"   • Utilization: {fleet_utilization}\n"
+    f"   • Avg Acceptance Rate: {avg_acceptance_rate:.1f}%\n\n"
+
+    "🏪 <b>Vendors</b>\n"
+    f"   • Total: <code>{vendors_total}</code>\n"
+    f"   • Active: {vendors_active}\n"
+    f"   • Top Today: {top_vendor['name']} ({top_vendor['orders']} orders)\n\n"
+
+    "⭐ <b>Ratings</b>\n"
+    f"   • Delivery: {avg_delivery_rating:.1f}\n"
+    f"   • Vendor: {avg_vendor_rating:.1f}\n"
+    f"   • Submitted Today: {ratings_today}\n\n"
+
+    "🛡 <b>System Health</b>\n"
+    f"   • Jobs Today: {jobs_today}\n"
+    f"   • Tickets Open: {tickets_open}\n"
+    f"   • Active Subs: {subs_active}\n"
+    "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    "<i>Data updated: Just now</i>"
+)
+
+
     await message.answer(txt, parse_mode="HTML")
 
 @router.message(F.text == "💰 Finance", F.from_user.id.in_(settings.ADMIN_IDS))
