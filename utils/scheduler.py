@@ -908,7 +908,7 @@ class BotScheduler:
                 CronTrigger(hour=23, minute=0),
                 id="admin_summary"
             )
-            self.scheduler.add_job(self.send_admin_summary, "interval", minutes=5)  # run every 1 minute for testing
+            # self.scheduler.add_job(self.send_admin_summary, "interval", minutes=5)  # run every 1 minute for testing
 
         # Cleanup every 6 hours
         self.scheduler.add_job(

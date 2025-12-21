@@ -671,7 +671,13 @@ async def send_orders_page(message_or_callback, user_id: int, page: int):
             items = []
 
         if items:
-            counts = Counter(items)
+            # Extract names from dicts or use string directly
+            names = [
+                i["name"] if isinstance(i, dict) else str(i)
+                for i in items
+            ]
+            counts = Counter(names)
+
             # Show up to 2 unique items with counts
             items_preview = " • ".join(
                 f"{name} x{count}" if count > 1 else name
