@@ -6,7 +6,7 @@ import json
 import logging
 import math
 import datetime
-from datetime import date
+from datetime import date, timedelta
 from typing import Optional, List, Dict, Any
 from aiogram.exceptions import TelegramBadRequest
 
@@ -96,8 +96,11 @@ async def show_vendor_dashboard(message: Message):
     rating_text = ""
     if rating_avg > 0:
         rating_text = f"⭐ አማካይ ደረጃ: {rating_avg:.1f} ({rating_count} አስተያየት)\n"
+    
+    
+    from datetime import date
         
-    today = datetime.date.today()
+    today = date.today()
     async with db._open_connection() as conn:
         today_orders = await conn.fetchval(
             """
@@ -1028,10 +1031,10 @@ async def vendor_performance(message: Message):
         return
 
     # Fresh daily summary
-    s = await calc_vendor_day_summary(db, vendor["id"], date_str=datetime.date.today().strftime("%Y-%m-%d"))
-    today = datetime.date.today()
-    start = today - datetime.timedelta(days=today.weekday())
-    end = start + datetime.timedelta(days=6)
+    s = await calc_vendor_day_summary(db, vendor["id"], date_str=date.today().strftime("%Y-%m-%d"))
+    today = date.today()
+    start = today - timedelta(days=today.weekday())
+    end = start + timedelta(days=6)
 
     async with db._open_connection() as conn:
        weekly_total = await conn.fetchval(
@@ -1151,9 +1154,9 @@ async def performance_week_orders(message: Message):
         await message.answer("⚠️ ሱቅ አልተገኘም።")
         return
 
-    today = datetime.date.today()
-    start = today - datetime.timedelta(days=today.weekday())   # Monday
-    end = start + datetime.timedelta(days=6)                   # Sunday
+    today = date.today()
+    start = today - timedelta(days=today.weekday())   # Monday
+    end = start + timedelta(days=6)                   # Sunday
 
     # total across range
     async with db._open_connection() as conn:
@@ -1204,24 +1207,31 @@ async def performance_week_orders(message: Message):
 
 @router.callback_query(F.data.startswith("perf:weekly:page:"))
 async def perf_weekly_page(cb: CallbackQuery):
+    from datetime import datetime
     await cb.answer()
     # perf:weekly:page:{page}:{start_date}:{end_date}
     parts = cb.data.split(":")
     page = int(parts[3])
-    start_date = parts[4]
-    end_date = parts[5]
+
+    # Convert string payloads into proper date objects
+    start_date = datetime.strptime(parts[4], "%Y-%m-%d").date()
+    end_date = datetime.strptime(parts[5], "%Y-%m-%d").date()
+
     vendor = await db.get_vendor_by_telegram(cb.from_user.id)
     if not vendor:
         await cb.message.answer("⚠️ ሱቅ አልተገኘም።")
         return
 
     async with db._open_connection() as conn:
-        async with conn.execute(
-            "SELECT COUNT(*) FROM orders WHERE vendor_id = ? AND DATE(created_at) BETWEEN ? AND ?",
-            (vendor["id"], start_date, end_date)
-        ) as cur:
-            row = await cur.fetchone()
-            total = int(row[0])
+        row = await conn.fetchrow(
+            """
+            SELECT COUNT(*) 
+            FROM orders 
+            WHERE vendor_id = $1 AND DATE(created_at) BETWEEN $2 AND $3
+            """,
+            vendor["id"], start_date, end_date
+        )
+        total = int(row[0]) if row else 0
 
     page_size = 5
     pages = max(1, math.ceil(total / page_size))
@@ -1237,9 +1247,9 @@ async def perf_weekly_page(cb: CallbackQuery):
         return
 
     for o in orders:
-        items = ", ".join(i.get("name","") for i in json.loads(o.get("items_json") or "[]"))
-        campus_text = await db.get_user_campus_by_order(o['id'])
-        dropoff = f"{campus_text}" if campus_text else 'N/A'
+        items = ", ".join(i.get("name", "") for i in json.loads(o.get("items_json") or "[]"))
+        campus_text = await db.get_user_campus_by_order(o["id"])
+        dropoff = f"{campus_text}" if campus_text else "N/A"
 
         await cb.message.answer(
             f"📦 ትዕዛዝ #{o['id']} — {o['status']}\n"
@@ -1248,7 +1258,7 @@ async def perf_weekly_page(cb: CallbackQuery):
             f"📍 መድረሻ: {dropoff}"
         )
 
-    payload = f"{start_date}:{end_date}"
+    payload = f"{parts[4]}:{parts[5]}"  # keep original string payload for buttons
     kb = paginate_orders_kb(page=page, pages=pages, scope="weekly", extra_payload=payload)
     await cb.message.answer(f"📄 ገጽ {page}/{pages}", reply_markup=kb)
 
