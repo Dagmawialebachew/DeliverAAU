@@ -1051,12 +1051,20 @@ async def show_order_detail(callback: CallbackQuery):
 
 # import inspect
 from aiogram.types import CallbackQuery
-
-@router.callback_query(F.data.startswith("order:back:") | F.data.startswith("order:refresh:") | F.data.startswith("order:"))
+@router.callback_query(
+    F.data.startswith("order:back:") |
+    F.data.startswith("order:refresh:") |
+    F.data.startswith("order:")
+)
 async def back_to_summary(callback: CallbackQuery):
     parts = callback.data.split(":")
     action = parts[1] if len(parts) > 1 else ""
-    order_id = int(parts[-1])
+
+    # Safely parse order_id
+    order_id = None
+    if parts and parts[-1].isdigit():
+        order_id = int(parts[-1])
+
     internal_user_id = await db.get_internal_user_id(callback.from_user.id)
 
     if action == "close":
@@ -1067,35 +1075,29 @@ async def back_to_summary(callback: CallbackQuery):
                 await callback.message.edit_text("Closed.")
             except Exception:
                 pass
-        # Safe answer
-        if hasattr(callback, "answer"):
-            maybe = callback.answer()
-            if inspect.isawaitable(maybe):
-                await maybe
+        await callback.answer()
         return
 
-    text, kb = await render_order_summary(order_id)
-    if kb:
-        try:
-            await callback.message.edit_text(
-                text,
-                reply_markup=kb,
-                parse_mode="HTML",
-                disable_web_page_preview=True,
-            )
-        except Exception:
-            await callback.message.answer(
-                text,
-                reply_markup=kb,
-                parse_mode="HTML",
-                disable_web_page_preview=True,
-            )
+    # Only render summary if we have a valid numeric id
+    if order_id is not None:
+        text, kb = await render_order_summary(order_id)
+        if kb:
+            try:
+                await callback.message.edit_text(
+                    text,
+                    reply_markup=kb,
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
+                )
+            except Exception:
+                await callback.message.answer(
+                    text,
+                    reply_markup=kb,
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
+                )
 
-    # Safe answer again
-    if hasattr(callback, "answer"):
-        maybe = callback.answer()
-        if inspect.isawaitable(maybe):
-            await maybe
+    await callback.answer()
 
 # --- Inline Refresh / Close passthrough ---
 @router.callback_query(F.data.startswith("order:refresh:"))

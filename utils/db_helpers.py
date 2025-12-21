@@ -29,7 +29,6 @@ async def increment_skip(self, dg_id: int, max_skips: int = 3) -> int:
                 """
                 UPDATE delivery_guys 
                 SET skipped_requests = skipped_requests + 1, 
-                    total_requests = total_requests + 1,
                     last_skip_at = CURRENT_TIMESTAMP
                 WHERE id = $1
                 """,
@@ -87,6 +86,7 @@ async def calc_acceptance_rate(self, dg_id: int) -> float:
 
         total_requests = int(row["total_requests"] or 0)
         accepted_requests = int(row["accepted_requests"] or 0)
+        print(f"[DEBUG] DG {dg_id} - Accepted: {accepted_requests}, Total: {total_requests}")
 
         if total_requests <= 0:
             return 100.0  # No requests yet → full acceptance by definition

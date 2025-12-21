@@ -18,6 +18,20 @@ class Settings:
     ADMIN_IDS: list[int] = field(default_factory=lambda: env_list("ADMIN_IDS"))
     DB_PATH: str = os.getenv("DB_PATH", "./data/deliver_aau.db")
     MEDIA_ROOT: str = os.getenv("MEDIA_ROOT", "./media")
+    HALF_HALF_GLOBAL = [
+    {"id": 1, "name": "ፍርፍር በቀይ", "category": "HalfHalf"},
+    {"id": 2, "name": "ፍርፍር አልጫ", "category": "HalfHalf"},
+    {"id": 3, "name": "ፓስታ በአትክልት", "category": "HalfHalf"},
+    {"id": 4, "name": "ፓስታ በስጎ", "category": "HalfHalf"},
+    {"id": 5, "name": "ቴስቲ ጥብስ", "category": "HalfHalf"},
+    {"id": 6, "name": "ቴስቲ ለብለብ", "category": "HalfHalf"},
+    {"id": 7, "name": "ቴስቲ ወጥ", "category": "HalfHalf"},
+    {"id": 8, "name": "ምስር", "category": "HalfHalf"},
+    {"id": 9, "name": "ሽሮ", "category": "HalfHalf"},
+    {"id": 10, "name": "ድንች ወጥ", "category": "HalfHalf"},
+    # add more global half-half items here
+]
+
 
     # Strict fees / rules (no distance math)
     AGENT_BASE_PAY: int = int(os.getenv("AGENT_BASE_PAY", "25"))

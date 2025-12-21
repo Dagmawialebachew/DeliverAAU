@@ -5,7 +5,7 @@ import contextlib
 import json
 import logging
 from typing import List, Dict, Any, Tuple, Optional
-
+from config import settings
 from aiogram import Router, F
 from aiogram.types import (
     Message, CallbackQuery,
@@ -22,7 +22,7 @@ from database.db import Database
 from utils.helpers import haversine
 from utils.helpers import assign_delivery_guy
 from handlers.onboarding import main_menu
-
+HALF_HALF_GLOBAL = settings.HALF_HALF_GLOBAL
 router = Router()
 from app_context import db
 
@@ -36,6 +36,22 @@ class OrderStates(StatesGroup):
     campus_choice = State()   # <-- add this
     notes = State()
     confirm = State()
+    half_half = State()  # new state for ሃፍ ሃፍ flow
+
+
+
+def is_half_parent_by_name(item: Dict[str, Any]) -> bool:
+    # Identify half-parent by exact name match
+    return item.get("name") == "ሃፍ ሃፍ"
+
+def composite_key(parent_id: int, a: int, b: int) -> str:
+    a, b = sorted((a, b))
+    return f"half:{parent_id}:{a}:{b}"
+
+def parse_composite_key(key: str) -> Tuple[int,int,int]:
+    # returns (parent, a, b)
+    parts = key.split(":")
+    return int(parts[1]), int(parts[2]), int(parts[3])
 
 
 # --- Main menu placeholder ---
@@ -52,8 +68,7 @@ def places_keyboard(vendors: List[Dict[str, Any]]) -> InlineKeyboardMarkup:
         rows.append(buf)
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
-
-def menu_keyboard(items: List[Dict[str, Any]], cart_counts: Dict[int, int], page: int, page_size: int = 8) -> InlineKeyboardMarkup:
+def menu_keyboard(items: List[Dict[str, Any]], cart_counts: Dict[Any, int], page: int, page_size: int = 8) -> InlineKeyboardMarkup:
     total_pages = max(1, (len(items) + page_size - 1) // page_size)
     page = max(1, min(page, total_pages))
     start = (page - 1) * page_size
@@ -62,13 +77,23 @@ def menu_keyboard(items: List[Dict[str, Any]], cart_counts: Dict[int, int], page
     rows: List[List[InlineKeyboardButton]] = []
     buf: List[InlineKeyboardButton] = []
 
-    # Numeric buttons with quantity highlight
     for it in page_items:
+        # Base count for normal items
         count = cart_counts.get(it["id"], 0)
+
+        # If this is the half-half parent, add all composite counts
+        if is_half_parent_by_name(it):
+            composite_total = sum(
+                qty for key, qty in cart_counts.items()
+                if isinstance(key, str) and key.startswith(f"half:{it['id']}:")
+            )
+            count += composite_total
+
         if count > 0:
             label = f"✅ {it['id']} (x{count})"
         else:
             label = str(it["id"])
+
         buf.append(InlineKeyboardButton(
             text=label,
             callback_data=f"cart:toggle:{it['id']}"
@@ -127,7 +152,6 @@ def dropoff_keyboard(campus: str) -> InlineKeyboardMarkup:
 
 def live_choice_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📡 Share Live Location", callback_data="live:request")],
         [
             InlineKeyboardButton(text="🏛 Preset Spot", callback_data="live:preset"),
             InlineKeyboardButton(text="🏫 Change Campus", callback_data="live:campus")
@@ -186,11 +210,14 @@ def paginate_menu(menu: List[Dict[str, Any]], page: int, page_size: int = 8) -> 
     start = (page - 1) * page_size
     return menu[start:start + page_size], page, total_pages
 
-def render_menu_text(menu: List[Dict[str, Any]], vendor_name: str) -> str:
-    grouped = {}
-    for item in menu:
-        cat = item.get("category", "Other")
-        grouped.setdefault(cat, []).append(item)
+
+def render_menu_text(menu: List[Dict[str, Any]], vendor_name: str, page: int = 1, page_size: int = 8) -> str:
+    # Pagination
+    total = len(menu)
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    page = max(1, min(page, total_pages))
+    start = (page - 1) * page_size
+    page_items = menu[start:start + page_size]
 
     lines = [
         f"🍴 *Today's Menu at {vendor_name}*",
@@ -198,34 +225,56 @@ def render_menu_text(menu: List[Dict[str, Any]], vendor_name: str) -> str:
         "✨ Pick your favorites below ✨"
     ]
 
-    for cat, items in grouped.items():
-        # Category header with emoji flair
-        lines.append(f"\n🔹 *{cat}*")
-        for it in items:
-            lines.append(f"{it['id']}️⃣ {it['name']} — *{it['price']} birr*")
+    current_cat = None
+    for it in page_items:
+        cat = it.get("category", "Other")
+        if cat != current_cat:
+            lines.append(f"\n🔹 *{cat}*")
+            current_cat = cat
+        lines.append(f"{it['id']}️⃣ {it['name']} — *{it['price']} birr*")
 
-    # Closing line with call to action
     lines.append("\n🛒 *Tap the numbers below to add items to your cart!*")
     lines.append("───────────────────────────────")
     lines.append("💡 You can view your cart anytime.")
+    lines.append(f"\n📄 Page {page}/{total_pages}")
 
     return "\n".join(lines)
 
-
-def render_cart(cart_counts: Dict[int,int], menu: List[Dict[str,Any]]) -> Tuple[str,float]:
+def render_cart(cart_counts: Dict[Any,int], menu: List[Dict[str,Any]], half_lookup: Optional[Dict[str,List[int]]] = None) -> Tuple[str,float]:
+    half_lookup = half_lookup or {}
+    by_id = {m["id"]: m for m in menu}
     subtotal = 0
     lines = ["🛒 Your Cart"]
-    for item_id, qty in cart_counts.items():
-        item = next((m for m in menu if m["id"] == item_id), None)
-        if not item:
-            continue
-        subtotal += item["price"] * qty
-        lines.append(f"{item['name']} x{qty} — {item['price'] * qty} birr")
+
+    for raw_key, qty in cart_counts.items():
+        if isinstance(raw_key, str) and raw_key.startswith("half:"):
+            lookup = half_lookup.get(raw_key)
+            if not lookup or len(lookup) != 2:
+                continue
+            a_id, b_id = lookup
+            a = next((m for m in HALF_HALF_GLOBAL if m["id"] == a_id), None)
+            b = next((m for m in HALF_HALF_GLOBAL if m["id"] == b_id), None)
+            if not a or not b:
+                continue
+            parent_id, _, _ = parse_composite_key(raw_key)
+            parent = by_id.get(parent_id)
+            price_each = parent["price"] if parent and parent.get("price") else 0
+            subtotal += price_each * qty
+            lines.append(f"ሃፍ ሃፍ: {a['name']} + {b['name']} x{qty} — {price_each * qty} birr")
+
+        else:
+            # normal item (keys may be ints)
+            item_id = int(raw_key)
+            item = by_id.get(item_id)
+            if not item:
+                continue
+            subtotal += item["price"] * qty
+            lines.append(f"{item['name']} x{qty} — {item['price'] * qty} birr")
+
     lines.append("-----------------")
     lines.append(f"💵 Subtotal: {subtotal} birr")
     lines.append("──────────────────────")
     return "\n".join(lines), subtotal
-
 
 # --- Flow handlers ---
 @router.message(F.text == "🛒 Order")
@@ -240,10 +289,73 @@ async def start_order(message: Message, state: FSMContext):
         await message.answer("No spots are available yet. Please try again later.")
         return
 
-    sent = await message.answer("Choose your spot ↓", reply_markup=places_keyboard(vendors))
+    # Build vendor names string
+    vendor_names_list = "\n".join(f"🏛 {v['name']}" for v in vendors)
+
+    sent = await message.answer(
+        f"🔥 Today's open spots:\n{vendor_names_list}\n\nTap below to order ↓",
+        reply_markup=places_keyboard(vendors)
+)
+
+
     await state.set_state(OrderStates.choose_place)
-    await state.update_data(selected_ids=[], vendor=None, menu=None, menu_page=1, pivot_msg_id=sent.message_id)
+    await state.update_data(
+        selected_ids=[],
+        vendor=None,
+        menu=None,
+        menu_page=1,
+        pivot_msg_id=sent.message_id
+    )
     
+
+def render_half_half_text(vendor_name: str, options: List[Dict[str, Any]], selected_ids: List[int]) -> str:
+    lines = [
+        f"🍽 *Half-Half at {vendor_name}*",
+        "Pick exactly two dishes to combine:",
+        "━━━━━━━━━━━━━━━━━━━━━━"
+    ]
+
+    buf = []
+    for it in options:
+        mark = "✅" if it["id"] in selected_ids else "◻️"
+        label = f"{mark} {it['id']}. {it['name']}"
+        buf.append(label)
+
+        # When we have 2 items, join them into one row
+        if len(buf) == 2:
+            lines.append("   ".join(buf))
+            buf = []
+
+    # If odd number of items, flush the last one
+    if buf:
+        lines.append("   ".join(buf))
+
+    lines.append("\n🧩 Selected: " + (", ".join(str(i) for i in selected_ids) if selected_ids else "none"))
+    lines.append("───────────────────────────────")
+    lines.append("💡 Tap items to toggle. Confirm when you have two.")
+    return "\n".join(lines)
+
+
+def half_half_keyboard(options: List[Dict[str, Any]], selected_ids: List[int]) -> InlineKeyboardMarkup:
+    rows: List[List[InlineKeyboardButton]] = []
+    buf: List[InlineKeyboardButton] = []
+    for it in options:
+        selected = it["id"] in selected_ids
+        label = f"{'✅ ' if selected else ''}{it['id']}"
+        buf.append(InlineKeyboardButton(text=label.strip(), callback_data=f"half:toggle:{it['id']}"))
+        if len(buf) == 4:
+            rows.append(buf); buf = []
+    if buf:
+        rows.append(buf)
+
+    rows.append([
+        InlineKeyboardButton(text="✅ Confirm", callback_data="half:confirm"),
+        InlineKeyboardButton(text="⬅️ Back", callback_data="half:back"),
+        InlineKeyboardButton(text="❌ Cancel", callback_data="half:cancel"),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
     
 @router.callback_query(OrderStates.choose_place, F.data.startswith("place:"))
 async def choose_place(cb: CallbackQuery, state: FSMContext):
@@ -270,13 +382,15 @@ async def choose_place(cb: CallbackQuery, state: FSMContext):
 
     await cb.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
     await state.set_state(OrderStates.menu)
-
+    
+    
 @router.callback_query(OrderStates.menu, F.data.startswith("menu:page:"))
 async def menu_paginate(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
     data = await state.get_data()
     menu = data.get("menu", []) or []
     vendor = data.get("vendor", {})
+    cart_counts: Dict[int,int] = data.get("cart_counts", {})  # <-- add this
     page = int(cb.data.split(":")[2])
 
     # Update current page in state
@@ -286,26 +400,51 @@ async def menu_paginate(cb: CallbackQuery, state: FSMContext):
     text = render_menu_text(menu, vendor.get("name", "Unknown Spot"))
 
     # Build numeric keyboard for this page
-    kb = menu_keyboard(menu, page=page)
+    kb = menu_keyboard(menu, cart_counts, page)  # <-- pass cart_counts
 
     # Update both text + buttons
     await cb.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
 
-
-MAX_QTY = 2
-MAX_CART_ITEMS = 5
 
 
 @router.callback_query(OrderStates.menu, F.data.startswith("cart:toggle:"))
 async def cart_toggle_item(cb: CallbackQuery, state: FSMContext):
     item_id = int(cb.data.split(":")[2])
     data = await state.get_data()
-    cart_counts: Dict[int,int] = data.get("cart_counts", {})
+    menu = data.get("menu", []) or []
+    vendor = data.get("vendor", {}) or {}
+    cart_counts: Dict = data.get("cart_counts", {}) or {}
 
+    item = next((m for m in menu if m["id"] == item_id), None)
+    if not item:
+        await cb.answer("Item not found", show_alert=True)
+        return
+
+    # If this is the half-parent, open half-half flow
+    if is_half_parent_by_name(item):
+    # Use the global list instead of vendor menu
+        half_options = HALF_HALF_GLOBAL
+        if len(half_options) < 2:
+            await cb.answer("Not enough items available for half-half.", show_alert=True)
+            return
+
+        await state.update_data(
+            half_parent_id=item_id,
+            half_options=half_options,
+            half_selected_ids=[]
+        )
+
+        text = render_half_half_text(vendor.get("name", "Unknown Spot"), half_options, [])
+        kb = half_half_keyboard(half_options, [])
+        await cb.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+        await state.set_state(OrderStates.half_half)
+        return
+
+    # --- existing toggle logic for normal items continues below ---
     current_qty = cart_counts.get(item_id, 0)
-
-    # Count total items in cart
     total_items = sum(cart_counts.values())
+    MAX_QTY = 2
+    MAX_CART_ITEMS = 3
 
     if current_qty < MAX_QTY:
         if total_items >= MAX_CART_ITEMS:
@@ -319,29 +458,108 @@ async def cart_toggle_item(cb: CallbackQuery, state: FSMContext):
 
     await state.update_data(cart_counts=cart_counts)
 
-    menu = data.get("menu", [])
     page = data.get("menu_page", 1)
     kb = menu_keyboard(menu, cart_counts, page)
-    text = render_menu_text(menu, data["vendor"]["name"])
+    text = render_menu_text(menu, vendor.get("name", "Unknown Spot"), page=page)
     await cb.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+
+
+
+@router.callback_query(OrderStates.half_half, F.data.startswith("half:toggle:"))
+async def half_toggle(cb: CallbackQuery, state: FSMContext):
+    await cb.answer()
+    data = await state.get_data()
+    options: List[Dict[str, Any]] = data.get("half_options", [])
+    selected: List[int] = data.get("half_selected_ids", [])
+    pick_id = int(cb.data.split(":")[2])
+
+    if pick_id in selected:
+        selected.remove(pick_id)
+    else:
+        if len(selected) >= 2:
+            await cb.answer("Pick only two items.", show_alert=True)
+        else:
+            selected.append(pick_id)
+
+    # Ensure no duplicates
+    selected = list(dict.fromkeys(selected))
+
+    await state.update_data(half_selected_ids=selected)
+    vendor = data.get("vendor", {})
+    text = render_half_half_text(vendor.get("name", "Unknown Spot"), options, selected)
+    kb = half_half_keyboard(options, selected)
+    await cb.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+
+
+
+@router.callback_query(OrderStates.half_half, F.data == "half:confirm")
+async def half_confirm(cb: CallbackQuery, state: FSMContext):
+    await cb.answer()
+    data = await state.get_data()
+    selected: List[int] = data.get("half_selected_ids", [])
+    if len(selected) != 2:
+        await cb.answer("Please select exactly two items.", show_alert=True)
+        return
+
+    parent_id = data.get("half_parent_id")
+    key = composite_key(parent_id, selected[0], selected[1])
+
+    cart_counts: Dict = data.get("cart_counts", {}) or {}
+    cart_counts[key] = cart_counts.get(key, 0) + 1
+
+    half_lookup: Dict[str, List[int]] = data.get("half_lookup", {}) or {}
+    half_lookup[key] = sorted(selected)
+
+    await state.update_data(cart_counts=cart_counts, half_lookup=half_lookup)
+
+    # Return to menu view
+    menu = data.get("menu", []) or []
+    page = data.get("menu_page", 1)
+    text = render_menu_text(menu, data["vendor"]["name"], page=page)
+    kb = menu_keyboard(menu, cart_counts, page)
+    await cb.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    await state.set_state(OrderStates.menu)
+
+
+@router.callback_query(OrderStates.half_half, F.data == "half:back")
+async def half_back(cb: CallbackQuery, state: FSMContext):
+    await cb.answer()
+    data = await state.get_data()
+    menu = data.get("menu", []) or []
+    cart_counts: Dict = data.get("cart_counts", {}) or {}
+    page = data.get("menu_page", 1)
+    text = render_menu_text(menu, data["vendor"]["name"], page=page)
+    kb = menu_keyboard(menu, cart_counts, page)
+    await cb.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    await state.set_state(OrderStates.menu)
+
+
+@router.callback_query(OrderStates.half_half, F.data == "half:cancel")
+async def half_cancel(cb: CallbackQuery, state: FSMContext):
+    # same as back for now
+    await half_back(cb, state)
+
+
 
 @router.callback_query(OrderStates.menu, F.data == "cart:view")
 async def cart_view(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
     data = await state.get_data()
     menu = data.get("menu", []) or []
-    cart_counts: Dict[int,int] = data.get("cart_counts", {}) or {}
+    cart_counts: Dict = data.get("cart_counts", {}) or {}
+    half_lookup: Dict = data.get("half_lookup", {}) or {}
 
-    # Clean out any zero‑quantity entries
-    cart_counts = {iid: qty for iid, qty in cart_counts.items() if qty > 0}
+    cart_counts = {k: v for k, v in cart_counts.items() if v > 0}
 
     if not cart_counts:
         await cb.answer("Your cart is empty.", show_alert=True)
         return
 
-    text, subtotal = render_cart(cart_counts, menu)
+    text, subtotal = render_cart(cart_counts, menu, half_lookup=half_lookup)
     await state.update_data(food_subtotal=subtotal, cart_counts=cart_counts)
     await cb.message.edit_text(text, reply_markup=cart_keyboard())
+
+
 
 @router.callback_query(OrderStates.menu, F.data == "cart:addmore")
 async def cart_add_more(cb: CallbackQuery, state: FSMContext):
@@ -416,7 +634,7 @@ async def cart_confirm(cb: CallbackQuery, state: FSMContext):
     # Tell them clearly which campus is active
     await cb.message.edit_text(
         f"📍 Your meal will be delivered to **{campus} campus** (your home base).\n\n"
-        "• If you’re at this campus, choose a preset spot or share live location.\n"
+        "• If you’re at this campus, choose a preset spot\n"
         "• If you need this order delivered to another campus, tap **Change Campus (temporary)**.\n"
         "• To permanently update your home base, go to ⚙️ Settings later.\n\n"
         "Choose how you want to set your drop‑off:",
@@ -445,8 +663,11 @@ async def live_request(cb: CallbackQuery, state: FSMContext):
     
     # 2. Prepare the InlineKeyboardMarkup (Alternatives)
     inline_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🏛 Preset Spot", callback_data="live:preset")],
-        [InlineKeyboardButton(text="✍️ Type Other", callback_data="live:other")],
+        [
+            InlineKeyboardButton(text="🏛 Preset Spot", callback_data="live:preset"),
+            InlineKeyboardButton(text="🏫 Change Campus", callback_data="live:campus")
+        ],
+        [InlineKeyboardButton(text="✍️ Type Other", callback_data="live:other"), InlineKeyboardButton(text="❌ Cancel", callback_data="live:cancel")]
         [InlineKeyboardButton(text="❌ Cancel & Hide Button", callback_data="live:cancel")]
     ])
     
@@ -502,9 +723,11 @@ async def location_flow_cancel_and_return(cb: CallbackQuery, state: FSMContext):
     
     # 2. Re-present the primary drop-off options
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📡 Share Live Location", callback_data="live:request")],
-        [InlineKeyboardButton(text="🏛 Preset Spot", callback_data="live:preset")],
-        [InlineKeyboardButton(text="✍️ Type Other", callback_data="live:other")]
+        [
+            InlineKeyboardButton(text="🏛 Preset Spot", callback_data="live:preset"),
+            InlineKeyboardButton(text="🏫 Change Campus", callback_data="live:campus")
+        ],
+        [InlineKeyboardButton(text="✍️ Type Other", callback_data="live:other"), InlineKeyboardButton(text="❌ Cancel", callback_data="live:cancel")]
     ])
     
     # 3. Edit the current alternatives message to reset the menu
@@ -605,10 +828,13 @@ async def handle_shared_location(message: Message, state: FSMContext):
 async def live_change(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📡 Share live location", callback_data="live:request")],
-        [InlineKeyboardButton(text="🏛 Preset Spot", callback_data="live:preset")],
-        [InlineKeyboardButton(text="✍️ Type Other", callback_data="live:other")]
+        [
+            InlineKeyboardButton(text="🏛 Preset Spot", callback_data="live:preset"),
+            InlineKeyboardButton(text="🏫 Change Campus", callback_data="live:campus")
+        ],
+        [InlineKeyboardButton(text="✍️ Type Other", callback_data="live:other"), InlineKeyboardButton(text="❌ Cancel", callback_data="live:cancel")]
     ])
+    
     await cb.message.edit_text("🔄 Update your drop‑off location:", reply_markup=kb)
     await state.set_state(OrderStates.live_choice)
 
@@ -745,6 +971,7 @@ async def ask_final_confirmation(message: Message, state: FSMContext):
 
     menu = data.get("menu", []) or []
     cart_counts: Dict[int,int] = data.get("cart_counts", {})
+    half_lookup: Dict[str,List[int]] = data.get("half_lookup", {}) or {}
     dropoff = data.get("dropoff", "")
     notes = data.get("notes", "")
 
@@ -757,8 +984,20 @@ async def ask_final_confirmation(message: Message, state: FSMContext):
         return
 
     # Render cart summary from counts
-    text, subtotal = render_cart(cart_counts, menu)
-    delivery_fee = 20.0
+    # Count total items in cart
+    text, subtotal = render_cart(cart_counts, menu, half_lookup=half_lookup)
+
+# Dynamic delivery fee based on number of items
+    total_items = sum(cart_counts.values())
+    if total_items == 1:
+        delivery_fee = 20.0
+    elif total_items == 2:
+        delivery_fee = 35.0
+    elif total_items == 3:
+        delivery_fee = 45.0
+    else:
+        delivery_fee = 45.0  # or extend logic for 4+ items
+
     total = subtotal + delivery_fee
     dropoff = data.get("dropoff", "N/A")
     campus_text = await db.get_user_campus_by_order(data.get("order_id", 0))
@@ -808,6 +1047,36 @@ async def ask_final_confirmation(message: Message, state: FSMContext):
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
+
+def build_breakdown_json(cart_counts: dict, menu: list, half_lookup: dict) -> tuple[list[dict], float]:
+    by_id = {m["id"]: m for m in menu}
+    items = []
+    subtotal = 0
+
+    for key, qty in cart_counts.items():
+        if isinstance(key, str) and key.startswith("half:"):
+            lookup = half_lookup.get(key)
+            if lookup and len(lookup) == 2:
+                a = next((m["name"] for m in HALF_HALF_GLOBAL if m["id"] == lookup[0]), "")
+                b = next((m["name"] for m in HALF_HALF_GLOBAL if m["id"] == lookup[1]), "")
+                items.append({"name": f"ሃፍ ሃፍ: {a} + {b}", "qty": qty})
+                # price comes from parent "ሃፍ ሃፍ" item
+                parent_id = int(key.split(":")[1])
+                parent = by_id.get(parent_id)
+                if parent:
+                    subtotal += parent["price"] * qty
+        else:
+            item = by_id.get(int(key))
+            if item:
+                items.append({"name": item["name"], "qty": qty})
+                subtotal += item["price"] * qty
+
+    breakdown = {
+        "items": items,
+        "subtotal": subtotal,
+    }
+    return breakdown, subtotal
+
     # 🎯 Step 2: Handle Final Confirmation (removes inline buttons, shows main menu during placement)
 @router.callback_query(OrderStates.confirm, F.data == "final:confirm")
 async def final_confirm(cb: CallbackQuery, state: FSMContext):
@@ -828,9 +1097,10 @@ async def final_confirm(cb: CallbackQuery, state: FSMContext):
 
     # Get all order-related data from FSM
     data = await state.get_data()
-    print('here is the data about the order', data)
     menu = data.get("menu", []) or []
     cart_counts: Dict[int,int] = data.get("cart_counts", {})
+    half_lookup: Dict[str,List[int]] = data.get("half_lookup", {}) or {}
+
     live_coords = data.get("live_coords")
 
     if not cart_counts:
@@ -848,16 +1118,16 @@ async def final_confirm(cb: CallbackQuery, state: FSMContext):
         cart_items.extend([item] * qty)
 
     # Prepare order breakdown
-    breakdown = {
-        "items": [item["name"] for item in cart_items],
-        "subtotal": subtotal,
+    breakdown, subtotal = build_breakdown_json(cart_counts, menu, half_lookup)
+
+# Add extra fields
+    breakdown.update({
         "delivery_fee": float(data.get("delivery_fee", 0.0)),
         "notes": data.get("notes", ""),
         "live_shared": bool(live_coords),
         "drop_lat": float(live_coords["lat"]) if live_coords and live_coords.get("lat") else None,
         "drop_lon": float(live_coords["lon"]) if live_coords and live_coords.get("lon") else None,
-    }
-
+    })
     # Vendor details
     vendor = data.get("vendor") or {}
     vendor_id = vendor.get("id")
@@ -868,30 +1138,31 @@ async def final_confirm(cb: CallbackQuery, state: FSMContext):
     # Create order entry in DB
     order_id = await db.create_order(
         user_id=user["id"],
-        delivery_guy_id=None,  # not assigned yet
+        delivery_guy_id=None,
         vendor_id=vendor_id,
         pickup=vendor_name,
         dropoff=data.get("dropoff", ""),
-        items_json=json.dumps(cart_items),
+        items_json=json.dumps(breakdown["items"], ensure_ascii=False),
         food_subtotal=subtotal,
         delivery_fee=float(data.get("delivery_fee", 0.0)),
         status="pending",
         payment_method="cod",
         payment_status="unpaid",
         receipt_id=0,
-        breakdown_json=json.dumps(breakdown),
+        breakdown_json=json.dumps(breakdown, ensure_ascii=False),
     )
+
 
     # Notify vendor
     vendor_chat_id = vendor.get("telegram_id")
     if vendor_chat_id:
-        counts = Counter([i.get("name", "") for i in cart_items if isinstance(i, dict)])
+        counts = Counter([i["name"] for i in breakdown["items"]])
         items = "\n".join(
             f"• {name} x{count}" if count > 1 else f"• {name}"
             for name, count in counts.items()
         ) or "—"
+
         campus_text = await db.get_user_campus_by_order(order_id)
-    
 
         vendor_text = (
             f"📦 አዲስ ትዕዛዝ #{order_id}\n"
@@ -933,7 +1204,7 @@ async def final_confirm(cb: CallbackQuery, state: FSMContext):
     
 
     # 🧾 Build order summary preview for student
-    cart_text, subtotal = render_cart(cart_counts, menu)
+    cart_text, subtotal = render_cart(cart_counts, menu, half_lookup=half_lookup)
     final_preview = (
         f"🎉 *Order #{order_id} Confirmed!*\n"
         "──────────────────────\n"

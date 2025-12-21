@@ -813,24 +813,37 @@ class BotScheduler:
         log.info("Running daily leaderboard reset task")
         # Placeholder for future leaderboard reset logic
     async def send_admin_summary(self) -> None:
-        """Send daily summary to admins."""
+        """Send daily summary (operational + financial + vendor payouts) to admins."""
         log.info("Sending admin summary")
 
         try:
-            # Use AnalyticsService to compute everything
             analytics = AnalyticsService(self.db)
-            summary = await analytics.summary_text()
 
-            # Send to all admins (group or individual IDs)
+            # Compute all summaries
+            summary = await analytics.summary_text()
+            financial_summary = await analytics.summary_financial_text()
+            # vendor_summary = await analytics.vendor_payouts_text()  # new method we discussed
+
+            # Send to admin group
             try:
-                    await self.bot.send_message(
-                        ADMIN_GROUP_ID,
-                        summary,
-                        parse_mode="Markdown"
-                    )
-                    log.info(f"✅ Sent summary to admin {ADMIN_GROUP_ID}")
+                await self.bot.send_message(
+                    ADMIN_GROUP_ID,
+                    summary,
+                    parse_mode="Markdown"
+                )
+                await self.bot.send_message(
+                    ADMIN_GROUP_ID,
+                    financial_summary,
+                    parse_mode="Markdown"
+                )
+                # await self.bot.send_message(
+                #     ADMIN_GROUP_ID,
+                #     vendor_summary,
+                #     parse_mode="Markdown"
+                # )
+                log.info(f"✅ Sent summaries to admin {ADMIN_GROUP_ID}")
             except Exception as e:
-                    log.error(f"❌ Failed to send summary to admin {ADMIN_GROUP_ID}: {e}")
+                log.error(f"❌ Failed to send summaries to admin {ADMIN_GROUP_ID}: {e}")
 
         except Exception as e:
             log.error(f"Error in admin summary task: {e}")
@@ -895,7 +908,7 @@ class BotScheduler:
                 CronTrigger(hour=23, minute=0),
                 id="admin_summary"
             )
-            # self.scheduler.add_job(self.send_admin_summary, "interval", minutes=0.2)  # run every 1 minute for testing
+            self.scheduler.add_job(self.send_admin_summary, "interval", minutes=5)  # run every 1 minute for testing
 
         # Cleanup every 6 hours
         self.scheduler.add_job(

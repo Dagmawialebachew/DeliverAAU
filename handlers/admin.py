@@ -23,7 +23,7 @@ from aiogram.types import (
 from config import settings
 from app_context import db
 from utils.helpers import time_ago  # wherever you placed the helper
-from database.db import Database 
+from database.db import AnalyticsService, Database 
 # Initialize Router
 router = Router()
 
@@ -396,8 +396,8 @@ async def vendor_edit_init(callback: CallbackQuery, state: FSMContext):
         await callback.answer("⚠️ Vendor not found.", show_alert=True)
         return
 
-    # Pre‑fill FSM with existing data
     preview_msg = await callback.message.edit_text("Loading vendor data...")
+    
     await state.update_data(
         card_message_id=preview_msg.message_id,
         edit_mode=True,
@@ -413,8 +413,8 @@ async def vendor_edit_init(callback: CallbackQuery, state: FSMContext):
         message_id=preview_msg.message_id,
         data=await state.get_data()
     )
-    await state.set_state(AdminStates.vendor_confirm)
-
+    # FIX: Set to edit_menu so the edit buttons are handled
+    await state.set_state(AdminStates.vendor_edit_menu)
 
 @router.callback_query(F.data == "edit_vendor_id", AdminStates.vendor_edit_menu)
 async def edit_vendor_id(callback: CallbackQuery, state: FSMContext):
@@ -507,12 +507,12 @@ async def edit_vendor_status(callback: CallbackQuery, state: FSMContext):
     await state.set_state(AdminStates.vendor_get_status)
     await callback.answer()
 
+
 @router.callback_query(F.data.startswith("status_"), AdminStates.vendor_get_status)
 async def vendor_status_updated(callback: CallbackQuery, state: FSMContext):
     status = callback.data.replace("status_", "")
     await state.update_data(v_status=status)
 
-    # Refresh preview card
     data = await state.get_data()
     await render_vendor_edit_preview(
         bot=callback.bot,
@@ -521,9 +521,19 @@ async def vendor_status_updated(callback: CallbackQuery, state: FSMContext):
         data=data
     )
 
-    await state.set_state(AdminStates.vendor_confirm)
-    await callback.answer()
+    # Allow more edits or confirmation
+    await state.set_state(AdminStates.vendor_edit_menu) 
+    await callback.answer("Status updated in preview.")
 
+# Handle the Confirm Button specifically for the Edit Menu
+@router.callback_query(F.data == "vendor_edit_confirm", AdminStates.vendor_edit_menu)
+async def vendor_edit_confirm_trigger(callback: CallbackQuery, state: FSMContext):
+    # Transition to the final commit state
+    await state.set_state(AdminStates.vendor_confirm)
+    # Manually trigger the commit logic
+    await vendor_commit(callback, state)
+    
+    
 @router.message(AdminStates.vendor_get_id)
 async def vendor_id_captured(message: Message, state: FSMContext):
     if not message.text.isdigit():
@@ -541,23 +551,55 @@ async def vendor_id_captured(message: Message, state: FSMContext):
     await state.set_state(AdminStates.vendor_get_name)
     
     
+# --- ID UPDATE HANDLER ---
+@router.message(AdminStates.vendor_get_id)
+async def vendor_id_captured(message: Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("⚠️ ID must be numeric. Try again.")
+        return
+
+    await state.update_data(v_id=int(message.text))
+    data = await state.get_data()
+
+    if data.get("edit_mode"):
+        # Return to Edit Menu
+        await render_vendor_edit_preview(
+            bot=message.bot, chat_id=message.chat.id,
+            message_id=data["card_message_id"], data=data
+        )
+        await state.set_state(AdminStates.vendor_edit_menu)
+    else:
+        # Continue Onboarding
+        await message.answer(
+            "<b>🏪 VENDOR DEPLOYMENT // STEP 2/3</b>\n"
+            "Enter the <b>Display Name</b> for this Vendor.",
+            parse_mode="HTML"
+        )
+        await state.set_state(AdminStates.vendor_get_name)
+
+# --- NAME UPDATE HANDLER ---
 @router.message(AdminStates.vendor_get_name)
 async def vendor_name_captured(message: Message, state: FSMContext):
     await state.update_data(v_name=message.text)
     data = await state.get_data()
-    
-    summary = (
-        "<b>📋 REVIEW DEPLOYMENT DATA</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🆔 <b>Telegram ID:</b> <code>{data['v_id']}</code>\n"
-        f"🏷 <b>Name:</b> {data['v_name']}\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n"
-        "<i>Confirm to commit this Vendor to the database?</i>"
-    )
-    await message.answer(summary, parse_mode="HTML", reply_markup=get_confirm_cancel_kb("vendor"))
-    await state.set_state(AdminStates.vendor_confirm)
-    
-  
+
+    if data.get("edit_mode"):
+        # Return to Edit Menu
+        await render_vendor_edit_preview(
+            bot=message.bot, chat_id=message.chat.id,
+            message_id=data["card_message_id"], data=data
+        )
+        await state.set_state(AdminStates.vendor_edit_menu)
+    else:
+        # Show Review for New Vendor
+        summary = (
+            "<b>📋 REVIEW DEPLOYMENT DATA</b>\n"
+            f"🆔 ID: <code>{data['v_id']}</code>\n"
+            f"🏷 Name: {data['v_name']}\n"
+            "Confirm to commit to database?"
+        )
+        await message.answer(summary, parse_mode="HTML", reply_markup=get_confirm_cancel_kb("vendor"))
+        await state.set_state(AdminStates.vendor_confirm)
   
 @router.callback_query(F.data.startswith("vendor_status:"))
 async def vendor_status_view(callback: CallbackQuery):
@@ -1509,8 +1551,9 @@ async def analytics_view(message: Message):
 )
 
 
-    await message.answer(txt, parse_mode="HTML")
-
+    await message.answer(txt, parse_mode="HTML", reply_markup=get_analytics_kb())
+    
+    
 @router.message(F.text == "💰 Finance", F.from_user.id.in_(settings.ADMIN_IDS))
 async def finance_view(message: Message):
     # Mock data
@@ -1640,3 +1683,44 @@ async def close_ticket(cb: CallbackQuery):
     await db.close_ticket(ticket_id)
     await cb.bot.send_message(ticket["user_id"], "✅ Your support ticket has been closed. Thank you!")
     await cb.answer("Ticket closed.")
+
+
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+
+def get_analytics_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🔙 Back to Main Menu")],
+            [KeyboardButton(text="📊 Today's Analytics")],
+            [KeyboardButton(text="💰 Financial Summary")],
+            [KeyboardButton(text="🚚 Delivery Report")],
+        ],
+        resize_keyboard=True
+    )
+
+
+@router.message(F.text == "🔙 Back to Main Menu", F.from_user.id.in_(settings.ADMIN_IDS))
+async def back_to_main_menu(message: Message, state: FSMContext):
+    # Reuse your existing admin_entry to go back to dashboard
+    await admin_entry(message, state)
+
+
+@router.message(F.text == "📊 Today's Analytics", F.from_user.id.in_(settings.ADMIN_IDS))
+async def todays_analytics(message: Message):
+    analytics = AnalyticsService(db)
+    summary = await analytics.summary_text()
+    await message.answer(summary, parse_mode="Markdown")
+
+
+@router.message(F.text == "💰 Financial Summary", F.from_user.id.in_(settings.ADMIN_IDS))
+async def financial_summary(message: Message):
+    analytics = AnalyticsService(db)
+    summary = await analytics.summary_financial_text()
+    await message.answer(summary, parse_mode="Markdown")
+
+
+@router.message(F.text == "🚚 Delivery Report", F.from_user.id.in_(settings.ADMIN_IDS))
+async def delivery_report(message: Message):
+    analytics = AnalyticsService(db)
+    report = await analytics.delivery_report_text()
+    await message.answer(report, parse_mode="Markdown")

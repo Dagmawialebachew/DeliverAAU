@@ -44,7 +44,7 @@ from utils.db_helpers import (
     get_latest_active_order_for_dg,
     add_dg_to_blacklist
 )
-from utils.helpers import eta_and_distance
+from utils.helpers import calculate_commission, eta_and_distance
 
 # Router + DB
 router = Router()
@@ -122,7 +122,7 @@ def location_request_keyboard() -> ReplyKeyboardMarkup:
     """Temporary keyboard to request location."""
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="📍 Share My Location (Optional)", request_location=True)],
+            # [KeyboardButton(text="📍 Share My Location (Optional)", request_location=True)],
             [KeyboardButton(text="🏠 Back to Dashboard")]
 
         ],
@@ -151,7 +151,6 @@ def accepted_order_actions(order_id: int, status: str) -> InlineKeyboardMarkup:
     if status == "in_progress":
         # Delivery is ongoing
         buttons = [
-            InlineKeyboardButton(text="📍 Live Update", callback_data=f"update_location_{order_id}"),
             InlineKeyboardButton(text="📦 Mark Delivered", callback_data=f"delivered_{order_id}")
 
         ]
@@ -538,7 +537,7 @@ async def _go_online_logic(message: Message, dg: Dict[str, Any]):
     # Send confirmation and prompt for location
     await message.answer(
         "✅ **You’re now online and ready to receive orders!**\n"
-        "📍 Tap the button below to share your **Live Location**.\n"
+        # "📍 Tap the button below to share your **Live Location**.\n"
         "This will automatically update your location for order assignment and tracking.",
         reply_markup=location_request_keyboard(),
         parse_mode="Markdown"
@@ -1033,7 +1032,25 @@ async def handle_delivered(call: CallbackQuery):
     try:
         # Update order status to delivered
         await db.update_order_status(order_id, "delivered", dg["id"])
-        # await db.increment_total_deliveries(dg["id"])
+
+        # Commission calculation
+        food_subtotal = float(order.get("food_subtotal") or 0)
+        items_json = order.get("items_json", "[]")
+        breakdown  = calculate_commission(items_json)
+
+        async with db._open_connection() as conn:
+            await conn.execute(
+                """
+                UPDATE orders
+                SET breakdown_json = $2,
+                    delivered_at = NOW()
+                WHERE id = $1
+                """,
+                order_id,
+                json.dumps(breakdown)
+            )
+
+
         # Update DG stats (total deliveries, active flag)
         await db.set_delivery_guy_online(dg["id"])
     except Exception:
@@ -1290,7 +1307,7 @@ async def notify_student(bot, order: Dict[str, Any], status: str) -> None:
     f"👤 Partner: *{dg_name}* ({campus})\n"
     f"📍 Drop-off: {dropoff}\n\n"
     "🧭 Track every step in *📍 Track Order*.\n\n"
-    "✨ Sit back, relax — your food is on its way!"
+    "✨ Sit back and relax — we're getting everything ready behind the scenes!"
 )
 
             await bot.send_message(student_tg, msg, reply_markup=kb, parse_mode="Markdown")

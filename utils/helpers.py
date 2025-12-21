@@ -245,6 +245,16 @@ async def rank_candidates(db, order: Dict[str, Any], candidates: List[Dict[str, 
 
 
 
+def campus_priority_order(student_campus: str) -> list[str]:
+    priority_map = {
+        "6kilo": ["6kilo", "FBE", "5kilo", "4kilo"],
+        "FBE":   ["FBE", "6kilo", "5kilo", "4kilo"],
+        "5kilo": ["5kilo", "4kilo", "6kilo", "FBE"],
+        "4kilo": ["4kilo", "5kilo", "6kilo", "FBE"],
+    }
+    return priority_map.get(student_campus, [])
+
+
 async def assign_delivery_guy(
     db,
     order_id: int,
@@ -367,10 +377,40 @@ async def assign_delivery_guy(
         else:
             logging.info("[MATCH] Campus fallback")
             student_campus = student.get("campus") if student else None
-            for dg in candidates:
-                if dg.get("campus") == student_campus:
+            priority = campus_priority_order(student_campus)
+
+            for campus in priority:
+                logging.info("[CAMPUS_CHECK] Trying campus=%s", campus)
+
+                campus_candidates = [
+                    dg for dg in candidates if dg.get("campus") == campus
+                ]
+
+                logging.info(
+                    "[CAMPUS_CHECK] Found %d candidate(s) in campus=%s",
+                    len(campus_candidates),
+                    campus
+                )
+
+                for dg in campus_candidates:
+                    logging.info(
+                        "[CAMPUS_CANDIDATE] id=%s name=%s active_orders=%s score=%.2f",
+                        dg.get("id"),
+                        dg.get("name"),
+                        dg.get("active_orders"),
+                        dg.get("score", 0.0),
+                    )
+
                     chosen = dg
-                    logging.info(f"[MATCH] Campus match → {dg.get('name')}")
+                    logging.info(
+                        "[CAMPUS_SELECTED] DG %s (%s) selected via campus=%s",
+                        dg.get("name"),
+                        dg.get("id"),
+                        campus
+                    )
+                    break
+
+                if chosen:
                     break
             if not chosen and candidates:
                 chosen = candidates[0]
@@ -391,10 +431,10 @@ async def assign_delivery_guy(
             "UPDATE orders SET breakdown_json = $1 WHERE id = $2",
             json.dumps(breakdown), order_id
         )
-        await conn.execute(
-            "UPDATE delivery_guys SET total_requests = total_requests + 1 WHERE id = $1",
-            dg_id
-        )
+        # await conn.execute(
+        #     "UPDATE delivery_guys SET total_requests = total_requests + 1 WHERE id = $1",
+        #     dg_id
+        # )
 
         today = datetime.date.today().strftime("%Y-%m-%d")
         await conn.execute(
@@ -436,6 +476,8 @@ async def assign_delivery_guy(
 
     logging.info(f"[END] Assignment for order {order_id}")
     return chosen
+
+
 async def find_next_candidate(db, order_id: int, order: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
     Returns the next eligible delivery guy dict to offer the order to,
@@ -513,10 +555,47 @@ async def find_next_candidate(db, order_id: int, order: Dict[str, Any]) -> Optio
                 # campus fallback
                 student = await db.get_user_by_id(order["user_id"])
                 student_campus = student.get("campus") if student else None
-                for dg in candidates:
-                    if dg.get("campus") == student_campus:
+                priority = campus_priority_order(student_campus)
+                
+                logging.info(
+    "[CAMPUS_FALLBACK] Student campus=%s | Priority order=%s",
+    student_campus,
+    " → ".join(priority) if priority else "NONE"
+)
+
+
+                for campus in priority:
+                    logging.info("[CAMPUS_CHECK] Trying campus=%s", campus)
+
+                    campus_candidates = [
+                        dg for dg in candidates if dg.get("campus") == campus
+                    ]
+
+                    logging.info(
+                        "[CAMPUS_CHECK] Found %d candidate(s) in campus=%s",
+                        len(campus_candidates),
+                        campus
+                    )
+
+                    for dg in campus_candidates:
+                        logging.info(
+                            "[CAMPUS_CANDIDATE] id=%s name=%s active_orders=%s score=%.2f",
+                            dg.get("id"),
+                            dg.get("name"),
+                            dg.get("active_orders"),
+                            dg.get("score", 0.0),
+                        )
+
                         chosen = dg
-                        logging.info(f"[MATCH] Campus match → {dg.get('name')}")
+                        logging.info(
+                            "[CAMPUS_SELECTED] DG %s (%s) selected via campus=%s",
+                            dg.get("name"),
+                            dg.get("id"),
+                            campus
+                        )
+                        break
+
+                    if chosen:
                         break
                 if not chosen and candidates:
                     chosen = candidates[0]
@@ -643,3 +722,36 @@ def time_ago_am(dt: datetime.datetime) -> str:
         return "ትናንትና"
     else:
         return f"{days} ቀን በፊት"
+
+
+import json
+
+def calculate_commission(items_json: str) -> dict:
+    try:
+        items = json.loads(items_json)
+    except Exception:
+        items = []
+
+    total_commission = 0
+    subtotal = 0
+
+    for item in items:
+        price = item.get("price", 0)
+        subtotal += price
+
+        # Commission per item logic
+        if price >= 100:
+            total_commission += 10
+        elif 200 <= price < 300:
+            total_commission += 15
+        elif 300 <= price < 400:
+            total_commission += 20
+        # else: no commission
+
+    return {
+        "platform_share": total_commission,
+        "vendor_share": subtotal - total_commission,
+        "items": [i.get("name") for i in items],
+        "subtotal": subtotal
+    }
+

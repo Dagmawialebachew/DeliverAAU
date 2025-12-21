@@ -1710,6 +1710,8 @@ class AnalyticsService:
 
         return f"""
 📊⚡Daily Summary — {data['date']}
+──────────────────────────────
+
 
 👥 USERS: {data['total_users']}
 
@@ -1746,19 +1748,247 @@ class AnalyticsService:
 🏆 TOP DELIVERER: {data['top_deliverer_name']} ({data['top_deliverer_xp']} XP)
 
 ⚡🧊 UniBites Delivery Bot • Powered by Neon Engine 🚀
+
+              ..
     """
+    
+    async def delivery_report_text(self) -> str:
+        from datetime import date
+        today = date.today()
+        today_str = today.strftime("%Y-%m-%d")
+
+        async with self.db._pool.acquire() as conn:
+            # Top drivers
+            try:
+                top_drivers = await self.db.get_top_drivers(today)
+            except Exception:
+                top_drivers = []
+
+            # Low acceptance alerts
+            driver_alerts = []
+            rows = await conn.fetch(
+                """
+                SELECT DISTINCT ds.dg_id, dg.name
+                FROM daily_stats ds
+                LEFT JOIN delivery_guys dg ON dg.id = ds.dg_id
+                WHERE ds.date = $1
+                """,
+                today_str
+            )
+            for r in rows:
+                from utils.db_helpers import calc_acceptance_rate
+                rate = await calc_acceptance_rate(self.db, r["dg_id"])
+                if rate < 80.0:
+                    driver_alerts.append(f"⚠️ {r['name']} • {rate:.1f}% acceptance")
+
+            # Vendor cancels
+            vendor_alerts = []
+            cancel_rows = await conn.fetch(
+                """
+                SELECT v.name, COUNT(*) AS cancels
+                FROM orders o
+                JOIN vendors v ON o.vendor_id = v.id
+                WHERE o.status = 'cancelled' AND o.created_at::DATE = $1
+                GROUP BY v.name
+                ORDER BY cancels DESC
+                LIMIT 5
+                """,
+                today
+            )
+            vendor_alerts = [f"- {r['name']} • {int(r['cancels'])} cancels" for r in cancel_rows]
+
+            # Engagement metric
+            reactivated_count = int(await conn.fetchval(
+                """
+                SELECT COUNT(*) FROM delivery_guys
+                WHERE last_online_at IS NOT NULL
+                AND last_online_at > (NOW() - INTERVAL '2 hours')
+                """
+            ) or 0)
+
+        admin_lines = [
+            "━━━━━━━━━━━━━━━━━━━━━━",
+            f"📢 **DELIVERY OPERATIONS DASHBOARD — {today_str}**",
+            "━━━━━━━━━━━━━━━━━━━━━━",
+            "🏆 **TOP PERFORMERS**:"
+        ]
+        if top_drivers:
+            for idx, td in enumerate(top_drivers, 1):
+                admin_lines.append(f"{idx}. **{td['name']}** — 🚚 {td['deliveries']} • 💵 {td['earnings']} birr")
+        else:
+            admin_lines.append("No top performers today.")
+
+        admin_lines.append("")
+        admin_lines.append("🚨 **ALERTS**")
+        admin_lines.extend(driver_alerts or ["- No driver alerts"])
+        admin_lines.extend(vendor_alerts or ["- No vendor alerts"])
+        admin_lines.append("")
+        admin_lines.append("📈 **ENGAGEMENT METRIC**")
+        admin_lines.append(f"⚡ {reactivated_count} drivers bounced back online within 2 hours.")
+
+        return "\n".join(admin_lines)
+    
+    async def summary_financial_text(self) -> str:
+        today = datetime.now()
+        header_date = today.strftime("%b %d, %Y · %A")  # "Dec 21, 2025 · Sunday"
+        yesterday = today - timedelta(days=1)
+
+        async with self.db._open_connection() as conn:
+            # --- Today totals ---
+            row_today = await conn.fetchrow("""
+                SELECT 
+                    SUM((breakdown_json::jsonb->>'vendor_share')::numeric) AS vendor_total,
+                    SUM((breakdown_json::jsonb->>'platform_share')::numeric) AS admin_total
+                FROM orders
+                WHERE status='delivered' AND delivered_at::date = CURRENT_DATE
+            """)
+            vendor_total = row_today["vendor_total"] or 0
+            admin_total = row_today["admin_total"] or 0
+
+            # --- Yesterday totals ---
+            row_yesterday = await conn.fetchrow("""
+                SELECT 
+                    SUM((breakdown_json::jsonb->>'vendor_share')::numeric) AS vendor_total,
+                    SUM((breakdown_json::jsonb->>'platform_share')::numeric) AS admin_total
+                FROM orders
+                WHERE status='delivered' AND delivered_at::date = CURRENT_DATE - INTERVAL '1 day'
+            """)
+            vendor_total_y = row_yesterday["vendor_total"] or 0
+            admin_total_y = row_yesterday["admin_total"] or 0
+
+            # --- Commission tiers (today only) ---
+            tiers = await conn.fetch("""
+                SELECT (breakdown_json::jsonb->>'platform_share')::int AS commission, COUNT(*) AS count
+                FROM orders
+                WHERE status='delivered' AND delivered_at::date = CURRENT_DATE
+                GROUP BY commission
+                ORDER BY commission
+            """)
+
+            # --- Vendors (today only) ---
+            vendors = await conn.fetch("""
+                SELECT v.name,
+                    COUNT(o.id) AS delivered_orders,
+                    SUM(o.food_subtotal) AS gross_food,
+                    SUM((o.breakdown_json::jsonb->>'platform_share')::numeric) AS commission,
+                    SUM((o.breakdown_json::jsonb->>'vendor_share')::numeric) AS vendor_payout
+                FROM orders o
+                JOIN vendors v ON o.vendor_id = v.id
+                WHERE o.status='delivered' AND o.delivered_at::date = CURRENT_DATE
+                GROUP BY v.name
+                ORDER BY vendor_payout DESC;
+            """)
+
+        # --- Format tier lines ---
+        tier_lines = "\n".join(
+        [f"      ▸ {(t['commission'] or 0)} birr tier: *{t['count']} orders*" for t in tiers]
+    ) or "       ▸ None"
+
+        # --- Format vendor lines ---
+        vendor_lines = "\n".join(
+        [
+            f"   • {v['name']}: Gross {(v['gross_food'] or 0):.2f} ብር | "
+            f"*Net {(v['vendor_payout'] or 0):.2f} ብር ({v['delivered_orders'] or 0} orders)*"
+            for v in vendors
+        ]
+    ) or "   • None"
+
+        # --- Gross totals ---
+        gross_total = vendor_total + admin_total
+        gross_total_y = vendor_total_y + admin_total_y
+
+        # --- Percentage change helper ---
+        def pct_change(today_val, yesterday_val):
+            if yesterday_val == 0:
+                return "N/A"
+            diff = today_val - yesterday_val
+            pct = (diff / yesterday_val) * 100
+            arrow = "⬆️" if diff > 0 else ("⬇️" if diff < 0 else "➡️")
+            return f"{arrow} {pct:.1f}% vs yesterday"
+
+        vendor_trend = pct_change(vendor_total, vendor_total_y)
+        admin_trend = pct_change(admin_total, admin_total_y)
+        gross_trend = pct_change(gross_total, gross_total_y)
+
+        return f"""
+━━━━━━━━━━━━━━━━━━━━━━
+💰⚡ *Financial Summary*
+            *{header_date}*
+━━━━━━━━━━━━━━━━━━━━━━
+
+🏪 *VENDORS*
+
+    • Total Vendor Revenue: *{vendor_total:.2f} ብር* 
+    ({vendor_trend})
+    
+    {vendor_lines}
+
+🛡 *ADMIN PROFIT*
+
+    • Total Commission: *{admin_total:.2f} ብር* 
+    ({admin_trend})
+    
+    {tier_lines}
+    
+    • Net Admin Profit: *{admin_total:.2f} ብር*
+
+📦 *GROSS REVENUE*
+
+    • Total Orders Revenue: *{gross_total:.2f} ብር* 
+    ({gross_trend})
+    
+    • Vendor Payouts: *{vendor_total:.2f} ብር*
+    • Admin Profit: *{admin_total:.2f} ብር*
+
+⚡ *UniBites Delivery — transparent payouts, clear profits 🚀*
+            """
+
 
 
 # -------------------- Seed Functions --------------------
 async def seed_vendors(db: Database) -> None:
     vendors = [
         {
-            "telegram_id": 100000001,
-            "name": "Wesagn Ertb",
+        "telegram_id": settings.VENDOR_IDS["Abudabi"],
+            "name": "Abudabi",
             "menu": [
-                {"id": 1, "name": "Normal Ertb", "price": 90, "category": "Mains"},
-                {"id": 2, "name": "Special Ertb", "price": 120, "category": "Mains"},
-               
+                {"id": 1, "name": "ሙሉ ኮርኒስ", "price": 250, "category": "Fasting"},
+                {"id": 2, "name": "ሃፍ ሃፍ", "price": 150, "category": "Fasting"},
+                # {"id": 3, "name": "ግማሽ ኮርኒስ", "price": 150, "category": "Fasting"},
+                # {"id": 4, "name": "ሙሉ አገልግል", "price": 280, "category": "Fasting"},
+                {"id": 5, "name": "ግማሽ አገልገል", "price": 170, "category": "Fasting"},
+                # {"id": 6, "name": "በየዓይነት", "price": 130, "category": "Fasting"},
+                # {"id": 7, "name": "ተጋቢኖ", "price": 140, "category": "Fasting"},
+                # {"id": 8, "name": "ፓስታ በስጎ", "price": 120, "category": "Fasting"},
+                # {"id": 9, "name": "ፓስታ በአትክልት", "price": 120, "category": "Fasting"},
+                # {"id": 10, "name": "ፓስታ በቴስቲ", "price": 120, "category": "Fasting"},
+                # {"id": 11, "name": "ፍርፍር በቀይ", "price": 120, "category": "Fasting"},
+                # {"id": 12, "name": "ፍርፍር በአልጫ", "price": 120, "category": "Fasting"},
+                # {"id": 13, "name": "ስፔሻል ሽሮ", "price": 120, "category": "Fasting"},
+                {"id": 14, "name": "ቴስቲ ወጥ", "price": 120, "category": "Fasting"},
+                {"id": 15, "name": "ቴስቲ ለብለብ", "price": 130, "category": "Fasting"},
+                {"id": 16, "name": "ቴስቲ ጥብስ", "price": 130, "category": "Fasting"},
+                # {"id": 17, "name": "ቴስቲ ምንቸት", "price": 130, "category": "Fasting"},
+                # {"id": 18, "name": "የጾም ድብልቅ", "price": 220, "category": "Fasting"},
+                # {"id": 19, "name": "ስፔሻል ፍርፍር", "price": 150, "category": "Fasting"},
+                # {"id": 20, "name": "ጥብስ", "price": 250, "category": "Non Fasting"},
+                # {"id": 21, "name": "ምንቸት", "price": 250, "category": "Non Fasting"},
+                {"id": 22, "name": "ስጋ ፍርፍር", "price": 180, "category": "Non Fasting"},
+                {"id": 23, "name": "ጥብስ ፍርፍር", "price": 220, "category": "Non Fasting"},
+                # {"id": 24, "name": "እንቁላል ፍርፍር", "price": 150, "category": "Non Fasting"},
+                # {"id": 25, "name": "እንቁላል በስጋ", "price": 200, "category": "Non Fasting"},
+                {"id": 26, "name": "ሙሉ ኮርኒስ", "price": 350, "category": "Non Fasting"},
+                # {"id": 27, "name": "ግማሽ ኮርኒስ", "price": 200, "category": "Non Fasting"},
+                # {"id": 28, "name": "ፓስታ በእንቁላል", "price": 150, "category": "Non Fasting"},
+                {"id": 29, "name": "ፓስታ በስጋ", "price": 180, "category": "Non Fasting"},
+                {"id": 31, "name": "ስፔሻል ፍርፍር", "price": 250, "category": "Non Fasting"},
+                # {"id": 32, "name": "እንቁላል በስጋ", "price": 200, "category": "Non Fasting"},
+                # {"id": 33, "name": "ሙሉ አገልግል", "price": 400, "category": "Non Fasting "},
+                {"id": 34, "name": "ግማሽ አገልግል", "price": 250, "category": "Non Fasting "},
+                # {"id": 35, "name": "ምስር በስጋ", "price": 180, "category": "Non Fasting "},
+                {"id": 36, "name": "ምስር በእንቁላል", "price": 150, "category": "Non Fasting "},
+                {"id": 37, "name": "አይብ", "price": 200, "category": "Non Fasting "},
+                # {"id": 30, "name": "ስፔሻል ኮርኒስ", "price": 400, "category": "Specials"},
             ],
         },
         # {
@@ -1793,7 +2023,7 @@ async def seed_vendors(db: Database) -> None:
 
     async with db._open_connection() as conn:
     # Delete all existing vendors
-        # await conn.execute("TRUNCATE TABLE vendors RESTART IDENTITY CASCADE")
+        await conn.execute("TRUNCATE TABLE vendors RESTART IDENTITY CASCADE")
 
         # Now insert fresh seed data
         for v in vendors:
