@@ -14,7 +14,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.types import Update, BotCommand, BotCommandScopeDefault, BotCommandScopeChat
 
 from config import settings
-from database.db import Database, generate_delivery_guy_row, seed_delivery_guys, seed_vendors, seed_specific_dg
+from database.db import Database, debug_list_delivery_guys, generate_delivery_guy_row, seed_delivery_guys, seed_vendors, seed_specific_dg
 from utils.scheduler import BotScheduler
 
 # Middlewares
@@ -291,7 +291,8 @@ async def start_polling():
       # 3. Seed data
     # await seed_delivery_guys(db)
     # await seed_specific_dg(db)
-    # await generate_delivery_guy_row(db, 6717771475)
+    # await generate_delivery_guy_row(db, 1701238322)
+    # await debug_list_delivery_guys(db)
     
         # 2. Reset schema (drop/recreate tables)
     # await db.reset_schema

@@ -415,7 +415,6 @@ class BotScheduler:
             today = date.today()
             yesterday = today - timedelta(days=1)
             today_str = today.strftime("%Y-%m-%d")
-            yesterday_str = yesterday.strftime("%Y-%m-%d")
 
             async with self.db._pool.acquire() as conn:
                 # 1) Archive yesterday's daily_stats and clear them (idempotent)
@@ -434,10 +433,10 @@ class BotScheduler:
                             acceptance_rate = EXCLUDED.acceptance_rate,
                             updated_at = CURRENT_TIMESTAMP;                        
                         """,
-                        yesterday_str
+                        yesterday
                     )
-                    await conn.execute("DELETE FROM daily_stats WHERE date = $1", yesterday_str)
-                    log.debug("Archived and cleared daily_stats for %s", yesterday_str)
+                    await conn.execute("DELETE FROM daily_stats WHERE date = $1", yesterday)
+                    log.debug("Archived and cleared daily_stats for %s", yesterday)
                 except Exception:
                     log.exception("Failed to archive/clear yesterday's daily_stats")
 
@@ -551,7 +550,7 @@ class BotScheduler:
                         LEFT JOIN delivery_guys dg ON dg.id = ds.dg_id
                         WHERE ds.date = $1
                         """,
-                        today_str
+                        today
                     )
                     for r in low_accept_rows:
                         try:
@@ -903,7 +902,7 @@ class BotScheduler:
         if ADMIN_GROUP_ID:
             self.scheduler.add_job(
                 self.send_admin_summary,
-                CronTrigger(hour=23, minute=0),
+                CronTrigger(hour=19, minute=0),
                 id="admin_summary"
             )
             # self.scheduler.add_job(self.send_admin_summary, "interval", minutes=5)  # run every 1 minute for testing
@@ -918,9 +917,11 @@ class BotScheduler:
         #cleanup the inactive delivery guys and send them summary at 23:59
         self.scheduler.add_job(
             self.reset_delivery_guys_and_send_summary,
-            CronTrigger(hour=23, minute=5),
+            CronTrigger(hour=19, minute=5),
             id="dg_daily_summary"
         )
+        # self.scheduler.add_job(self.reset_delivery_guys_and_send_summary, "interval", minutes=0.3)  # run every 1 minute for testing
+
 
 
         

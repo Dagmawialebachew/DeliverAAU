@@ -43,13 +43,12 @@ class ErrorHandlingMiddleware(BaseMiddleware):
                             "⚠️ Your request took too long. Please wait or try again."
                         )
 
-            # Notify admins
-            # if settings.ADMIN_ERROR_GROUP_ID and bot:
-            #     await bot.send_message(
-            #         settings.ADMIN_ERROR_GROUP_ID,
-            #         f"❌ Exception:\n{e}",
-            #         parse_mode=None
-            #     )
+            if settings.ADMIN_ERROR_GROUP_ID and bot:
+                await bot.send_message(
+                    settings.ADMIN_ERROR_GROUP_ID,
+                    f"❌ Exception:\n{e}",
+                    parse_mode=None
+                )
 
             return None
 

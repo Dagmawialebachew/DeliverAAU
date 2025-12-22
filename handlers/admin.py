@@ -855,6 +855,7 @@ async def dg_view_callback(callback: CallbackQuery, state: FSMContext):
     card_text = (
         f"🛵 <b>Delivery Guy: {dg['name']}</b>\n"
         f"📱 Phone: {dg['phone']}\n"
+        f"🆔 ID: <code>{dg['telegram_id']}</code>\n"
         f"🏛 Campus: {dg['campus']}\n"
         f"⚧ Gender: {dg.get('gender','—')}\n"
         f"⚡ Status: {status_emoji}\n"
@@ -993,7 +994,7 @@ async def dg_commit(call: CallbackQuery, state: FSMContext):
         
         new_gender = data['dg_gender'].strip().lower()
 
-        dg_id = await db.create_delivery_guy(user_id, data['dg_name'], data['dg_campus'], new_gender, data['dg_phone'])
+        dg_id = await db.create_delivery_guy(data['dg_id'], data['dg_name'], data['dg_campus'], new_gender, data['dg_phone'])
 
         await call.message.edit_text(
             f"✅ <b>AGENT ONBOARDED SUCCESSFULLY</b>\n"
@@ -1014,6 +1015,7 @@ class DGEditStates(StatesGroup):
     dg_edit_phone = State()
     dg_edit_campus = State()
     dg_edit_status = State()
+    dg_edit_tgid = State()
     dg_edit_gender = State()
 
 @router.callback_query(F.data.startswith("dg_edit:"))
@@ -1021,23 +1023,26 @@ async def dg_edit_init(callback: CallbackQuery, state: FSMContext):
     dg_id = int(callback.data.split(":")[1])
     await state.update_data(dg_id=dg_id)
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="✏️ Edit Phone", callback_data=f"dg_edit_phone:{dg_id}"),
-            InlineKeyboardButton(text="🏛 Edit Campus", callback_data=f"dg_edit_campus:{dg_id}")
-        ],
-        [
-            InlineKeyboardButton(text="⚡ Edit Status", callback_data=f"dg_edit_status:{dg_id}"),
-            InlineKeyboardButton(text="⚧ Edit Gender", callback_data=f"dg_edit_gender:{dg_id}")  # <-- NEW
-        ],
-        [
-            InlineKeyboardButton(text="⛔ Block", callback_data=f"dg_block:{dg_id}"),
-            InlineKeyboardButton(text="🗑 Delete", callback_data=f"dg_delete:{dg_id}")
-        ],
-        [
-            InlineKeyboardButton(text="📈 Stats", callback_data=f"dg_stats:{dg_id}"),
-            InlineKeyboardButton(text="⬅️ Back to List", callback_data="admin_dgs")
-        ]
-    ])
+    [
+        InlineKeyboardButton(text="✏️ Edit Phone", callback_data=f"dg_edit_phone:{dg_id}"),
+        InlineKeyboardButton(text="🏛 Edit Campus", callback_data=f"dg_edit_campus:{dg_id}")
+    ],
+    [
+        InlineKeyboardButton(text="⚡ Edit Status", callback_data=f"dg_edit_status:{dg_id}"),
+        InlineKeyboardButton(text="⚧ Edit Gender", callback_data=f"dg_edit_gender:{dg_id}")
+    ],
+    [
+        InlineKeyboardButton(text="🆔 Edit Telegram ID", callback_data=f"dg_edit_tgid:{dg_id}")  # ✅ NEW
+    ],
+    [
+        InlineKeyboardButton(text="⛔ Block", callback_data=f"dg_block:{dg_id}"),
+        InlineKeyboardButton(text="🗑 Delete", callback_data=f"dg_delete:{dg_id}")
+    ],
+    [
+        InlineKeyboardButton(text="📈 Stats", callback_data=f"dg_stats:{dg_id}"),
+        InlineKeyboardButton(text="⬅️ Back to List", callback_data="admin_dgs")
+    ]
+])
     await callback.message.edit_text("Choose a field to edit:", reply_markup=kb)
     await callback.answer()
 
@@ -1077,6 +1082,78 @@ async def dg_edit_gender_commit(message: Message, state: FSMContext):
     logger.info(f"[ADMIN:DG] Updated gender for DG {data['dg_id']} → {new_gender}")
     await state.clear()
 
+
+
+@router.callback_query(F.data.startswith("dg_edit_tgid:"))
+async def dg_edit_tgid_start(callback: CallbackQuery, state: FSMContext):
+    dg_id = int(callback.data.split(":")[1])
+    await state.update_data(dg_id=dg_id)
+
+    await callback.message.answer(
+        "🆔 Enter the **new Telegram ID** for this delivery agent.\n\n"
+        "⚠️ Must be numeric and belong to the agent’s Telegram account.",
+        reply_markup=ReplyKeyboardRemove(),
+        parse_mode="Markdown"
+    )
+
+    await state.set_state(DGEditStates.dg_edit_tgid)
+    await callback.answer()
+
+
+@router.message(DGEditStates.dg_edit_tgid)
+async def dg_edit_tgid_commit(message: Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("⚠️ Telegram ID must be numeric. Try again.")
+        return
+
+    new_tgid = int(message.text)
+    data = await state.get_data()
+    dg_id = data["dg_id"]
+
+    async with db._open_connection() as conn:
+        async with conn.transaction():
+
+            # 1️⃣ Get linked user_id
+            row = await conn.fetchrow(
+                "SELECT user_id FROM delivery_guys WHERE id=$1",
+                dg_id
+            )
+            if not row:
+                await message.answer("❌ Delivery agent not found.")
+                await state.clear()
+                return
+
+            user_id = row["user_id"]
+
+            # 2️⃣ Prevent Telegram ID collision
+            # exists = await conn.fetchval(
+            #     "SELECT 1 FROM users WHERE telegram_id=$1 AND id != $2",
+            #     new_tgid, user_id
+            # )
+            # if exists:
+            #     await message.answer("⚠️ This Telegram ID is already assigned to another user.")
+            #     return
+
+            # 3️⃣ Update users table
+            # await conn.execute(
+            #     "UPDATE users SET telegram_id=$1 WHERE id=$2",
+            #     new_tgid, user_id
+            # )
+
+            # 4️⃣ Update delivery_guys tabl
+            await conn.execute(
+                "UPDATE delivery_guys SET telegram_id=$1 WHERE id=$2",
+                new_tgid, dg_id
+            )
+
+    await message.answer(
+        f"✅ Telegram ID updated successfully.\n🆔 New ID: `{new_tgid}`",
+        reply_markup=get_main_menu_kb(),
+        parse_mode="Markdown"
+    )
+
+    logger.info(f"[ADMIN:DG] Updated Telegram ID for DG {dg_id} → {new_tgid}")
+    await state.clear()
 
 
 @router.callback_query(F.data.startswith("dg_edit_status:"))
@@ -1173,10 +1250,36 @@ async def dg_delete_init(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data.startswith("dg_delete_confirm:"))
 async def dg_delete_confirm(callback: CallbackQuery, state: FSMContext):
     dg_id = int(callback.data.split(":")[1])
+
     async with db._open_connection() as conn:
-        await conn.execute("DELETE FROM delivery_guys WHERE id=$1", dg_id)
-    await callback.message.edit_text("🗑 DG deleted successfully.")
+        async with conn.transaction():
+            # 1. Get linked user_id
+            row = await conn.fetchrow(
+                "SELECT user_id FROM delivery_guys WHERE id=$1",
+                dg_id
+            )
+
+            if not row or not row["user_id"]:
+                await callback.message.edit_text("⚠️ DG not found or already deleted.")
+                return
+
+            user_id = row["user_id"]
+
+            # 2. Delete delivery guy
+            await conn.execute(
+                "DELETE FROM delivery_guys WHERE id=$1",
+                dg_id
+            )
+
+            # 3. Delete user
+            await conn.execute(
+                "DELETE FROM users WHERE id=$1",
+                user_id
+            )
+
+    await callback.message.edit_text("🗑 Delivery Guy and linked user deleted successfully.")
     await callback.answer()
+
 
 # --- Edit Campus Flow ---
 @router.callback_query(F.data.startswith("dg_edit_campus:"))
@@ -1340,7 +1443,7 @@ async def dg_commit(call: CallbackQuery, state: FSMContext, db: Database):
              await call.message.edit_text("⚠️ <b>Error:</b> Agent already exists.", parse_mode="HTML")
              return
 
-        dg_id = await db.create_delivery_guy(user_id, data['dg_name'], data['dg_campus'])
+        dg_id = await db.create_delivery_guy(data['dg_id'], data['dg_name'], data['dg_campus'])
         
         await call.message.edit_text(
             f"✅ <b>AGENT ONBOARDED SUCCESSFULLY</b>\n"

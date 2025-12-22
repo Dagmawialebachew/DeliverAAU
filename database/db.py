@@ -969,6 +969,13 @@ class Database:
             "SELECT * FROM delivery_guys WHERE telegram_id = $1 LIMIT 1",
             telegram_id
         )
+        
+    async def get_delivery_guy_by_user_onboard(self, telegram_id: int):
+        return await self._pool.fetchrow(
+            "SELECT * FROM delivery_guys WHERE telegram_id = $1 LIMIT 1",
+            telegram_id
+        )
+
 
 
 
@@ -2231,7 +2238,7 @@ async def seed_specific_dg(db: Database) -> None:
     """
     Inspect and then delete a specific delivery guy and their user record by telegram_id.
     """
-    telegram_id = 6717771475  # the DG you want to remove
+    telegram_id = 1701238322  # the DG you want to remove
 
     async with db._open_connection() as conn:
         # Look up the user record first
@@ -2254,7 +2261,6 @@ async def seed_specific_dg(db: Database) -> None:
         else:
             print("⚠️ No delivery_guy found with telegram_id", telegram_id)
 
-        # Now delete
         # await conn.execute("DELETE FROM delivery_guys WHERE telegram_id = $1", telegram_id)
         # await conn.execute("DELETE FROM users WHERE telegram_id = $1", telegram_id)
 
@@ -2300,3 +2306,11 @@ async def generate_delivery_guy_row(db: Database, telegram_id: int) -> int:
 
     print(f"✅ Delivery guy row ensured for telegram_id {telegram_id}, id={dg_id}")
     return int(dg_id)
+
+
+
+
+async def debug_list_delivery_guys(db):
+    rows = await db._pool.fetch("SELECT * FROM delivery_guys ORDER BY id")
+    for r in rows:
+        print(dict(r))
