@@ -277,8 +277,23 @@ def render_cart(cart_counts: Dict[Any,int], menu: List[Dict[str,Any]], half_look
     return "\n".join(lines), subtotal
 
 # --- Flow handlers ---
+
 @router.message(F.text == "🛒 Order")
 async def start_order(message: Message, state: FSMContext):
+    # Check current time
+    from datetime import datetime, time
+    now = datetime.now().time()
+    if now >= time(21, 30) or now < time(7, 0):
+        await message.answer(
+            "🌙 <b>Ordering is closed for the night</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "We only accept orders between <b>7:00 AM</b> and <b>9:30 PM</b>.\n"
+            "Please come back during service hours — we’ll be ready with fresh spots!",
+            parse_mode="HTML"
+        )
+        return
+
+    # Normal flow
     user = await db.get_user(message.from_user.id)
     if not user:
         await message.answer("Please complete onboarding first with /start.")
@@ -289,7 +304,6 @@ async def start_order(message: Message, state: FSMContext):
         await message.answer("No spots are available yet. Please try again later.")
         return
 
-    # Build vendor names string
     vendor_names_list = "\n\n".join(f"🏛 <b>{v['name']}</b>" for v in vendors)
 
     sent = await message.answer(
@@ -303,7 +317,6 @@ async def start_order(message: Message, state: FSMContext):
         parse_mode="HTML"
     )
 
-
     await state.set_state(OrderStates.choose_place)
     await state.update_data(
         selected_ids=[],
@@ -312,7 +325,6 @@ async def start_order(message: Message, state: FSMContext):
         menu_page=1,
         pivot_msg_id=sent.message_id
     )
-    
 
 def render_half_half_text(vendor_name: str, options: List[Dict[str, Any]], selected_ids: List[int]) -> str:
     lines = [
