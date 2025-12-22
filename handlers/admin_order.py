@@ -385,7 +385,7 @@ async def render_order_card(
     return text, InlineKeyboardMarkup(inline_keyboard=kb_rows)
 
 
-def render_dg_list(
+async def render_dg_list(
     candidates: List[Dict],
     order_id: int,
     page: int,
@@ -394,8 +394,9 @@ def render_dg_list(
     parent_page: int,
     filter_key: str
 ) -> Tuple[str, InlineKeyboardMarkup]:
-    """Renders a paginated Delivery Guy list for assignment with hype neon UI."""
-
+    ...
+    
+    
     total_pages = max(1, math.ceil(total_count / page_size))
 
     # Base header
@@ -413,9 +414,13 @@ def render_dg_list(
         for dg in candidates:
             name = dg.get("name", "Unknown")
             campus = dg.get("campus", "N/A")
-            active_orders = dg.get("accepted_requests", 0)
 
-            btn_text = f"🛵 {name} • {campus} | 📊 Active: {active_orders}"
+            active_count, in_progress_count = await db.count_today_orders_for_dg(dg["id"])
+
+            btn_text = (
+                f"🛵 {name} • {campus} | "
+                f"📊 Active: {active_count} | 🚴 In‑Progress: {in_progress_count}"
+            )
 
             kb_rows.append([
                 InlineKeyboardButton(

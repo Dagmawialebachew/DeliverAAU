@@ -5,6 +5,8 @@ from typing import Optional, Dict, Any, List
 from aiogram import Bot
 from database.db import Database
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
+
+from utils.helpers import calculate_commission
 # Assuming db is initialized externally and passed as a path or instance
 log = logging.getLogger(__name__)
 
@@ -253,130 +255,165 @@ async def add_dg_to_blacklist(self, order_id: int, dg_id: int) -> None:
             logging.debug("[BLACKLIST] DG %s already in order %s blacklist", dg_id, order_id)
     # -------------------- Vendor Summaries (Postgres/asyncpg) --------------------
 async def calc_vendor_day_summary(self, vendor_id: int, date_str: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Returns a daily summary dict for a vendor.
-        Uses PostgreSQL's date and aggregate functions.
-        """
-        date_to_use = date.today()
-        
-        async with self._open_connection() as conn:
-            # 1. Orders totals
-            order_summary = await conn.fetchrow(
-                """
-                SELECT
-                    SUM(CASE WHEN status = 'delivered' THEN 1 ELSE 0 END) AS delivered_count,
-                    SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled_count,
-                    COALESCE(SUM(CASE WHEN status = 'delivered' THEN food_subtotal ELSE 0 END), 0.0) AS food_revenue,                    
-                    COALESCE(SUM(CASE WHEN status = 'delivered' THEN delivery_fee ELSE 0 END), 0.0) AS delivery_fees,
-                    COALESCE(SUM(CASE WHEN status IN ('accepted','in_progress','delivered') THEN 1 ELSE 0 END), 0) AS progressed
-                FROM orders
-                WHERE vendor_id = $1 AND DATE(created_at) = $2
-                """, 
-                vendor_id, date_to_use
-            )
+    """
+    Returns a daily summary dict for a vendor. Uses Python-side commission calculation
+    so the vendor sees only their share (net after commission).
+    """
+    date_to_use = date.today()
 
-            delivered = int(order_summary["delivered_count"])
-            cancelled = int(order_summary["cancelled_count"])
-            food_rev = float(order_summary["food_revenue"])
-            delivery_fees = float(order_summary["delivery_fees"])
-            progressed = int(order_summary["progressed"])
+    async with self._open_connection() as conn:
+        # fetch orders for the day (only delivered/cancelled/progressed statuses as needed)
+        rows = await conn.fetch(
+            """
+            SELECT id, status, items_json, food_subtotal, delivery_fee, created_at
+            FROM orders
+            WHERE vendor_id = $1 AND DATE(created_at) = $2
+            """,
+            vendor_id, date_to_use
+        )
 
-            # 2. Vendor ratings snapshot
-            vendor_info = await conn.fetchrow(
-                "SELECT name, rating_avg, rating_count FROM vendors WHERE id = $1", vendor_id
-            )
+        # initialize counters
+        delivered = 0
+        cancelled = 0
+        progressed = 0
+        vendor_share_total = 0.0
+        delivery_fees_total = 0.0  # if you still want to show delivery fees separately
 
-            vendor_name = (vendor_info["name"] if vendor_info else "Unknown")
-            rating_avg = float(vendor_info["rating_avg"] if vendor_info and vendor_info.get("rating_avg") is not None else 0.0)
-            rating_count = int(vendor_info["rating_count"] if vendor_info and vendor_info.get("rating_count") is not None else 0)
+        for r in rows:
+            status = r["status"]
+            if status == "delivered":
+                delivered += 1
+            if status == "cancelled":
+                cancelled += 1
+            if status in ("accepted", "in_progress", "delivered"):
+                progressed += 1
 
-            # 3. Reliability calc
-            denom = progressed + cancelled
-            reliability_pct = 0 if denom == 0 else round(100.0 * progressed / denom)
+            # compute commission/vendor share for this order
+            items_json = r.get("items_json") or "[]"
+            try:
+                commission = calculate_commission(items_json)  # adapt if signature differs
+                vendor_share = float(commission.get("vendor_share", 0.0))
+            except Exception:
+                # fallback: treat vendor_share as 0 if commission calc fails
+                vendor_share = 0.0
 
-        return {
-            "date": date_to_use,
-            "vendor_name": vendor_name,
-            "delivered": delivered,
-            "cancelled": cancelled,
-            "food_revenue": food_rev,
-            "delivery_fees": delivery_fees,
-            "total_payout": food_rev + delivery_fees,
-            "rating_avg": rating_avg,
-            "rating_count": rating_count,
-            "reliability_pct": reliability_pct,
-        }
+            vendor_share_total += vendor_share
+
+            # optionally sum delivery fees for informational purposes
+            delivery_fees_total += float(r.get("delivery_fee") or 0.0)
+
+        # vendor ratings snapshot
+        vendor_info = await conn.fetchrow(
+            "SELECT name, rating_avg, rating_count FROM vendors WHERE id = $1", vendor_id
+        )
+        vendor_name = (vendor_info["name"] if vendor_info else "Unknown")
+        rating_avg = float(vendor_info["rating_avg"] if vendor_info and vendor_info.get("rating_avg") is not None else 0.0)
+        rating_count = int(vendor_info["rating_count"] if vendor_info and vendor_info.get("rating_count") is not None else 0)
+
+        # reliability
+        denom = progressed + cancelled
+        reliability_pct = 0 if denom == 0 else round(100.0 * progressed / denom)
+
+    return {
+        "date": date_to_use,
+        "vendor_name": vendor_name,
+        "delivered": delivered,
+        "cancelled": cancelled,
+        # vendor_share is the main change: show vendor's net earnings
+        "vendor_share": vendor_share_total,
+        "delivery_fees": delivery_fees_total,
+        "total_payout": vendor_share_total,  # if you want to include delivery fees, add them here
+        "rating_avg": rating_avg,
+        "rating_count": rating_count,
+        "reliability_pct": reliability_pct,
+    }
 
 
 async def calc_vendor_week_summary(self, vendor_id: int, start_date: Optional[str] = None, end_date: Optional[str] = None) -> Dict[str, Any]:
-        """Weekly summary: totals and per-day breakdown across a provided range."""
-        if not start_date or not end_date:
-            today = date.today()
-            start = today - timedelta(days=today.weekday())
-            end = start + timedelta(days=6)
-            start_date = start.strftime("%Y-%m-%d")
-            end_date = end.strftime("%Y-%m-%d")
+    """Weekly summary: totals and per-day breakdown across a provided range using vendor_share."""
+    if not start_date or not end_date:
+        today = date.today()
+        start = today - timedelta(days=today.weekday())
+        end = start + timedelta(days=6)
+        start_date = start.strftime("%Y-%m-%d")
+        end_date = end.strftime("%Y-%m-%d")
 
-        async with self._open_connection() as conn:
-            # 1. Total summary for the range
-            total_summary = await conn.fetchrow(
-                """
-                SELECT
-                    SUM(CASE WHEN status = 'delivered' THEN 1 ELSE 0 END) AS delivered_count,
-                    SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled_count,
-                    COALESCE(SUM(food_subtotal), 0.0) AS food_revenue,
-                    COALESCE(SUM(delivery_fee), 0.0) AS delivery_fees
-                FROM orders
-                WHERE vendor_id = $1 AND DATE(created_at) BETWEEN $2 AND $3
-                """, 
-                vendor_id, start_date, end_date
-            )
+    async with self._open_connection() as conn:
+        # fetch all orders in range (we'll aggregate vendor_share in Python)
+        rows = await conn.fetch(
+            """
+            SELECT id, status, items_json, food_subtotal, delivery_fee, DATE(created_at) AS d
+            FROM orders
+            WHERE vendor_id = $1 AND DATE(created_at) BETWEEN $2 AND $3
+            """,
+            vendor_id, start_date, end_date
+        )
 
-            delivered = int(total_summary["delivered_count"] or 0)
-            cancelled = int(total_summary["cancelled_count"] or 0)
-            food_rev = float(total_summary["food_revenue"] or 0.0)
-            delivery_fees = float(total_summary["delivery_fees"] or 0.0)
+    # initialize totals and per-day map
+    delivered = 0
+    cancelled = 0
+    total_vendor_share = 0.0
+    total_delivery_fees = 0.0
+    per_day = {}  # date_str -> dict
 
-            # 2. Daily breakdown for the range
-            daily_rows = await conn.fetch(
-                """
-                SELECT DATE(created_at) AS d,
-                        SUM(CASE WHEN status = 'delivered' THEN 1 ELSE 0 END) AS delivered_count,
-                        SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled_count,
-                        COALESCE(SUM(food_subtotal), 0.0) AS food_revenue,
-                        COALESCE(SUM(delivery_fee), 0.0) AS delivery_fees
-                FROM orders
-                WHERE vendor_id = $1 AND DATE(created_at) BETWEEN $2 AND $3
-                GROUP BY DATE(created_at)
-                ORDER BY d ASC
-                """, 
-                vendor_id, start_date, end_date
-            )
+    for r in rows:
+        status = r["status"]
+        if status == "delivered":
+            delivered += 1
+        if status == "cancelled":
+            cancelled += 1
 
-        days = []
-        for r in daily_rows:
-            day_food_rev = float(r["food_revenue"])
-            day_delivery_fees = float(r["delivery_fees"])
-            days.append({
-                "date": r["d"].strftime("%Y-%m-%d"),
-                "delivered": int(r["delivered_count"]),
-                "cancelled": int(r["cancelled_count"]),
-                "food_revenue": day_food_rev,
-                "delivery_fees": day_delivery_fees,
-                "total_payout": day_food_rev + day_delivery_fees,
-            })
+        # compute vendor share
+        items_json = r.get("items_json") or "[]"
+        try:
+            commission = calculate_commission(items_json)
+            vendor_share = float(commission.get("vendor_share", 0.0))
+        except Exception:
+            vendor_share = 0.0
 
-        return {
-            "start_date": start_date,
-            "end_date": end_date,
-            "delivered": delivered,
-            "cancelled": cancelled,
-            "food_revenue": food_rev,
-            "delivery_fees": delivery_fees,
-            "total_payout": food_rev + delivery_fees,
-            "days": days,
-        }
-        
+        total_vendor_share += vendor_share
+        total_delivery_fees += float(r.get("delivery_fee") or 0.0)
+
+        day_key = r["d"].strftime("%Y-%m-%d")
+        if day_key not in per_day:
+            per_day[day_key] = {
+                "delivered": 0,
+                "cancelled": 0,
+                "vendor_share": 0.0,
+                "delivery_fees": 0.0,
+            }
+
+        if status == "delivered":
+            per_day[day_key]["delivered"] += 1
+        if status == "cancelled":
+            per_day[day_key]["cancelled"] += 1
+
+        per_day[day_key]["vendor_share"] += vendor_share
+        per_day[day_key]["delivery_fees"] += float(r.get("delivery_fee") or 0.0)
+
+    # convert per_day map to sorted list
+    days = []
+    for d in sorted(per_day.keys()):
+        days.append({
+            "date": d,
+            "delivered": per_day[d]["delivered"],
+            "cancelled": per_day[d]["cancelled"],
+            "vendor_share": per_day[d]["vendor_share"],
+            "delivery_fees": per_day[d]["delivery_fees"],
+            "total_payout": per_day[d]["vendor_share"],  # include delivery_fees if desired
+        })
+
+    return {
+        "start_date": start_date,
+        "end_date": end_date,
+        "delivered": delivered,
+        "cancelled": cancelled,
+        # show vendor net earnings for the week
+        "vendor_share": total_vendor_share,
+        "delivery_fees": total_delivery_fees,
+        "total_payout": total_vendor_share,  # or total_vendor_share + total_delivery_fees
+        "days": days,
+    }
 
 
 # --- Telegram Notifications (Non-DB operations) ---

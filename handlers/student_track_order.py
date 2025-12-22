@@ -59,22 +59,7 @@ async def notify_dg_ping(bot: Bot, dg_user_id: int, order_id: int, vendor_name: 
     msg = f"📣 Pickup Reminder — Order #{order_id} at {vendor_name} is READY. Please collect now."
     await safe_send(bot, dg_user_id, msg)
 
-
-async def notify_student(bot: Bot, student_chat_id: int, order_id: int):
-    msg = (
-        f"📦 Your order #{order_id} is ready!\n"
-        f"⏳ Maximum pickup time: *15 minutes*.\n\n"
-        "Tap below to track your order in real‑time:"
-    )
-
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="📍 Track", callback_data=f"order:track:{order_id}")]
-        ]
-    )
-
-    await safe_send(bot, student_chat_id, msg, parse_mode="Markdown", reply_markup=kb)
-    
+ 
 def track_reply_keyboard() -> ReplyKeyboardMarkup:
     # Compact contextual reply keyboard while tracking (no Track Order button)
     return ReplyKeyboardMarkup(
@@ -538,11 +523,27 @@ async def send_past_orders_page(message_or_callback, user_id: int, page: int):
             items = []
 
         if items:
-            counts = Counter(items)
+            print("raw items:", items)
+
+            # normalize to names
+            names = []
+            for i in items:
+                if isinstance(i, dict):
+                    qty = i.get("qty", 1)
+                    names.extend([i.get("name", "")] * qty)
+                elif isinstance(i, str):
+                    names.append(i)
+                else:
+                    names.append(str(i))
+
+            counts = Counter(names)
+
             items_preview = " • ".join(
                 f"{name} x{count}" if count > 1 else name
                 for name, count in list(counts.items())[:3]
             )
+            print("preview:", items_preview)
+
         else:
             items_preview = "…"
 
@@ -807,88 +808,47 @@ async def order_view_from_dashboard(cb: CallbackQuery):
     await cb.answer()
     await back_to_summary(cb)  # reuse single-order summary rendering
 
-
-# --- Optional: long-running single-order tracker (silent background refresh) ---
 @router.callback_query(F.data.startswith("order:track:"))
 async def order_track_long(cb: CallbackQuery):
-    # Answer once, immediately
-    try:
-        await cb.answer("⏳ Tracking started…")
-    except Exception:
-        pass
-
+    await cb.answer("⏳ Tracking started…")
     order_id = int(cb.data.split(":")[2])
     order = await db.get_order(order_id)
     if not order:
-        try:
-            await cb.message.edit_text("❌ Order not found.")
-        except Exception:
-            await cb.message.answer("❌ Order not found.")
-        return
+        return await cb.message.answer("❌ Order not found.")
 
+    # Kick off background tracker
+    asyncio.create_task(track_order_updates(order_id, cb.message))
+
+
+async def track_order_updates(order_id: int, message: Message):
     editable_msg = None
     tick = 0
-    refresh_interval = 40
+    refresh_interval = 15
     max_rounds = 120
-    rounds = 0
-    paused = False
 
-    try:
-        await cb.message.answer(
-            "🔎 Tracking your order — live updates will refresh here.",
-            reply_markup=track_menu_keyboard()
-        )
-    except Exception:
-        pass
-
-    while rounds < max_rounds and not paused:
-        text, kb = await render_order_summary(order_id, tick, paused)
+    for rounds in range(max_rounds):
+        text, kb = await render_order_summary(order_id, tick, paused=False)
 
         try:
             if editable_msg is None:
-                editable_msg = await cb.message.answer(
-                    text, reply_markup=kb, disable_web_page_preview=True
-                )
+                editable_msg = await message.answer(text, reply_markup=kb)
             else:
-                try:
-                    await editable_msg.edit_text(
-                        text, reply_markup=kb, disable_web_page_preview=True
-                    )
-                except TelegramBadRequest as e:
-                    if "message is not modified" not in str(e):
-                        editable_msg = await cb.message.answer(
-                            text, reply_markup=kb, disable_web_page_preview=True
-                        )
-        except Exception:
-            break
+                await editable_msg.edit_text(text, reply_markup=kb)
+        except TelegramBadRequest:
+            editable_msg = await message.answer(text, reply_markup=kb)
 
         order = await db.get_order(order_id)
         if order and order.get("status") == "delivered":
             final_text = f"🎉 Order #{order_id} has been delivered! Enjoy your meal 💚"
-            try:
-                await editable_msg.edit_text(final_text, reply_markup=None)
-            except Exception:
-                await cb.message.answer(final_text, reply_markup=main_menu())
+            await editable_msg.edit_text(final_text, reply_markup=None)
             break
 
-        rounds += 1
         tick += 1
-
+        # Back off refresh interval after some rounds
         if rounds == 12:
-            refresh_interval = 10
-        elif rounds == 36:
             refresh_interval = 30
-
-        if paused:
-            try:
-                await editable_msg.edit_text(
-                    text + "\n\n⏸ Live updates paused. Tap ▶️ Resume to continue.",
-                    reply_markup=kb,
-                    disable_web_page_preview=True
-                )
-            except Exception:
-                pass
-            break
+        elif rounds == 36:
+            refresh_interval = 60
 
         await asyncio.sleep(refresh_interval)
 
@@ -934,101 +894,75 @@ async def reply_back_to_menu(message: Message):
     except Exception:
         pass
 
-
-# --- Full Order Detail Handler (receipt style) ---
 @router.callback_query(F.data.startswith("order:detail:"))
 async def show_order_detail(callback: CallbackQuery):
-    # 1) Acknowledge immediately to avoid "query is too old"
-    try:
-        await callback.answer()
-    except Exception:
-        pass  # ignore expired queries
+    await callback.answer("⏳ Loading order details…")
+   
 
-    # 2) Parse order id safely
     parts = callback.data.split(":")
     if len(parts) < 3 or not parts[2].isdigit():
-        # Fallback UX: edit or answer message
-        try:
-            await callback.message.edit_text("❌ Invalid order reference.")
-        except Exception:
-            await callback.message.answer("❌ Invalid order reference.")
-        return
+        return await callback.message.answer("❌ Invalid order reference.")
     order_id = int(parts[2])
 
-    # 3) Fetch order
     order = await db.get_order(order_id)
     if not order:
-        try:
-            await callback.message.edit_text("❌ Order not found.")
-        except Exception:
-            await callback.message.answer("❌ Order not found.")
-        return
+        return await callback.message.answer("❌ Order not found.")
 
-    # 4) Breakdown parsing
+    # Parse breakdown safely
+    breakdown = {}
     try:
         breakdown = json.loads(order.get("breakdown_json") or "{}")
     except Exception:
-        breakdown = {}
+        pass
+
     items_list = breakdown.get("items", [])
+    items_str = "• N/A"
+
     if isinstance(items_list, list):
-        counts = Counter(items_list)
+        # Normalize each item into a string name
+        names = []
+        for item in items_list:
+            if isinstance(item, dict):
+                names.append(item.get("name", ""))  # pull out the name field
+            else:
+                names.append(str(item))             # fallback to string
+        counts = Counter(names)
         items_str = "\n".join(
             f"• {name} x{count}" if count > 1 else f"• {name}"
             for name, count in list(counts.items())[:10]
-        )
-        if not items_str:
-            items_str = "• N/A"
+        ) or "• N/A"
     else:
-        items_str = str(items_list or "N/A")
+        items_str = str(items_list or "• N/A")
 
-    # 5) ETA computation: wrap to prevent crash
-    last_lat = order.get("last_lat")
-    last_lon = order.get("last_lon")
-    drop_lat = breakdown.get("drop_lat")
-    drop_lon = breakdown.get("drop_lon")
-    eta_text = ""
-    if last_lat and last_lon and drop_lat and drop_lon:
-        try:
-            eta_text, _ = await _compute_eta_and_map(last_lat, last_lon, drop_lat, drop_lon)
-        except Exception:
-            eta_text = "⏱ ETA: unavailable"
-
-    # 6) Time stamps (defensive against None)
+    # Timestamps
     created = time_ago(order.get("created_at")) if order.get("created_at") else "N/A"
     accepted = time_ago(order.get("accepted_at")) if order.get("accepted_at") else "N/A"
     delivered = time_ago(order.get("delivered_at")) if order.get("delivered_at") else "N/A"
 
-    # 7) Totals: ensure numeric
-    food_subtotal = order.get("food_subtotal") or 0
-    delivery_fee = order.get("delivery_fee") or 0
-    dropoff = order.get('dropoff', 'N/A')
-    campus_text = await db.get_user_campus_by_order(order['id'])
-    dropoff = f"{dropoff} • {campus_text}" if campus_text else dropoff
-    
+    # Totals
     try:
-        total_birr = (float(food_subtotal) if not isinstance(food_subtotal, (int, float)) else food_subtotal) + \
-                     (float(delivery_fee) if not isinstance(delivery_fee, (int, float)) else delivery_fee)
+        total_birr = float(order.get("food_subtotal") or 0) + float(order.get("delivery_fee") or 0)
     except Exception:
-        total_birr = food_subtotal if isinstance(food_subtotal, (int, float)) else 0
+        total_birr = 0
 
-    # 8) Use consistent parse_mode (Markdown vs HTML)
-    # Your other screens use HTML; stick to HTML to avoid bold/underscore conflicts.
+    # Dropoff + campus
+    campus_text = await db.get_user_campus_by_order(order['id'])
+    dropoff = f"{order.get('dropoff','N/A')} • {campus_text}" if campus_text else order.get('dropoff','N/A')
+
     text = (
         f"🧾 <b>Order Receipt #{order['id']}</b>\n"
-        f"──────────────────────────\n"
-        f"{eta_text}\n" if eta_text else ""       
+        "──────────────────────────\n"
         f"🏠 Pickup: {order.get('pickup','N/A')}\n"
         f"📍 Drop‑off: {dropoff}\n\n"
         f"🍴 Items:\n{items_str}\n\n"
-        f"💰 Subtotal: {food_subtotal} birr\n"
-        f"🚚 Delivery Fee: {delivery_fee} birr\n"
-        f"──────────────────────────\n"
+        f"💰 Subtotal: {order.get('food_subtotal',0)} birr\n"
+        f"🚚 Delivery Fee: {order.get('delivery_fee',0)} birr\n"
+        "──────────────────────────\n"
         f"💰 <b>Total:</b> {total_birr} birr\n"
         f"💳 Payment: {order.get('payment_method','N/A')} ({order.get('payment_status','N/A')})\n\n"
         f"⏱ Created: {created}  •  Accepted: {accepted}  •  Delivered: {delivered}\n\n"
         "✨ Thanks for ordering with UniBites Delivery!"
     )
-
 
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -1039,21 +973,33 @@ async def show_order_detail(callback: CallbackQuery):
         ]
     )
 
-    # 9) Edit message first, fallback to answer
+    await callback.message.edit_text(
+        text,
+        reply_markup=kb,
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
+
+    # Kick off ETA computation in background
+    last_lat, last_lon = order.get("last_lat"), order.get("last_lon")
+    drop_lat, drop_lon = breakdown.get("drop_lat"), breakdown.get("drop_lon")
+    if last_lat and last_lon and drop_lat and drop_lon:
+        asyncio.create_task(update_eta(callback.message, order_id, last_lat, last_lon, drop_lat, drop_lon, kb))
+
+
+async def update_eta(message, order_id, last_lat, last_lon, drop_lat, drop_lon, kb):
     try:
-        await callback.message.edit_text(
-            text,
+        eta_text, _ = await _compute_eta_and_map(last_lat, last_lon, drop_lat, drop_lon)
+        await message.edit_text(
+            f"🧾 <b>Order Receipt #{order_id}</b>\n{eta_text}\n...",
             reply_markup=kb,
             parse_mode="HTML",
             disable_web_page_preview=True,
         )
     except Exception:
-        await callback.message.answer(
-            text,
-            reply_markup=kb,
-            parse_mode="HTML",
-            disable_web_page_preview=True,
-        )
+        pass
+
+
 
 # import inspect
 from aiogram.types import CallbackQuery
@@ -1062,6 +1008,8 @@ from aiogram.types import CallbackQuery
     F.data.startswith("order:refresh:") |
     F.data.startswith("order:")
 )
+
+
 async def back_to_summary(callback: CallbackQuery):
     parts = callback.data.split(":")
     action = parts[1] if len(parts) > 1 else ""
@@ -1104,115 +1052,62 @@ async def back_to_summary(callback: CallbackQuery):
                 )
 
     await callback.answer()
-
-# --- Inline Refresh / Close passthrough ---
 @router.callback_query(F.data.startswith("order:refresh:"))
 async def refresh_order_card(callback: CallbackQuery):
-    # Acknowledge immediately to avoid timeout
     try:
         await callback.answer("⏳ Refreshing…")
     except Exception:
         pass
-
-    # Then continue with your summary logic
-    await back_to_summary(callback)
-
-
+    asyncio.create_task(back_to_summary(callback))  # run in background
 
 async def render_order_summary(order_id: int, tick: int = 0, paused: bool = False) -> tuple[str, InlineKeyboardMarkup]:
     order = await db.get_order(order_id)
     if not order:
         return "❌ Order not found.", None
 
-    order = dict(order)
-    status_text, stage = STATUS_MAP.get(order["status"], (order["status"], 1))
-
-    # Vendor info
+    # Vendor + DG info can be joined in one query for speed
     vendor = await db.get_vendor(order["vendor_id"]) if order.get("vendor_id") else None
-    vendor_name = vendor.get("name") if vendor else "Vendor"
-    vendor_line = f"🏪 {vendor_name}"
-    if vendor and vendor.get("rating_avg") is not None:
-        vendor_line += f" • ★ {round(vendor.get('rating_avg',3.00),1)} ({vendor.get('rating_count',0)})"
+    dg = await db.get_delivery_guy(order["delivery_guy_id"]) if order.get("delivery_guy_id") else None
 
-    # DG info
-    dg_text = ""
-    has_dg = False
-    dg_user_id = None
-    dg_phone = None
-    last_lat = order.get("last_lat")
-    last_lon = order.get("last_lon")
-    if order.get("delivery_guy_id"):
-        dg = await db.get_delivery_guy(order["delivery_guy_id"])
-        if dg:
-            has_dg = True
-            dg_user_id = dg.get("user_id")
-            dg_phone = dg.get("phone") or None
-            dg_name = dg.get("name", "Delivery Partner")
-            dg_rating = dg.get("rating", None) or dg.get("rating_avg", None)
-            dg_campus = dg.get("campus", "")
-            dg_text = f"🚴 {dg_name} ({dg_campus})"
-            if dg_rating is not None:
-                dg_text += f" • ★ {round(dg_rating,1)}"
-            last_lat = last_lat or dg.get("last_lat")
-            last_lon = last_lon or dg.get("last_lon")
-
-    # breakdown / coords
+    # Breakdown parsing
     breakdown = {}
-    drop_lat = drop_lon = None
     try:
         breakdown = json.loads(order.get("breakdown_json") or "{}")
-        drop_lat = breakdown.get("drop_lat")
-        drop_lon = breakdown.get("drop_lon")
     except Exception:
         pass
 
-    # ETA & map
-    if last_lat and last_lon and drop_lat and drop_lon:
-        try:
-            eta_text, map_url = await _compute_eta_and_map(last_lat, last_lon, drop_lat, drop_lon)
-        except Exception:
-            eta_text, map_url = "⏱ ETA: unavailable", None
-    else:
-        eta_text = "⌛ Waiting for live location..." if has_dg else "⌛ Waiting for a delivery partner..."
-        map_url = None
+    # ETA computed later
+    eta_text = "⌛ Waiting for live location..." if dg else "⌛ Waiting for a delivery partner..."
+    map_url = None
 
-    # timestamps
-    created = time_ago(order.get("created_at"))
-    accepted = time_ago(order.get("accepted_at"))
-    delivered = time_ago(order.get("delivered_at"))
-
-    # items summary
+    # Items preview
     breakdown_items = breakdown.get("items") or []
+    items_preview = "Items"
     if isinstance(breakdown_items, list):
-        names = [str(i) if isinstance(i, str) else i.get("name", "") for i in breakdown_items]
-        counts = Counter(names)
+        counts = Counter([i.get("name","") if isinstance(i, dict) else str(i) for i in breakdown_items])
         items_preview = "\n".join(
             f"• {name} x{count}" if count > 1 else f"• {name}"
             for name, count in list(counts.items())[:6]
         ) or "Items"
-    else:
-        items_preview = str(breakdown_items or "Items")
 
     text = (
-        f"{animated_dot(stage, tick)} {status_text}\n\n"
-        f"{render_progress(stage)}\n\n"
-        f"{vendor_line}\n"
-        f"{dg_text + chr(10) if dg_text else ''}"
-        f"{eta_text + chr(10) if eta_text else ''}"
-        f"\n🛒 Items:\n{items_preview}\n\n"
-        f"💰 Total:{order.get('food_subtotal',0) + order.get('delivery_fee',0)} Birr\n"
-        f"⏱ Created {created} • Accepted {accepted} \n • Delivered {delivered}\n\n"
+        f"{animated_dot(STATUS_MAP.get(order['status'], ('',1))[1], tick)} {STATUS_MAP.get(order['status'], (order['status'],1))[0]}\n\n"
+        f"{render_progress(STATUS_MAP.get(order['status'], ('',1))[1])}\n\n"
+        f"🏪 {vendor['name'] if vendor else 'Vendor'}\n"
+        f"{'🚴 ' + dg['name'] if dg else ''}\n"
+        f"{eta_text}\n\n"
+        f"🛒 Items:\n{items_preview}\n\n"
+        f"💰 Total: {order.get('food_subtotal',0) + order.get('delivery_fee',0)} Birr\n"
+        f"⏱ Created {time_ago(order.get('created_at'))} • Accepted {time_ago(order.get('accepted_at'))} • Delivered {time_ago(order.get('delivered_at'))}\n\n"
         "✨ Hang tight — your campus meal is on its way!"
     )
 
-    kb = build_track_keyboard(
-        order["id"],
-        has_dg=has_dg,
-        dg_user_id=dg_user_id,
-        dg_phone=dg_phone,
-        is_ready=(order.get("status") == "ready"),
-        map_url=map_url,
-        paused=paused
-    )
+    kb = build_track_keyboard(order["id"], has_dg=bool(dg), dg_user_id=dg.get("user_id") if dg else None,
+                              dg_phone=dg.get("phone") if dg else None, is_ready=(order.get("status")=="ready"),
+                              map_url=map_url, paused=paused)
+
+    # Kick off ETA update in background
+    if dg and dg.get("last_lat") and dg.get("last_lon") and breakdown.get("drop_lat") and breakdown.get("drop_lon"):
+        asyncio.create_task(update_eta(order_id, dg, breakdown, kb))
 
     return text, kb

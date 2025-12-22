@@ -21,6 +21,7 @@ from aiogram.types import (
 from aiogram import Bot
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
+from aiogram import types
 from database.db import Database
 from config import settings
 
@@ -34,6 +35,7 @@ from utils.db_helpers import (
     calc_vendor_day_summary,
     calc_vendor_week_summary,
 )
+from utils.helpers import calculate_commission
 
 router = Router()
 
@@ -380,29 +382,30 @@ def paginate_kb(page: int, pages: int, scope: str) -> InlineKeyboardMarkup:
 
 def render_order_line(o: dict, include_dg: bool = False) -> str:
     try:
-        raw_items = json.loads(o.get("items_json") or "[]")
+        breakdown = json.loads(o.get("breakdown_json") or "{}")
+        items = breakdown.get("items", [])
     except Exception:
-        raw_items = []
-
-    names = [i.get("name", "") if isinstance(i, dict) else str(i) for i in raw_items]
-    counts = Counter(names)
+        items = []
     created_at = o.get("created_at")
     from utils.helpers import time_ago_am
     created_line = f"⏱ የታዘዘበት ጊዜ: {time_ago_am(created_at)}" if created_at else "⏱ የታዘዘበት ጊዜ: —"
     
 
     # Vertical list instead of horizontal
+    commission = calculate_commission(json.dumps(items, ensure_ascii=False))
+    vendor_share = commission.get("vendor_share", 0)
+
     items_str = "\n".join(
-        f"✔️ {name} x{count}" if count > 1 else f"• {name}"
-        for name, count in counts.items()
+        f"✔️ {i['name']} x{i.get('qty',1)}" if i.get('qty',1) > 1 else f"• {i['name']}"
+        for i in items
     ) or "—"
 
     parts = [
-        f"📦 ትዕዛዝ #{o['id']}\n",
-        f"🛒 ምግቦች:\n{items_str}\n",
-        f"💵 ዋጋ: {int(o.get('food_subtotal', 0))} ብር\n",
-        created_line,
-    ]
+    f"📦 ትዕዛዝ #{o['id']}\n",
+    f"🛒 ምግቦች:\n{items_str}\n",
+    f"💵 የእርስዎ ገቢ: {int(vendor_share)} ብር\n",   # only vendor share shown
+    created_line,
+]
     if include_dg and o.get("delivery_guy_id"):
         parts.append("🚴 ዴሊቬሪ ማን: " + (o.get("dg_name") or "—"))
         
@@ -526,10 +529,8 @@ from datetime import datetime
 @router.callback_query(F.data.startswith("vendor:accept:"))
 async def vendor_accept_order(cb: CallbackQuery, bot: Bot):
     # 1) Answer immediately to avoid "query is too old"
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await cb.answer("በ መቀበል ላይ..... ", show_alert=False)
+   
 
     order_id = int(cb.data.split(":")[-1])
     order = await db.get_order(order_id)
@@ -541,7 +542,7 @@ async def vendor_accept_order(cb: CallbackQuery, bot: Bot):
     expires_at = order.get("expires_at")
     if expires_at and expires_at < datetime.utcnow():
         try:
-            await cb.message.answer("❌ ይህ ትዕዛዝ አልተቀበለም፣ ጊዜው አልፎበታል።")
+            await cb.message.answer("❌ ይህ ትዕዛዝ መቀበል አይቻልም፣ ጊዜው አልፎበታል።")
         except Exception as e:
             print(f"[vendor_accept_order] Failed to notify vendor about expired order #{order_id}: {e}")
         try:
@@ -552,16 +553,19 @@ async def vendor_accept_order(cb: CallbackQuery, bot: Bot):
 
     # 3) Update status and timestamp
     try:
-        await db.update_order_status(order_id, "preparing")
+        await db.execute(
+                "UPDATE orders SET status=$1, accepted_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=$2",
+                "preparing", order_id
+            )    
     except Exception as e:
         print(f"[vendor_accept_order] Failed to update order status for #{order_id}: {e}")
         await cb.message.answer("❌ Failed to update order status. Try again.")
         return
 
-    try:
-        await db.set_order_timestamp(order_id, "accepted_at")
-    except Exception as e:
-        print(f"[vendor_accept_order] Failed to set accepted_at for order #{order_id}: {e}")
+    # try:
+    #     await db.set_order_timestamp(order_id, "accepted_at")
+    # except Exception as e:
+    #     print(f"[vendor_accept_order] Failed to set accepted_at for order #{order_id}: {e}")
 
     # 4) Vendor info
     vendor = await db.get_vendor(order["vendor_id"])
@@ -570,13 +574,20 @@ async def vendor_accept_order(cb: CallbackQuery, bot: Bot):
     # 5) Edit vendor message safely
     try:
         await cb.message.edit_text(
-            f"⚙️ ትዕዛዙ {order_id} በመዘጋጀት ላይ ነው።\n\n⬅️ ወደ ዳሽቦርድ"
+            f"⚙️ ትዕዛዙ {order_id} በመዘጋጀት ላይ ነው። \n\n"
+            "ትዕዛዙ ዝግጁ በሚሆንበት ሰአት *በመዘጋጀት ላይ* የሚለውን በመንካት "
+            "ለመወሰድ ዝግጁ እንደሆነ ያሳውቁ....",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="⚙️ በመዘጋጀት ላይ ያሉ", callback_data="vendor:preparing")]
+                ]
+            )
         )
     except TelegramBadRequest as e:
         # message too old or already edited -> send a new message
         try:
             await cb.message.answer(
-                f"⚙️ ትዕዛዙ {order_id} በመዘጋጀት ላይ ነው።\n\n⬅️ ወደ ዳሽቦርድ"
+                f"⚙️ ትዕዛዙ {order_id} በመዘጋጀት ላይ ነው። ትዕዛዙ ዝግጁ በሚሆንበት ሰአት *በመዘጋጀት ላይ* የሚለውን በመንካት ለመወሰድ ዝግጁ እንደሆነ ያሳውቁ\n\n⬅️ ወደ ዳሽቦርድ"
             )
         except Exception as ex:
             print(f"[vendor_accept_order] Failed to notify vendor after edit failure for #{order_id}: {ex}")
@@ -698,7 +709,7 @@ async def vendor_reject_order(cb: CallbackQuery, bot: Bot):
 
     # 4) Notify student (use safe_send wrapper)
     try:
-        student_chat_id = await db.get_student_chat_id(order_id)  # prefer order_id if helper expects it
+        student_chat_id = await db.get_student_chat_id(order)  # prefer order_id if helper expects it
         if student_chat_id:
             await safe_send(
                 bot,
@@ -754,8 +765,17 @@ async def vendor_reject_order(cb: CallbackQuery, bot: Bot):
 # ⚙️ Preparing Orders (preparing) + pagination
 # -----------------------------
 @router.message(F.text == "⚙️ በመዘጋጀት ላይ ያሉ")
-async def vendor_preparing_orders(message: Message):
-    vendor = await db.get_vendor_by_telegram(message.from_user.id)
+@router.callback_query(F.data == "vendor:preparing")
+async def vendor_preparing_orders(event: types.Message | types.CallbackQuery):
+    # Normalize to a message object
+    if isinstance(event, types.CallbackQuery):
+        message = event.message
+        user_id = event.from_user.id
+    else:
+        message = event
+        user_id = event.from_user.id
+
+    vendor = await db.get_vendor_by_telegram(user_id)
     if not vendor:
         await message.answer("⚠️ ሱቅ አልተገኘም።")
         return
@@ -779,7 +799,6 @@ async def vendor_preparing_orders(message: Message):
         await message.answer(text, reply_markup=kb)
 
     await message.answer("📄 ገጽ 1", reply_markup=paginate_kb(1, pages, "preparing"))
-
 
 @router.callback_query(F.data.startswith("orders:preparing:page:"))
 async def vendor_preparing_orders_page(cb: CallbackQuery):
@@ -818,9 +837,20 @@ async def vendor_preparing_orders_page(cb: CallbackQuery):
 # -----------------------------
 # ✅ Ready for Pickup (ready) + pagination
 # -----------------------------
+CallbackQuery
+
 @router.message(F.text == "✅ ዝግጁ ትዕዛዞች")
-async def vendor_ready_orders(message: Message):
-    vendor = await db.get_vendor_by_telegram(message.from_user.id)
+@router.callback_query(F.data == "vendor:ready")
+async def vendor_ready_orders(event: Message | CallbackQuery):
+    # Normalize to message + user_id
+    if isinstance(event, CallbackQuery):
+        message = event.message
+        user_id = event.from_user.id
+    else:
+        message = event
+        user_id = event.from_user.id
+
+    vendor = await db.get_vendor_by_telegram(user_id)
     if not vendor:
         await message.answer("⚠️ ሱቅ አልተገኘም።")
         return
@@ -841,12 +871,11 @@ async def vendor_ready_orders(message: Message):
             if dg:
                 dg_name = dg.get("name", "")
         line = render_order_line({**o, "dg_name": dg_name}, include_dg=True)
-
         await message.answer(line)
 
     await message.answer("📄 ገጽ 1", reply_markup=paginate_kb(1, pages, "ready"))
-
-
+    
+    
 @router.callback_query(F.data.startswith("orders:ready:page:"))
 async def vendor_ready_orders_page(cb: CallbackQuery):
     await cb.answer()
@@ -897,10 +926,14 @@ async def order_mark_ready(cb: CallbackQuery, bot: Bot):
 
     try:
         await cb.message.edit_text(
-            f"✅ ትዕዛዝ #{order_id} ደርሷል ለመወሰድ ዝግጁ ነው።",
-            parse_mode="Markdown"
-        )
-        
+    f"✅ ትዕዛዝ #{order_id} ደርሷል ለመወሰድ ዝግጁ ነው። በቅርቡ ዴሊቬሪ ሰው ይመደባል/ይወስደዋል \n\n ዝግጁ የሆኑ ትዕዛዞችን ለማየት ከታች ያለውን ቁልፍ ይጫኑ",
+    parse_mode="Markdown",
+    reply_markup=InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✅ ዝግጁ ትዕዛዞች", callback_data="vendor:ready")]
+        ]
+    )
+        ) 
     except TelegramBadRequest as e:
         if "message is not modified" in str(e):
             # Safe to ignore, message already has this content
@@ -979,7 +1012,7 @@ async def order_mark_ready(cb: CallbackQuery, bot: Bot):
     # Notify student
     student_chat_id = await db.get_student_chat_id(order)
     if student_chat_id:
-        from handlers.student_track_order import notify_student
+        from handlers.delivery_guy import notify_student
         await notify_student(bot, student_chat_id, order_id)
 
 
@@ -992,6 +1025,8 @@ async def order_mark_ready(cb: CallbackQuery, bot: Bot):
 # -----------------------------
 # ❌ Cancel (single handler)
 # -----------------------------
+
+
 @router.callback_query(F.data.startswith("order:cancel:"))
 async def order_mark_cancelled(cb: CallbackQuery, bot: Bot):
     await cb.answer()
@@ -1030,33 +1065,40 @@ async def vendor_performance(message: Message):
         await message.answer("⚠️ ሱቅ አልተገኘም።")
         return
 
-    # Fresh daily summary
+    # Fresh daily summary (already updated in db.py to return vendor_share)
     s = await calc_vendor_day_summary(db, vendor["id"], date_str=date.today().strftime("%Y-%m-%d"))
     today = date.today()
-    start = today - timedelta(days=today.weekday())
-    end = start + timedelta(days=6)
+    start = today - timedelta(days=today.weekday())   # Monday
+    end = start + timedelta(days=6)                   # Sunday
 
     async with db._open_connection() as conn:
-       weekly_total = await conn.fetchval(
+        rows = await conn.fetch(
             """
-            SELECT COALESCE(SUM(food_subtotal),0)
+            SELECT items_json
             FROM orders
             WHERE vendor_id = $1
             AND DATE(created_at) BETWEEN $2 AND $3
             AND status = 'delivered'
             """,
-            vendor["id"], start, end
+            vendor["id"], start, end   # pass date objects directly
         )
-    weekly_total = int(weekly_total or 0)
+
+
+    weekly_total = 0
+    for r in rows:
+        commission = calculate_commission(r["items_json"] or "[]")
+        weekly_total += commission.get("vendor_share", 0)
+
     text = (
         "📊 የአፈጻጸም ሪፖርት\n"
         f"📦 ትዕዛዞች: {s['delivered'] + s['cancelled']} (✅ {s['delivered']} | ❌ {s['cancelled']})\n"
-        f"💵 የዛሬ ገቢ: {int(s['food_revenue'])} ብር\n"
-        f"💵 የሳምንቱ ገቢ: — {weekly_total} ብር\n"
+        f"💵 የዛሬ ገቢ (እርስዎ ገቢ): {int(s['vendor_share'])} ብር\n"
+        f"💵 የሳምንቱ ገቢ (እርስዎ ገቢ): — {int(weekly_total)} ብር\n"
         f"⭐ አማካይ ደረጃ: {float(s['rating_avg']):.1f}\n"
         f"⚡ ታማኝነት: {int(s['reliability_pct'])}%"
     )
     await message.answer(text, reply_markup=performance_keyboard())
+
 
 @router.message(F.text == "📅 የዛሬ ትዕዛዞች")
 async def performance_today_orders(message: Message):
@@ -1065,13 +1107,11 @@ async def performance_today_orders(message: Message):
         await message.answer("⚠️ ሱቅ አልተገኘም።")
         return
 
-    today = date.today()
+    today = date.today()   # keep as datetime.date
     total = await db.count_orders_for_vendor(vendor["id"], date=today)
     page_size = 5
     pages = max(1, math.ceil(total / page_size))
-    
 
-    # Fetch page 1
     orders = await db.get_orders_for_vendor(vendor["id"], date=today, limit=page_size, offset=0)
     if not orders:
         await message.answer("📭 ዛሬ ትዕዛዝ የለም።", reply_markup=performance_keyboard())
@@ -1079,18 +1119,22 @@ async def performance_today_orders(message: Message):
 
     for o in orders:
         items = ", ".join(i.get("name","") for i in json.loads(o.get("items_json") or "[]"))
-        status_text = STATUS_AMHARIC.get(o.get("status"), o.get("status"))  # fallback to raw if unknown
+        status_text = STATUS_AMHARIC.get(o.get("status"), o.get("status"))
         campus_text = await db.get_user_campus_by_order(o['id'])
         dropoff = f"{campus_text}" if campus_text else 'N/A'
+
+        commission = calculate_commission(o.get("items_json") or "[]")
+        vendor_share = int(commission.get("vendor_share", 0))
 
         await message.answer(
             f"📦 ትዕዛዝ #{o['id']} — {status_text}\n"
             f"🛒 ምግቦች: {items}\n\n"
-            f"💵 ክፍያ: {int(o.get('food_subtotal', 0))} ብር\n"
+            f"💵 እርስዎ ገቢ: {vendor_share} ብር\n"
             f"📍 መድረሻ: {dropoff}"
         )
 
-    kb = paginate_orders_kb(page=1, pages=pages, scope="daily", extra_payload=today)
+    # for pagination payload, convert to string only here
+    kb = paginate_orders_kb(page=1, pages=pages, scope="daily", extra_payload=today.strftime("%Y-%m-%d"))
     await message.answer("📄 ገጽ 1", reply_markup=kb)
 
 @router.callback_query(F.data.startswith("perf:daily:page:"))

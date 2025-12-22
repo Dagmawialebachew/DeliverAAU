@@ -696,115 +696,65 @@ async def send_new_order_offer(bot: Bot, dg: Dict[str, Any], order: Dict[str, An
 
 @router.callback_query(F.data.startswith("accept_order_"))
 async def handle_accept_order(call: CallbackQuery):
-  
+    from utils.task_scheduler import post_accept_updates
+
     order_id = int(call.data.split("_")[-1])
     dg = await _db_get_delivery_guy_by_user(call.from_user.id)
     if not dg:
-        await call.answer("⚠️ Delivery profile not found.", show_alert=True)
-        return
+        return await call.answer("⚠️ Delivery profile not found.", show_alert=True)
 
     # --- 1. Check current order status before updating ---
     order = await db.get_order(order_id)
     if not order:
-        await call.answer("❌ Order not found.", show_alert=True)
-        return
+        return await call.answer("❌ Order not found.", show_alert=True)
 
     try:
         if order["status"] == "ready":
             if order.get("delivery_guy_id") is None:
-                # Vendor already prepared, no DG yet → assign DG but keep status = ready
                 await db.update_order_status(order_id, "ready", dg["id"])
                 log.info("DG %s accepted order %s (status stays READY)", dg["id"], order_id)
             else:
                 # Already assigned → expire this offer
                 await call.answer("❌ Order already assigned to another DG.", show_alert=True)
+                try:
+                    await call.message.edit_text(
+                        f"❌ Order #{order_id} has already been assigned to another delivery partner.",
+                        reply_markup=None
+                    )
+                except Exception:
+                    # fallback if edit fails
+                    await call.message.answer(
+                        f"❌ Order #{order_id} has already been assigned to another delivery partner."
+                    )
                 return
         elif order["status"] == "preparing" and order.get("delivery_guy_id") is None:
-            # Normal flow → assign DG and keep status = preparing
             await db.update_order_status(order_id, "preparing", dg["id"])
             log.info("DG %s accepted order %s (status PREPARING)", dg["id"], order_id)
         else:
-            await call.answer("Order status conflict or already processed.", show_alert=True)
+            await call.answer("❌ Order already expired.", show_alert=True)
+            try:
+                await call.message.edit_text(
+                    f"❌ Order #{order_id} has already expired or been processed.",
+                    reply_markup=None
+                )
+            except Exception:
+                # fallback if edit fails
+                await call.message.answer(
+                    f"❌ Order #{order_id} has already expired or been processed."
+                )
             return
     except Exception:
         log.exception("Failed to accept order %s for DG %s", order_id, dg["id"])
-        await call.answer("❌ Failed to accept order.", show_alert=True)
-        return
+        return await call.answer("❌ Failed to accept order.", show_alert=True)
 
     # --- 2. Stop scheduler countdown for this order ---
     PENDING_OFFERS.pop(order_id, None)
 
-    # --- 3. Notify student & update message ---
-    order = await db.get_order(order_id)
-    if order:
-        subtotal = order.get("food_subtotal", 0)
-        delivery_fee = order.get("delivery_fee", 0)
-        total_payable = subtotal + delivery_fee
-        order["delivery_guy_name"] = dg["name"]
-        order["campus"] = dg.get("campus")
-        await notify_student(call.bot, order, status="assigned")
+    # --- 3. Immediate feedback ---
+    await call.answer("Order accepted!")
 
-        try:
-            items = json.loads(order.get("items_json", "[]")) or []
-            from collections import Counter
-            names = [i.get("name", "") if isinstance(i, dict) else str(i) for i in items]
-            counts = Counter(names)
-            items_str = ", ".join(
-                f"{name} x{count}" if count > 1 else name
-                for name, count in counts.items()
-            )
-        except Exception:
-            items_str = "Items unavailable"
-            
-        dropoff = order.get('dropoff', 'N/A')
-        campus_text = await db.get_user_campus_by_order(order['id'])
-        dropoff = f"{dropoff} • {campus_text}" if campus_text else dropoff
-    
-
-        message_text = (
-            f"📦 Order #{order_id}\n"
-            f"📌 Status: {'✅ Ready for pickup' if order['status']=='ready' else '👨‍🍳 The meal is being prepared...'}\n\n"
-            "──────────────────────\n"
-            f"🏠 Pickup: {order.get('pickup')}\n"
-            f"📍 Drop-off: {dropoff}\n"
-            f"💰 Subtotal Fee: {subtotal} birr\n"
-            f"🚚 Delivery fee: {delivery_fee} birr\n"
-            "──────────────────────\n"
-            f"💵 Total Payable: {total_payable} birr\n\n"
-            f"🛒 Items: {items_str}\n\n"
-            "⚡ Manage this order below.\n\n"
-            "For robust and fast use My Orders in the dashboard."
-        )
-
-        try:
-            status = order["status"]
-
-            # For preparing, reuse accepted actions
-            if status == "preparing":
-                action_key = "accepted"
-            elif status == "ready":
-                action_key = "ready"
-            else:
-                action_key = "accepted"  # fallback
-
-            await call.message.edit_text(
-                message_text,
-                reply_markup=accepted_order_actions(order_id, action_key),
-                parse_mode="Markdown"
-            )
-            await db.increment_accepted_requests(dg["id"])
-            await call.answer("Order accepted!")
-        except TelegramBadRequest as e:
-            if "message is not modified" in str(e):
-                await call.answer("Order already accepted/message already updated. Check it in My Orders.")
-            else:
-                log.warning("Failed to edit message after acceptance: %s", str(e))
-                await call.message.answer(
-                    message_text,
-                    reply_markup=accepted_order_actions(order_id, "accepted"),
-                    parse_mode="Markdown"
-                )
-
+    # --- 4. Kick off background updates ---
+    asyncio.create_task(post_accept_updates(call, order_id, dg))
 
 async def get_student_chat_id(db: Database, order: Dict[str, Any]) -> Optional[int]:
     """Resolve internal user_id from orders → Telegram chat id."""
@@ -964,161 +914,123 @@ async def _validate_dg_order_simple_by_message(message: types.Message, order_id:
     if not order or order.get('delivery_guy_id') != dg['id']:
         return dg, None
     return dg, order
-
-
 @router.callback_query(F.data.startswith("start_order_"))
 async def handle_start_order(call: CallbackQuery):
     order_id = int(call.data.split('_')[-1])
     dg, order = await _validate_dg_order_simple_by_message(call.message, order_id)
-    
-    if not dg or not order:
-        await call.answer("❌ This order is not assigned to you or doesn't exist.", show_alert=True)
-        return
-    
-    if order.get("status") == "delivered":
-        await call.answer("✅ Already marked as delivered.", show_alert=True)
-        return
 
-    # Update status to 'in_progress'
+    if not dg or not order:
+        return await call.answer("❌ This order is not assigned to you or doesn't exist.", show_alert=True)
+
+    if order.get("status") == "delivered":
+        return await call.answer("✅ Already marked as delivered.", show_alert=True)
+
+    # If already in_progress, bail out
+    if order.get("status") == "in_progress":
+        return await call.answer("⏳ Already started, please wait.", show_alert=True)
+
+    # Immediate feedback
+    await call.answer("🚀 Starting delivery…")
+
+    # Kick off background work
+    asyncio.create_task(_process_start_order(call, dg, order_id, order))
+
+
+async def _process_start_order(call: CallbackQuery, dg: dict, order_id: int, order: dict):
     try:
         await db.update_order_status(order_id, "in_progress")
     except Exception:
         log.exception("Failed to mark order in_progress %s", order_id)
-        await call.answer("❌ Failed to update order status.", show_alert=True)
         return
-    
-    # Notify student
-    updated_order = await db.get_order(order_id) 
-    await notify_student(call.bot, updated_order, "on_the_way") 
+
+    updated_order = await db.get_order(order_id)
+    await notify_student(call.bot, updated_order, "on_the_way")
+    subtotal = order.get("food_subtotal", 0)
+    delivery_fee = order.get("delivery_fee", 0)
+    total_payable = subtotal + delivery_fee
+    status_label = STATUS_LABELS.get(order.get("status"), "ℹ️ Unknown status")
     dropoff = order.get('dropoff', 'N/A')
     campus_text = await db.get_user_campus_by_order(order['id'])
     dropoff = f"{dropoff} • {campus_text}" if campus_text else dropoff
     
+    try:
+        items = json.loads(order.get("items_json", "[]")) or []
+        names = [i.get("name", "") if isinstance(i, dict) else str(i) for i in items]
+        from collections import Counter
+        counts = Counter(names)
+        items_str = ", ".join(
+            f"{name} x{count}" if count > 1 else name
+            for name, count in counts.items()
+        )
+    except Exception:
+        items_str = "Items unavailable"
     
-    
-    # Edit message to show new actions
+
+
     message_text = (
-        "🚶 **Order In Progress!**\n"
-        f"**Order #{order_id}**\n"
+        f"📦 Order #{order_id}\n"
+        f"📌 Status: {status_label}\n\n"
         "──────────────────────\n"
         f"🏠 Pickup: {order.get('pickup')}\n"
         f"📍 Drop-off: {dropoff}\n"
-        f"💵 Total: {order.get('food_subtotal',0) + order.get('delivery_fee',0)} birr\n\n"
-        "⚡ You’re on the move — send **Live Updates** to keep students in the loop!"
+        f"💰 Subtotal Fee: {subtotal} birr\n"
+        f"🚚 Delivery fee: {delivery_fee} birr\n"
+        "──────────────────────\n"
+        f"💵 Total Payable: {total_payable} birr\n\n"
+        f"🛒 Items: {items_str}\n\n"
+        "⚡ Manage this order below."
     )
-
-    
     try:
         await call.message.edit_text(
             message_text,
             reply_markup=accepted_order_actions(order_id, "in_progress"),
             parse_mode="Markdown"
         )
-        await call.answer("Status updated to On the Way.")
     except TelegramBadRequest:
-        await call.answer("Status updated.")
+        pass
 
 @router.callback_query(F.data.startswith("delivered_"))
 async def handle_delivered(call: CallbackQuery):
     order_id = int(call.data.split('_')[-1])
     dg, order = await _validate_dg_order_simple_by_message(call.message, order_id)
-    
     if not dg or not order:
-        await call.answer("❌ This order is not assigned to you or doesn't exist.", show_alert=True)
-        return
+        return await call.answer("❌ This order is not assigned to you or doesn't exist.", show_alert=True)
 
-    delivery_fee = float(order.get("delivery_fee") or 0)
+    # Immediate feedback first
+    await call.answer("Delivery complete! 🎉")
 
+    # Kick off background work
+    asyncio.create_task(_process_delivery(call, dg, order_id, order))
+
+
+async def _process_delivery(call: CallbackQuery, dg: dict, order_id: int, order: dict):
     try:
-        # Update order status to delivered
-        await db.update_order_status(order_id, "delivered", dg["id"])
+        order = await db.get_order(order_id)
+        if order and order["status"] == "delivered":
+            return await call.answer("✅ Already marked as delivered.", show_alert=True)
 
-        # Commission calculation
-        food_subtotal = float(order.get("food_subtotal") or 0)
-        items_json = order.get("items_json", "[]")
-        breakdown  = calculate_commission(items_json)
-
-        async with db._open_connection() as conn:
-            await conn.execute(
-                """
-                UPDATE orders
-                SET breakdown_json = $2,
-                    delivered_at = NOW()
-                WHERE id = $1
-                """,
-                order_id,
-                json.dumps(breakdown)
-            )
-
-
-        # Update DG stats (total deliveries, active flag)
+        breakdown = calculate_commission(order.get("items_json", "[]"))
+        await db.execute(
+            """
+            UPDATE orders
+            SET status=$1,
+                delivery_guy_id=$2,
+                breakdown_json=$3,
+                delivered_at=NOW(),
+                updated_at=NOW()
+            WHERE id=$4
+            """,
+            "delivered", dg["id"], json.dumps(breakdown), order_id
+        )
         await db.set_delivery_guy_online(dg["id"])
     except Exception:
         log.exception("Failed to mark delivered for order %s", order_id)
-        await call.answer("❌ Failed to update order status.", show_alert=True)
         return
 
-    # Award XP/Coins (compute values)
-    xp_gained = XP_PER_DELIVERY if ENABLE_XP else 0
-    coins_gained = delivery_fee * COIN_RATIO if ENABLE_COINS else 0.0
+    # Background updates
+    from utils.task_scheduler import post_delivered_updates
+    await post_delivered_updates(call, dg, order)
 
-    # Record daily stat exactly once (include rewards if any)
-    try:
-        await db.record_daily_stat_delivery(
-            dg["id"],
-            datetime.now().strftime('%Y-%m-%d'),
-            delivery_fee,
-            xp_gained if xp_gained > 0 else None,
-            coins_gained if coins_gained > 0 else None
-        )
-
-        # Re-fetch DG to check XP/level changes (only if XP system enabled)
-        if xp_gained > 0:
-            updated_dg = await _db_get_delivery_guy_by_user(call.from_user.id)
-            if updated_dg and hasattr(db, "auto_compute_level"):
-                new_level = await db.auto_compute_level(updated_dg["xp"])
-                if new_level != updated_dg.get("level"):
-                    await db.update_delivery_guy_level(dg["id"], new_level)
-    except Exception:
-        log.exception("Failed to award XP/Coins or record daily stat for order %s", order_id)
-
-    # Notify student
-    try:
-        await notify_student(call.bot, order, "delivered")
-    except Exception:
-        log.exception("Failed to notify student for order %s", order_id)
-
-    # Daily summary
-    today_stats = await db.get_daily_stats(dg["id"], datetime.now().strftime("%Y-%m-%d")) or {
-        "deliveries": 0, "earnings": 0.0, "skipped": 0, "assigned": 0, "acceptance_rate": 0.0
-    }
-    deliveries_today = today_stats.get("deliveries", 0)
-    earnings_today = today_stats.get("earnings", 0.0)
-    acceptance_rate = await calc_acceptance_rate(db, dg["id"])
-
-    reliability = "Excellent 🚀" if acceptance_rate >= 90 else ("Good 👍" if acceptance_rate >= 80 else "Fair")
-
-    summary_text = (
-        f"🎉 **Delivery #{order_id} Complete!**\n"
-        "──────────────────────\n"
-        f"📦 Status: Delivered successfully\n\n"
-        "📊 **Your Daily Progress**\n"
-        f"🚚 Deliveries today: *{deliveries_today}*\n"
-        f"💵 Earnings: *{int(earnings_today)} birr*\n"
-        f"⚖️ Acceptance Rate: *{int(acceptance_rate)}%* ({reliability})\n\n"
-        "🎁 **Rewards Earned**\n"
-        f"✨ +{xp_gained} XP\n"
-        f"💰 +{coins_gained:.2f} Coins\n\n"
-        "⚡ Keep going strong! Use the menu below to head back to your dashboard."
-    )
-
-    try:
-        await call.message.edit_text(summary_text, parse_mode="Markdown")
-    except TelegramBadRequest as e:
-        if "message is not modified" in str(e):
-            await call.answer("Delivery complete! 🎉")
-        else:
-            await call.message.answer(summary_text, parse_mode="Markdown")
 
 @router.callback_query(F.data.startswith("contact_user_"))
 async def handle_contact_user(call: CallbackQuery):
@@ -1263,96 +1175,103 @@ def get_xp_badge(level: int) -> str:
         return "🟢 Newbie"
 
 
+log = logging.getLogger(__name__)
 
 async def notify_student(bot, order: Dict[str, Any], status: str) -> None:
     """Sends status update to the student with cinematic flair + track button."""
-    student_tg = await _lookup_student_telegram(order)
-    
-    if not student_tg:
-        log.debug("notify_student: no telegram id found for order %s", order.get("id"))
-        return
-
-    order_id = order.get("id")
-    dropoff = order.get('dropoff', 'N/A')
-    campus_text = await db.get_user_campus_by_order(order['id'])
-    dropoff = f"{dropoff} • {campus_text}" if campus_text else dropoff
-    
-    eta_line = ""
-
-    # If we have coords, compute ETA dynamically
-    if status == "on_the_way":
-        vendor_coords = order.get("vendor_coords")
-        drop_coords = order.get("drop_coords")
-        
-        eta_line = "\n⏱ ETA: ~10 min"
-
-    # Inline keyboard with Track Order
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="📍 Track", callback_data=f"order:track:{order_id}")]
-        ]
-    )
 
     try:
+
+        student_tg = await _lookup_student_telegram(order)
+
+        if not student_tg:
+            return
+
+        order_id = order.get("id")
+        dropoff_raw = order.get('dropoff', 'N/A')
+        log.info("notify_student: dropoff_raw=%s", dropoff_raw)
+
+        try:
+            campus_text = await db.get_user_campus_by_order(order_id)
+        except Exception as e:
+            campus_text = None
+
+        dropoff = f"{dropoff_raw} • {campus_text}" if campus_text else dropoff_raw
+
+        # Inline keyboard with Track Order (define unconditionally)
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="📍 Track", callback_data=f"order:track:{order_id}")]
+            ]
+        )
+
         if status == "on_the_way":
-            msg = f"🚶 Your delivery partner is on the way!{eta_line}"
+            msg = f"🚶 Your delivery partner is on the way!\n\n🧭 Track every step in 📍 Track Order."
             await bot.send_message(student_tg, msg, reply_markup=kb)
+
         elif status == "assigned":
-            dg_name = order.get("delivery_guy_name", "Delivery Partner")
-            campus = order.get("campus", "")
+            dg_name = order.get("delivery_guy_name") or "Delivery Partner"
+            campus = order.get("campus") or ""
             msg = (
-    f"🚴 *Delivery Partner Assigned!*\n"
-    "──────────────────────\n"
-    f"📦 *Order #{order.get('id')}*\n"
-    f"👤 Partner: *{dg_name}* ({campus})\n"
-    f"📍 Drop-off: {dropoff}\n\n"
-    "🧭 Track every step in *📍 Track Order*.\n\n"
-    "✨ Sit back and relax — we're getting everything ready behind the scenes!"
-)
-
+                f"🚴 *Delivery Partner Assigned!*\n"
+                "──────────────────────\n"
+                f"📦 *Order #{order_id}*\n"
+                f"👤 Partner: *{dg_name}* ({campus})\n"
+                f"📍 Drop-off: {dropoff}\n\n"
+                "🧭 Track every step in *📍 Track Order*.\n\n"
+                "✨ Sit back and relax — we're getting everything ready behind the scenes!"
+            )
             await bot.send_message(student_tg, msg, reply_markup=kb, parse_mode="Markdown")
+
         elif status == "delivered":
-            order_id = order.get("id")
+            # Grant XP safely, with logs
             student_id = order.get("user_id")
+            log.info("notify_student: delivered | student_id=%s", student_id)
 
-            if student_id:
-                async with db._open_connection() as conn:
-                    row = await conn.fetchrow(
-                        """
-                        UPDATE users
-                        SET
-                            xp = xp + 10,
-                            level = ((xp + 10) / 100) + 1
-                        WHERE id = $1
-                        RETURNING xp, level;
-                        """,
-                        student_id
-                    )
+            xp = None
+            level = None
+            try:
+                if student_id:
+                    async with db._open_connection() as conn:
+                        row = await conn.fetchrow(
+                            """
+                            UPDATE users
+                            SET
+                                xp = xp + 10,
+                                level = ((xp + 10) / 100) + 1
+                            WHERE id = $1
+                            RETURNING xp, level;
+                            """,
+                            student_id
+                        )
+                    if row:
+                        xp = row["xp"]
+                        level = row["level"]
+                    else:
+                        pass
+                else:
+                    pass
+            except Exception as e:
+                pass
 
-                xp = row["xp"]
-                level = row["level"]
-                badge = get_xp_badge(level)
+            badge = get_xp_badge(level) if level is not None else "Rising Star"
 
-                await bot.send_message(
-            student_tg,
-            (
+            # Delivery confirmation message
+            msg_html = (
                 f"🎉 <b>Order #{order_id} Delivered!</b>\n"
                 "━━━━━━━━━━━━━━━━━━━━━━\n"
                 "🙏 Thank you for ordering with <b>UniBites Delivery</b> 🚴‍♂️\n"
                 "We’re proud to keep campus life effortless and connected.\n\n"
                 f"🔥 +10 XP earned\n"
-                f"🏆 Level {level} · {badge}\n"
-                f"✨ Total XP: <b>{xp}</b>\n"
+                f"🏆 Level {level if level is not None else '—'} · {badge}\n"
+                f"✨ Total XP: <b>{xp if xp is not None else '—'}</b>\n"
                 "━━━━━━━━━━━━━━━━━━━━━━\n"
                 "⚡ UniBites Delivery — fast meals, real smiles, pure hustle."
-            ),
-            parse_mode="HTML"
-        )
-
-
+            )
+            await bot.send_message(student_tg, msg_html, parse_mode="HTML")
 
             # Rating prompt
-            kb = InlineKeyboardMarkup(
+            rating_kb = InlineKeyboardMarkup(
                 inline_keyboard=[[
                     InlineKeyboardButton(text="⭐1", callback_data=f"rate_delivery:{order_id}:1"),
                     InlineKeyboardButton(text="⭐2", callback_data=f"rate_delivery:{order_id}:2"),
@@ -1361,10 +1280,18 @@ async def notify_student(bot, order: Dict[str, Any], status: str) -> None:
                     InlineKeyboardButton(text="⭐5", callback_data=f"rate_delivery:{order_id}:5"),
                 ]]
             )
+            log.info("notify_student: sending rating prompt")
             await bot.send_message(
                 student_tg,
-                f"🍽 Enjoy your meal!\n\n⭐ Please rate the delivery:",
-                reply_markup=kb
+                "🍽 Enjoy your meal!\n\n⭐ Please rate the delivery:",
+                reply_markup=rating_kb
             )
-    except Exception:
-        log.exception("notify_student: failed to send message to student %s", student_tg)
+
+        else:
+            # Unknown status — log and skip
+            log.warning("notify_student: unknown status | order_id=%s | status=%s", order_id, status)
+
+        log.info("notify_student: done | order_id=%s | status=%s", order_id, status)
+
+    except Exception as e:
+        log.exception("notify_student: failed | order_id=%s | status=%s | err=%s", order.get("id"), status, e)

@@ -31,7 +31,7 @@ class VendorJobs:
 
         for v in vendors:
             vid = v["id"]
-            summary = await calc_vendor_day_summary(self.db.db_path, vid, date=today)
+            summary = await calc_vendor_day_summary(self.db, vid, date=today)
 
             # Vendor (Amharic)
             try:
@@ -58,7 +58,7 @@ class VendorJobs:
         vendors = await self.db.list_vendors()
         for v in vendors:
             vid = v["id"]
-            ws = await calc_vendor_week_summary(self.db.db_path, vid)
+            ws = await calc_vendor_week_summary(self.db, vid)
 
             # Vendor (Amharic) compact weekly
             vendor_text = (
@@ -100,7 +100,7 @@ class VendorJobs:
 
         for v in vendors:
             vid = v["id"]
-            s = await calc_vendor_day_summary(self.db.db_path, vid, date=today)
+            s = await calc_vendor_day_summary(self.db, vid, date=today)
             if s["reliability_pct"] < min_reliability_pct:
                 # Admin alert
                 try:

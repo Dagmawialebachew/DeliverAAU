@@ -973,7 +973,7 @@ async def dg_commit(call: CallbackQuery, state: FSMContext):
 
         if not user_id:
             user_id = await db.create_user(
-                telegram_id=data['dg_id'], role="delivery",
+                telegram_id=data['dg_id'], role="delivery_guy",
                 first_name=data['dg_name'], phone=data['dg_phone'],
                 campus=data['dg_campus'], gender=new_gender
             )

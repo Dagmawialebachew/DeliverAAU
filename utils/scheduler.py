@@ -388,7 +388,7 @@ class BotScheduler:
                     try:
                         await self.bot.send_message(
                             vendor["telegram_id"],
-                            f"⚠️ ትዕዛዝ #{order_id} በ 45 ደቂቃ ውስጥ ተቀባይነት ሳላላገኘ ከትእዛዞች ተወግዷል።\n"
+                            f"⚠️ ትዕዛዝ #{order_id} በ 3 ደቂቃ ውስጥ ተቀባይነት ሳላላገኘ ከትእዛዞች ተወግዷል።\n"
                             "እባክዎ ትዕዛዞችን በፍጥነት ይቀበሉ ወይም ይሰርዙ።"
                         )
                     except (TelegramBadRequest, TelegramForbiddenError):
@@ -890,7 +890,7 @@ class BotScheduler:
         self.scheduler.add_job(
             self.expire_stale_orders,
             'interval',
-            minutes=5,
+            minutes=3,
             id='expire_stale_orders'
         )
         self.scheduler.add_job(

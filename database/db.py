@@ -186,6 +186,7 @@ CREATE TABLE IF NOT EXISTS jobs_log (
 -- but this is fine for initial setup)
 CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users(telegram_id);
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
+CREATE INDEX IF NOT EXISTS idx_orders_status_updated ON orders(status, updated_at);
 CREATE INDEX IF NOT EXISTS idx_orders_created ON orders(created_at);
 CREATE INDEX IF NOT EXISTS idx_subscriptions_user_end ON subscriptions(user_id, end_ts);
 CREATE INDEX IF NOT EXISTS idx_location_order_ts ON location_logs(order_id, ts);
@@ -210,6 +211,8 @@ ADD COLUMN IF NOT EXISTS gender TEXT CHECK (gender IN ('male','female'));
 
 -- Make sure dg_id is BIGINT
 ALTER TABLE daily_stats ALTER COLUMN dg_id TYPE BIGINT;
+ALTER TABLE daily_stats ALTER COLUMN date TYPE DATE USING date::date;
+
 
 
 ALTER TABLE orders
@@ -225,6 +228,13 @@ ON orders(created_at)
 WHERE status = 'pending';
 
 
+CREATE INDEX IF NOT EXISTS idx_orders_user_id_created ON orders(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_orders_dg_id_created ON orders(delivery_guy_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_ratings_vendor_id ON ratings(vendor_id);
+CREATE INDEX IF NOT EXISTS idx_ratings_dg_id ON ratings(delivery_guy_id);
+
+
+
 
 """
 
@@ -238,7 +248,7 @@ class Database:
     async def init_pool(self):
         """Initialize the asyncpg pool once at startup."""
         if self._pool is None:
-            self._pool = await asyncpg.create_pool(self.database_url)
+            self._pool = await asyncpg.create_pool(self.database_url, min_size=1, max_size=20)
 
     def _get_pool(self) -> Pool:
         """Return the pool synchronously (must be initialized first)."""
@@ -323,7 +333,7 @@ class Database:
         """Count users who signed up on a given date."""
         async with self._open_connection() as conn:
             return await conn.fetchval(
-                "SELECT COUNT(*) FROM users WHERE DATE(created_at) = $1",
+                "SELECT COUNT(*) FROM users WHERE created_at >= $1 AND created_at < $1 + interval '1 day'",
                 date
             )
             
@@ -379,6 +389,21 @@ class Database:
                 """,
                 date
             )
+            
+        # in db.py
+    async def get_platform_total(self, day: datetime.date) -> Optional[float]:
+        """Returns the total platform profit for all DGs on a given day."""
+        async with self._open_connection() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT SUM(earnings) AS total_profit
+                FROM daily_stats
+                WHERE date = $1
+                """,
+                day
+            )
+            return row["total_profit"] if row and row["total_profit"] is not None else 0.0
+
 
     # Top delivered meal
     async def top_meal_day(self, date: str):
@@ -396,6 +421,27 @@ class Database:
                 date
             )
             return (row["meal_name"], row["cnt"]) if row else ("None", 0)
+        
+    
+    
+    async def count_today_orders_for_dg(self, dg_id: int) -> Tuple[int, int]:
+        """
+        Returns (active_count, in_progress_count) for today.
+        active_count = pending/assigned/preparing/ready
+        in_progress_count = in_progress/on_the_way
+        """
+        today = date.today()
+        sql = """
+            SELECT
+                SUM(CASE WHEN status IN ('pending','assigned','preparing','ready') THEN 1 ELSE 0 END) AS active_count,
+                SUM(CASE WHEN status IN ('in_progress','on_the_way') THEN 1 ELSE 0 END) AS in_progress_count
+            FROM orders
+            WHERE delivery_guy_id = $1
+            AND DATE(created_at) = $2
+        """
+        row = await self._pool.fetchrow(sql, dg_id, today)
+        return int(row["active_count"] or 0), int(row["in_progress_count"] or 0)
+
 
     # Top vendor delivered
     async def top_vendor_delivered_day(self, date: str):
@@ -532,69 +578,96 @@ class Database:
 
 
 
-
-
-
-    async def get_orders_for_vendor(self, vendor_id: int, *, date: Optional[str] = None, status_filter: Optional[List[str]] = None, limit: Optional[int] = None, offset: int = 0) -> List[Dict[str, Any]]:
+    async def get_orders_for_vendor(
+        self,
+        vendor_id: int,
+        *,
+        date: Optional[str] = None,
+        status_filter: Optional[List[str]] = None,
+        limit: Optional[int] = None,
+        offset: int = 0
+    ) -> List[Dict[str, Any]]:
         """
         List orders for a vendor, optionally filtered by date (YYYY-MM-DD),
         status list, and paginated (limit/offset).
         """
-        async with self._open_connection() as conn:
-            where = ["vendor_id = $1"]
-            params: List[Any] = [vendor_id]
-            param_counter = 2
+        where = ["vendor_id = $1"]
+        params: List[Any] = [vendor_id]
+        param_counter = 2
 
-            if date:
-                where.append(f"created_at::DATE = ${param_counter}") # Postgres specific date extraction
-                params.append(date)
-                param_counter += 1
+        from datetime import datetime, date as date_cls
 
-            if status_filter:
-                # asyncpg handles IN clauses with lists automatically for one parameter
-                where.append(f"status = ANY(${(param_counter)})")
-                params.append(status_filter)
-                param_counter += 1
+        if date:
+            where.append(f"created_at >= ${param_counter} AND created_at < ${param_counter + 1}")
 
-            sql = f"SELECT * FROM orders WHERE {' AND '.join(where)} ORDER BY created_at DESC"
-            if limit is not None:
-                sql += f" LIMIT ${param_counter} OFFSET ${param_counter + 1}"
-                params.extend([limit, offset])
+            # normalize: accept either str "YYYY-MM-DD" or datetime.date
+            if isinstance(date, str):
+                base_date = datetime.strptime(date, "%Y-%m-%d").date()
+            elif isinstance(date, datetime):
+                base_date = date.date()
+            elif isinstance(date, date_cls):
+                base_date = date
+            else:
+                raise TypeError("date must be str, datetime, or date")
 
-            rows = await conn.fetch(sql, *params)
-            return [self._row_to_dict(r) for r in rows]
+            start_date = datetime.combine(base_date, datetime.min.time())
+            end_date   = datetime.combine(base_date, datetime.max.time())
 
-    async def reset_schema(self):
-        async with self._open_connection() as conn:
-            await conn.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
-            
-    async def get_internal_user_id(self, telegram_id: int) -> Optional[int]:
-        row = await self._pool.fetchrow(
-            "SELECT id FROM users WHERE telegram_id = $1",
-            telegram_id
-        )
-        return row["id"] if row else None
+            params.extend([start_date, end_date])
+            param_counter += 2
 
-    async def count_orders_for_vendor(self, vendor_id: int, *, date: Optional[str] = None, status_filter: Optional[List[str]] = None) -> int:
+        if status_filter:
+            where.append(f"status = ANY(${param_counter})")
+            params.append(status_filter)
+            param_counter += 1
+
+        sql = f"""
+            SELECT * FROM orders
+            WHERE {' AND '.join(where)}
+            ORDER BY created_at DESC
+        """
+        if limit is not None:
+            sql += f" LIMIT ${param_counter} OFFSET ${param_counter + 1}"
+            params.extend([limit, offset])
+
+        rows = await self._pool.fetch(sql, *params)
+        return [self._row_to_dict(r) for r in rows]
+
+
+    async def count_orders_for_vendor(
+        self,
+        vendor_id: int,
+        *,
+        date: Optional[str] = None,
+        status_filter: Optional[List[str]] = None
+    ) -> int:
         """Count orders for pagination and summaries."""
-        async with self._open_connection() as conn:
-            where = ["vendor_id = $1"]
-            params: List[Any] = [vendor_id]
-            param_counter = 2
+        where = ["vendor_id = $1"]
+        params: List[Any] = [vendor_id]
+        param_counter = 2
 
-            if date:
-                where.append(f"created_at::DATE = ${param_counter}")
-                params.append(date)
-                param_counter += 1
+        from datetime import datetime
 
-            if status_filter:
-                where.append(f"status = ANY(${(param_counter)})")
-                params.append(status_filter)
-                param_counter += 1
+        if date:
+            where.append(f"created_at >= ${param_counter} AND created_at < ${param_counter + 1}")
+            # if date is already a str like "2025-12-22", parse it
+            if isinstance(date, str):
+                base_date = datetime.strptime(date, "%Y-%m-%d").date()
+            else:
+                base_date = date  # already a datetime.date
 
-            sql = f"SELECT COUNT(*) FROM orders WHERE {' AND '.join(where)}"
-            count = await conn.fetchval(sql, *params)
-            return int(count)
+            start_date = datetime.combine(base_date, datetime.min.time())
+            end_date = datetime.combine(base_date, datetime.max.time())
+            params.extend([start_date, end_date])
+            param_counter += 2
+        if status_filter:
+            where.append(f"status = ANY(${param_counter})")
+            params.append(status_filter)
+            param_counter += 1
+
+        sql = f"SELECT COUNT(*) FROM orders WHERE {' AND '.join(where)}"
+        count = await self._pool.fetchval(sql, *params)
+        return int(count)
 
     async def summarize_vendor_day(self, vendor_id: int, date: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -788,110 +861,101 @@ class Database:
         denom = progressed + cancelled
         return 0.0 if denom == 0 else round(100.0 * progressed / denom, 2)
     
-    
-    
     async def get_delivery_guy_by_user_id(self, user_id: int):
-        """
-        Fetch a delivery guy by foreign key user_id and return the row.
-        Raises ValueError if not found.
-        """
-        async with self._open_connection() as conn:
-            row = await conn.fetchrow(
-                "SELECT id, user_id, telegram_id, name FROM delivery_guys WHERE user_id=$1",
-                user_id
-            )
+        row = await self._pool.fetchrow(
+            "SELECT id, user_id, telegram_id, name FROM delivery_guys WHERE user_id = $1 LIMIT 1",
+            user_id
+        )
         if row is None:
             raise ValueError(f"Delivery guy with user_id={user_id} not found in DB")
         return dict(row)
-    
-    
+
     async def get_delivery_guy_by_id(self, dg_id: int):
-        """
-        Fetch a delivery guy by primary key id and return the row.
-        Raises ValueError if not found.
-        """
-        async with self._open_connection() as conn:
-            row = await conn.fetchrow(
-                "SELECT id, user_id, telegram_id, name FROM delivery_guys WHERE id=$1",
-                dg_id
-            )
+        row = await self._pool.fetchrow(
+            "SELECT id, user_id, telegram_id, name FROM delivery_guys WHERE id = $1 LIMIT 1",
+            dg_id
+        )
         if row is None:
             raise ValueError(f"Delivery guy with id={dg_id} not found in DB")
         return dict(row)
 
-
     async def get_delivery_guy_telegram_id_by_id(self, dg_id: int) -> int:
-        """
-        Convenience helper: return just the telegram_id for a given delivery_guy_id.
-        """
-        guy = await self.get_delivery_guy_by_id(dg_id)
-        return guy["telegram_id"]
+        row = await self._pool.fetchrow(
+            "SELECT telegram_id FROM delivery_guys WHERE id = $1 LIMIT 1",
+            dg_id
+        )
+        if row is None or row["telegram_id"] is None:
+            raise ValueError(f"telegram_id for delivery_guy_id={dg_id} not found")
+        return int(row["telegram_id"])
 
     async def get_delivery_guy_telegram_id(self, user_id: int) -> int:
-        """
-        Convenience helper: return just the telegram_id for a given user_id.
-        """
-        guy = await self.get_delivery_guy_by_user_id(user_id)
-        return guy["telegram_id"]
+        row = await self._pool.fetchrow(
+            "SELECT telegram_id FROM delivery_guys WHERE user_id = $1 LIMIT 1",
+            user_id
+        )
+        if row is None or row["telegram_id"] is None:
+            raise ValueError(f"telegram_id for user_id={user_id} not found")
+        return int(row["telegram_id"])
 
-    async def get_user_by_id(self, internal_user_id: int) -> Optional[Dict[str, Any]]:
-        """
-        Return the users row by internal DB id.
-        """
-        async with self._open_connection() as conn:
-            row = await conn.fetchrow(
-                "SELECT * FROM users WHERE id = $1 LIMIT 1",
-                internal_user_id
-            )
-            return self._row_to_dict(row) if row else None
-            
-    async def get_student_chat_id(self, order: Dict[str, Any]) -> Optional[int]:
-        """
-        Resolve the student's Telegram chat_id from an order record.
-        - order["user_id"] is the internal DB id of the user.
-        - This method fetches the user row and returns user["telegram_id"].
-        """
-        user_id = order.get("user_id")
-        if not user_id:
-            return None
-
-        user = await self.get_user_by_id(user_id)
-        return int(user["telegram_id"]) if user and user.get("telegram_id") is not None else None
-
-
-    # -------------------- Delivery Guys --------------------
     async def get_delivery_guy(self, delivery_guy_id: int) -> Optional[Dict[str, Any]]:
-        async with self._open_connection() as conn:
-            row = await conn.fetchrow("SELECT * FROM delivery_guys WHERE id = $1", delivery_guy_id)
-            return self._row_to_dict(row) if row else None
+        row = await self._pool.fetchrow(
+            "SELECT * FROM delivery_guys WHERE id = $1 LIMIT 1",
+            delivery_guy_id
+        )
+        return self._row_to_dict(row) if row else None
     
+    async def create_delivery_guy(
+        self,
+        telegram_id: int,
+        name: str,
+        campus: str,
+        gender: str = None,
+        phone: str = None
+    ) -> int:
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                # 1. Create or update user record with role=delivery_guy
+                user_id = await conn.fetchval(
+                    """
+                    INSERT INTO users (telegram_id, role, first_name, phone, campus)
+                    VALUES ($1, 'delivery_guy', $2, $3, $4)
+                    ON CONFLICT (telegram_id) DO UPDATE
+                    SET role = 'delivery_guy',
+                        first_name = EXCLUDED.first_name,
+                        phone = EXCLUDED.phone,
+                        campus = EXCLUDED.campus
+                    RETURNING id
+                    """,
+                    telegram_id, name, phone, campus
+                )
 
-    async def create_delivery_guy(self, user_id: int, name: str, campus: str, gender: str = None, phone: str = None) -> int:
-        async with self._open_connection() as conn:
-            dg_id = await conn.fetchval(
-                """
-                INSERT INTO delivery_guys
-                (user_id, name, campus, gender, phone, active, total_deliveries)
-                VALUES ($1, $2, $3, $4, $5, TRUE, 0)
-                RETURNING id
-                """,
-                user_id, name, campus, gender, phone,
-            )
-            return int(dg_id) if dg_id is not None else 0
-            
-    # --- Delivery guy lookups ---
+                # 2. Create or update delivery_guy record linked to that user
+                dg_id = await conn.fetchval(
+                    """
+                    INSERT INTO delivery_guys (user_id, telegram_id, name, campus, gender, phone, active, total_deliveries)
+                    VALUES ($1, $2, $3, $4, $5, $6, TRUE, 0)
+                    ON CONFLICT (user_id) DO UPDATE
+                    SET telegram_id = EXCLUDED.telegram_id,
+                        name = EXCLUDED.name,
+                        campus = EXCLUDED.campus,
+                        gender = EXCLUDED.gender,
+                        phone = EXCLUDED.phone,
+                        active = FALSE
+                    RETURNING id
+                    """,
+                    user_id, telegram_id, name, campus, gender, phone
+                )
+
+        return int(dg_id) if dg_id else 0
+
+
     async def get_delivery_guy_by_user(self, telegram_id: int):
-        try:
-            async with self._open_connection() as conn:
-                return await conn.fetchrow(
-                    "SELECT * FROM delivery_guys WHERE telegram_id=$1", telegram_id
-                )
-        except asyncpg.InvalidCachedStatementError:
-            await self.recycle_pool()
-            async with self._open_connection() as conn:
-                return await conn.fetchrow(
-                    "SELECT * FROM delivery_guys WHERE telegram_id=$1", telegram_id
-                )
+        # Remove pool recycle; rely on asyncpg’s internal statement cache
+        return await self._pool.fetchrow(
+            "SELECT * FROM delivery_guys WHERE telegram_id = $1 LIMIT 1",
+            telegram_id
+        )
+
 
 
     async def get_daily_stats_for_dg(self, dg_id: int, date: str) -> Dict[str, Any]:
@@ -1082,6 +1146,22 @@ class Database:
 
     from datetime import datetime
     from aiogram import Bot
+    async def get_internal_user_id(self, telegram_id: int) -> Optional[int]:
+        row = await self._pool.fetchrow(
+            "SELECT id FROM users WHERE telegram_id = $1",
+            telegram_id
+        )
+        return row["id"] if row else None
+    
+    
+    async def get_user_by_id(self, internal_user_id: int) -> Optional[Dict[str, Any]]:
+        """Return the users row by internal DB id."""
+        row = await self._pool.fetchrow(
+            "SELECT * FROM users WHERE id = $1 LIMIT 1",
+            internal_user_id
+        )
+        return dict(row) if row else None
+
 
     async def check_thresholds_and_notify(
         self,
@@ -1332,6 +1412,19 @@ class Database:
                     limit
                 )
                 return [self._row_to_dict(r) for r in rows]
+    async def get_student_chat_id(self, order: Dict[str, Any]) -> Optional[int]:
+        """
+        Resolve the student's Telegram chat_id from an order record.
+        - order["user_id"] is the internal DB id of the user.
+        - This method fetches the user row and returns user["telegram_id"].
+        """
+        user_id = order.get("user_id")
+        if not user_id:
+            return None
+
+        user = await self.get_user_by_id(user_id)
+        return int(user["telegram_id"]) if user and user.get("telegram_id") is not None else None
+
     async def get_stats_for_period(self, dg_id: int, start_date: str, end_date: str) -> List[Dict[str, Any]]:
         """Retrieves stats for a delivery guy over a period."""
         async with self._open_connection() as conn:
@@ -1528,17 +1621,15 @@ class Database:
     
     async def update_order_status(self, order_id: int, status: str, dg_id: Optional[int] = None) -> None:
         """Updates the order status and handles time-based fields."""
-
         sql_parts = ["status = $1", "updated_at = CURRENT_TIMESTAMP"]
         params = [status]
-        param_counter = 2
+        p = 2
 
         if dg_id:
-            sql_parts.append(f"delivery_guy_id = ${param_counter}")
+            sql_parts.append(f"delivery_guy_id = ${p}")
             params.append(dg_id)
-            param_counter += 1
+            p += 1
 
-        # Handle time-based fields
         if status in ("accepted", "preparing", "ready"):
             sql_parts.append("accepted_at = CURRENT_TIMESTAMP")
             if status == "ready":
@@ -1546,49 +1637,33 @@ class Database:
         elif status == "delivered":
             sql_parts.append("delivered_at = CURRENT_TIMESTAMP")
 
-        # Build final SQL
-        sql = f"UPDATE orders SET {', '.join(sql_parts)} WHERE id = ${param_counter}"
+        sql = f"UPDATE orders SET {', '.join(sql_parts)} WHERE id = ${p}"
         params.append(order_id)
 
-        # Execute inside connection context
-        async with self._open_connection() as conn:
-            await conn.execute(sql, *params)
-     
+        await self._pool.execute(sql, *params)
 
-    async def update_order_delivery_guy(
-        self,
-        order_id: int,
-        delivery_guy_id: int,
-        breakdown_json: str | None
-    ) -> None:
-        """
-        Update the assigned delivery guy and breakdown info.
-        """
-        async with self._open_connection() as conn:
-            await conn.execute(
-                """
-                UPDATE orders
-                SET delivery_guy_id = $1,
-                    breakdown_json = $2,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id = $3
-                """,
-                delivery_guy_id, breakdown_json, order_id
-            )
+
+    async def update_order_delivery_guy(self, order_id: int, delivery_guy_id: int, breakdown_json: str | None) -> None:
+        await self._pool.execute(
+            """
+            UPDATE orders
+            SET delivery_guy_id = $1,
+                breakdown_json = $2,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = $3
+            """,
+            delivery_guy_id, breakdown_json, order_id
+        )
+
 
     async def set_order_timestamp(self, order_id: int, field_name: str) -> None:
-        """
-        Set a timestamp field to CURRENT_TIMESTAMP.
-        Example: accepted_at, ready_at, delivered_at.
-        """
-        async with self._open_connection() as conn:
-            # Use SQL injection-safe field name check if needed
-            if field_name not in {"accepted_at", "ready_at", "delivered_at"}:
-                raise ValueError(f"Unsupported timestamp field: {field_name}")
-            await conn.execute(
-                f"UPDATE orders SET {field_name} = CURRENT_TIMESTAMP WHERE id = $1",
-                order_id
-            )
+        if field_name not in {"accepted_at", "ready_at", "delivered_at"}:
+            raise ValueError(f"Unsupported timestamp field: {field_name}")
+        await self._pool.execute(
+            f"UPDATE orders SET {field_name} = CURRENT_TIMESTAMP WHERE id = $1",
+            order_id
+        )
+
 
     async def list_delivery_guys(
         self,
@@ -1610,7 +1685,7 @@ class Database:
             return [dict(r) for r in rows]
 
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Dict, Any
 
 class AnalyticsService:
@@ -2078,42 +2153,76 @@ async def seed_delivery_guys(db: Database) -> None:
 
     print("✅ delivery_guys table reset and seeded with entries")
     
-    
-
-
-
-async def seed_speicific_dg(db: Database) -> None:
+async def seed_specific_dg(db: Database) -> None:
     """
-    Reset and seed the delivery_guys table with ONLY the real DG you specified.
+    Inspect and then delete a specific delivery guy and their user record by telegram_id.
     """
-
-    # (user_id, telegram_id, name, campus, phone, active,
-    #  total_deliveries, accepted_requests, total_requests,
-    #  coins, xp, level)
-    delivery_guy = (
-        1005,
-        7701933259,
-        "Melat Solomon",
-        "fbe",
-        "0960306801", 
-        "male"# <- Your phone number here
-       
-    )
+    telegram_id = 6717771475  # the DG you want to remove
 
     async with db._open_connection() as conn:
-        # Reset table
-        await conn.execute("""
-            DELETE FROM users
-            WHERE id = $1 OR telegram_id = $2
-        """, delivery_guy[0], delivery_guy[1])
+        # Look up the user record first
+        user_row = await conn.fetchrow(
+            "SELECT id, telegram_id, role, first_name, phone, campus FROM users WHERE telegram_id = $1",
+            telegram_id
+        )
+        if user_row:
+            print("🔎 Found user before delete:", dict(user_row))
+        else:
+            print("⚠️ No user found with telegram_id", telegram_id)
+
+        # Look up the delivery_guy record too
+        dg_row = await conn.fetchrow(
+            "SELECT id, user_id, telegram_id, name, campus, phone, active FROM delivery_guys WHERE telegram_id = $1",
+            telegram_id
+        )
+        if dg_row:
+            print("🔎 Found delivery_guy before delete:", dict(dg_row))
+        else:
+            print("⚠️ No delivery_guy found with telegram_id", telegram_id)
+
+        # Now delete
+        # await conn.execute("DELETE FROM delivery_guys WHERE telegram_id = $1", telegram_id)
+        # await conn.execute("DELETE FROM users WHERE telegram_id = $1", telegram_id)
+
+    print("✅ Deleted specific delivery guy with telegram_id", telegram_id)
 
 
-        insert_sql = """
-            INSERT INTO delivery_guys 
-            (user_id, telegram_id, name, campus, phone, gender)
-            VALUES ($1::BIGINT, $2::BIGINT, $3, $4, $5, $6)
-        """
 
-        await conn.execute(insert_sql, *delivery_guy)
+async def generate_delivery_guy_row(db: Database, telegram_id: int) -> int:
+    """
+    Ensure a delivery_guy row exists for the given telegram_id.
+    If missing, create it from the corresponding users record.
+    Returns the delivery_guy.id.
+    """
+    async with db._open_connection() as conn:
+        # 1. Fetch the user record
+        user_row = await conn.fetchrow(
+            "SELECT id, first_name, campus, phone FROM users WHERE telegram_id = $1",
+            telegram_id
+        )
+        if not user_row:
+            raise ValueError(f"No user found with telegram_id={telegram_id}")
 
-    print("✅ delivery_guysseeded with ONLY one specific delivery guy")
+        user_id = user_row["id"]
+        name = user_row["first_name"]
+        campus = user_row["campus"]
+        phone = user_row["phone"]
+
+        # 2. Try to insert delivery_guy row (or update if exists)
+        dg_id = await conn.fetchval(
+            """
+            INSERT INTO delivery_guys (user_id, telegram_id, name, campus, phone, active, total_deliveries)
+            VALUES ($1, $2, $3, $4, $5, TRUE, 0)
+            ON CONFLICT (user_id) DO UPDATE
+            SET telegram_id = EXCLUDED.telegram_id,
+                name = EXCLUDED.name,
+                campus = EXCLUDED.campus,
+                phone = EXCLUDED.phone,
+                active = TRUE
+            RETURNING id
+            """,
+            user_id, telegram_id, name, campus, phone
+        )
+
+    print(f"✅ Delivery guy row ensured for telegram_id {telegram_id}, id={dg_id}")
+    return int(dg_id)

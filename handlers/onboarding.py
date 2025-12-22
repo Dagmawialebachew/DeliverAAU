@@ -212,7 +212,7 @@ async def start(message: Message, state: FSMContext):
 
     # --- DELIVERY GUY EXPERIENCE (added manually; delivery_guys.user_id = telegram_id) ---
     user = await db.get_user(telegram_id)
-    delivery_guy = None if user else await db.get_delivery_guy_by_user(telegram_id)
+    delivery_guy = await db.get_delivery_guy_by_user(telegram_id)
     if delivery_guy or (user and (user.get("role") or "").lower() == "delivery_guy"):
         await typing_pause(message, "🚴‍♂️ Welcome back, Campus Star!")
         await asyncio.sleep(0.4)

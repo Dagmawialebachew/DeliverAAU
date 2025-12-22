@@ -15,7 +15,7 @@ from aiogram.types import (
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.filters import StateFilter
-from utils.helpers import eta_and_distance, typing_pause
+from utils.helpers import calculate_commission, eta_and_distance, typing_pause
 
 from config import settings
 from database.db import Database
@@ -135,7 +135,7 @@ def dropoff_keyboard(campus: str) -> InlineKeyboardMarkup:
     presets_map = {
         "4kilo": ["Library", "Main Gate"],
         "5kilo": ["Library", "Main Gate"],
-        "6kilo": ["Kennedy", "Main Gate", "False Gate", "Lounge", "Law Cafeteria"],
+        "6kilo": ["Main Gate", "False Gate", "Lounge", "Law Cafeteria", "AKO Coffee", "Stadium"],
         "FBE": ["Library", "Main Gate"],
     }
     presets = presets_map.get(campus, ["Library", "Main Gate"])
@@ -1046,8 +1046,6 @@ async def ask_final_confirmation(message: Message, state: FSMContext):
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
-
-
 def build_breakdown_json(cart_counts: dict, menu: list, half_lookup: dict) -> tuple[list[dict], float]:
     by_id = {m["id"]: m for m in menu}
     items = []
@@ -1059,16 +1057,23 @@ def build_breakdown_json(cart_counts: dict, menu: list, half_lookup: dict) -> tu
             if lookup and len(lookup) == 2:
                 a = next((m["name"] for m in HALF_HALF_GLOBAL if m["id"] == lookup[0]), "")
                 b = next((m["name"] for m in HALF_HALF_GLOBAL if m["id"] == lookup[1]), "")
-                items.append({"name": f"ሃፍ ሃፍ: {a} + {b}", "qty": qty})
-                # price comes from parent "ሃፍ ሃፍ" item
                 parent_id = int(key.split(":")[1])
                 parent = by_id.get(parent_id)
-                if parent:
-                    subtotal += parent["price"] * qty
+                price = parent["price"] if parent else 0
+                items.append({
+                    "name": f"ሃፍ ሃፍ: {a} + {b}",
+                    "qty": qty,
+                    "price": price
+                })
+                subtotal += price * qty
         else:
             item = by_id.get(int(key))
             if item:
-                items.append({"name": item["name"], "qty": qty})
+                items.append({
+                    "name": item["name"],
+                    "qty": qty,
+                    "price": item["price"]
+                })
                 subtotal += item["price"] * qty
 
     breakdown = {
@@ -1155,19 +1160,21 @@ async def final_confirm(cb: CallbackQuery, state: FSMContext):
 
     # Notify vendor
     vendor_chat_id = vendor.get("telegram_id")
+    commission = calculate_commission(json.dumps(breakdown["items"], ensure_ascii=False))
+    vendor_share = commission.get("vendor_share", subtotal)
     if vendor_chat_id:
         counts = Counter([i["name"] for i in breakdown["items"]])
         items = "\n".join(
-            f"• {name} x{count}" if count > 1 else f"• {name}"
-            for name, count in counts.items()
-        ) or "—"
+    f"• {i['name']} x{i['qty']}" if i['qty'] > 1 else f"• {i['name']}"
+    for i in breakdown["items"]
+) or "—"
 
         campus_text = await db.get_user_campus_by_order(order_id)
 
         vendor_text = (
             f"📦 አዲስ ትዕዛዝ #{order_id}\n"
             f"🛒 ምግቦች:\n{items}\n\n"
-            f"💵 ዋጋ: {int(subtotal)} ብር\n"
+            f"💵 ዋጋ: {int(vendor_share)} ብር\n"
             f"📍 ካምፓስ: {campus_text}\n\n"
             f"⚡ እባክዎት ትዕዛዙን ይቀበሉ ወይም ይከለክሉ።"
         )

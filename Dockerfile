@@ -1,10 +1,13 @@
-# Use official Python image
-FROM python:3.11-slim
+# Use Python 3.12 slim base image for latest performance improvements
+FROM python:3.12-slim
+
+# Prevent Python from buffering stdout/stderr
+ENV PYTHONUNBUFFERED=1
 
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies needed for psycopg/asyncpg
 RUN apt-get update && apt-get install -y \
     build-essential \
     libpq-dev \
@@ -13,14 +16,15 @@ RUN apt-get update && apt-get install -y \
 # Copy requirements first (for caching)
 COPY requirements.txt .
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Upgrade pip/setuptools/wheel and install dependencies
+RUN pip install --upgrade pip setuptools wheel \
+    && pip install --no-cache-dir -r requirements.txt
 
 # Copy project files
 COPY . .
 
 # Expose port (Render sets $PORT automatically)
-EXPOSE 10000
+EXPOSE 8080
 
-# Run uvicorn server
-CMD ["uvicorn", "bot:app", "--host", "0.0.0.0", "--port", "10000"]
+# Run the bot directly — aiohttp server is started inside bot.py
+CMD ["python", "bot.py"]

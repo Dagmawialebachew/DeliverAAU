@@ -11,7 +11,6 @@ import datetime
 import json
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError 
 from database import db
-from utils.db_helpers import get_student_chat_id
 from handlers import delivery_guy
 
 async def send_typing_action(bot: Bot, chat_id: int, duration: float = 0.8) -> None:
@@ -436,7 +435,7 @@ async def assign_delivery_guy(
         #     dg_id
         # )
 
-        today = datetime.date.today().strftime("%Y-%m-%d")
+        today = datetime.date.today()
         await conn.execute(
             """
             INSERT INTO daily_stats (dg_id, date, assigned, updated_at)
@@ -729,6 +728,7 @@ import json
 def calculate_commission(items_json: str) -> dict:
     try:
         items = json.loads(items_json)
+        print('here are the items passed for commission calculation:', items)
     except Exception:
         items = []
 
@@ -737,21 +737,23 @@ def calculate_commission(items_json: str) -> dict:
 
     for item in items:
         price = item.get("price", 0)
-        subtotal += price
+        qty = item.get("qty", 1)  # default to 1 if missing
 
-        # Commission per item logic
-        if price >= 100:
-            total_commission += 10
-        elif 200 <= price < 300:
-            total_commission += 15
-        elif 300 <= price < 400:
-            total_commission += 20
-        # else: no commission
+        subtotal += price * qty
+
+        # Commission per item logic (apply per unit)
+        for _ in range(qty):
+            if 100 <= price < 200:
+                total_commission += 10
+            elif 200 <= price < 300:
+                total_commission += 15
+            elif price >= 300:
+                total_commission += 20
+            # else: no commission
 
     return {
         "platform_share": total_commission,
         "vendor_share": subtotal - total_commission,
-        "items": [i.get("name") for i in items],
+        "items": [f"{i.get('name')} x{i.get('qty',1)}" for i in items],
         "subtotal": subtotal
     }
-
