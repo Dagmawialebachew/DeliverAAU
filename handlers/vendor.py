@@ -944,7 +944,6 @@ async def order_mark_ready(cb: CallbackQuery, bot: Bot):
     # Notify DG (English, eye-catching, include essential info)
     if order.get("delivery_guy_id"):
         dg = await db.get_delivery_guy(order["delivery_guy_id"])
-        print('here is the dg', dg)
         if dg:
             vendor = await db.get_vendor(order["vendor_id"])
             vendor_name = vendor["name"] if vendor else "Vendor"

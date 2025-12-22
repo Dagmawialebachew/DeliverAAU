@@ -794,7 +794,15 @@ async def admin_dgs_entry(message: Message, state: FSMContext):
             "SELECT id, name, phone, campus, active, blocked, total_deliveries, accepted_requests, total_requests, skipped_requests FROM delivery_guys ORDER BY id ASC"
         )
     if not rows:
-        await message.answer("⚠️ No delivery guys found.", reply_markup=get_main_menu_kb())
+        # Show message + action buttons
+        text = "⚠️ No delivery guys found.\n\nTap below to add one or go back."
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="➕ Add DG", callback_data="dg_add"),
+                InlineKeyboardButton(text="⬅️ Back to Main", callback_data="admin_back")
+            ]
+        ])
+        await message.answer(text, reply_markup=kb)
         return
 
     await message.answer(build_dg_list_text(rows), reply_markup=build_dg_list_kb(rows), parse_mode="HTML")

@@ -132,7 +132,6 @@ def build_profile_card(user: dict, role: str = "student") -> str:
     level = user.get("level", 1)
     bar_length = 15
     filled = int(level)
-    print('here is filled', filled)
     
     progress_bar = "▰" * filled + "▱" * (bar_length - filled)
 

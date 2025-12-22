@@ -35,7 +35,7 @@ async def need_help(message: Message):
     "👋 Welcome to <b>UniBites Delivery Support</b> 🎓🍔\n\n"
     "UniBites is your campus-first food delivery service — "
     "connecting students, vendors & delivery partners with ease and soul.\n"
-    "You can use our telegram support <a href='https://t.me/unibites_support'>@unibites_support</a> for direct assistance.\n\n"
+    "You can use our telegram support <a href='https://t.me/unibites_support'>@unibites_support</a> for direct assistance. or use our support number +251922643416\n\n"
     "✨ Need help or want to share feedback? Tap below to get support:",
     reply_markup=kb,
     parse_mode="HTML"

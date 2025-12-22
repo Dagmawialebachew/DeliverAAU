@@ -728,7 +728,6 @@ import json
 def calculate_commission(items_json: str) -> dict:
     try:
         items = json.loads(items_json)
-        print('here are the items passed for commission calculation:', items)
     except Exception:
         items = []
 

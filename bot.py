@@ -289,13 +289,13 @@ async def start_polling():
     scheduler.start()
     await set_commands(bot, settings.ADMIN_IDS)
       # 3. Seed data
-    # await seed_vendors(db)
     # await seed_delivery_guys(db)
     # await seed_specific_dg(db)
     # await generate_delivery_guy_row(db, 6717771475)
     
         # 2. Reset schema (drop/recreate tables)
-    # await db.reset_schema()
+    # await db.reset_schema
+    # await seed_vendors(db)
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 

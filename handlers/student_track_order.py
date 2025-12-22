@@ -523,7 +523,6 @@ async def send_past_orders_page(message_or_callback, user_id: int, page: int):
             items = []
 
         if items:
-            print("raw items:", items)
 
             # normalize to names
             names = []
@@ -542,7 +541,6 @@ async def send_past_orders_page(message_or_callback, user_id: int, page: int):
                 f"{name} x{count}" if count > 1 else name
                 for name, count in list(counts.items())[:3]
             )
-            print("preview:", items_preview)
 
         else:
             items_preview = "…"

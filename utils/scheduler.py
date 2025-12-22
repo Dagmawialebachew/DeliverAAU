@@ -613,7 +613,6 @@ class BotScheduler:
                     "",
                     "🏆 **TOP PERFORMERS**:"
                 ]
-                print('here is top_drivers', top_drivers)
 
                 if top_drivers:
                     for idx, td in enumerate(top_drivers, 1):
@@ -801,7 +800,7 @@ class BotScheduler:
 
     async def reset_skips_daily_job(self) -> None:
         """Job wrapper for the daily skip reset function."""
-        await reset_skips_daily(self.db.db_path)
+        await reset_skips_daily(self.db)
         log.info("Scheduled job: Daily skips reset successfully.")
 
 
@@ -901,7 +900,6 @@ class BotScheduler:
         )
 
         # Admin summary at 23:00 daily
-        print('Scheduling admin summary job', ADMIN_IDS)
         if ADMIN_GROUP_ID:
             self.scheduler.add_job(
                 self.send_admin_summary,

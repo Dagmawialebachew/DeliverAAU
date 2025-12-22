@@ -235,7 +235,7 @@ def render_menu_text(menu: List[Dict[str, Any]], vendor_name: str, page: int = 1
 
     lines.append("\n🛒 *Tap the numbers below to add items to your cart!*")
     lines.append("───────────────────────────────")
-    lines.append("💡 You can view your cart anytime.")
+    lines.append("💡 Click view cart after you finished adding items to proceed .")
     lines.append(f"\n📄 Page {page}/{total_pages}")
 
     return "\n".join(lines)
@@ -290,12 +290,18 @@ async def start_order(message: Message, state: FSMContext):
         return
 
     # Build vendor names string
-    vendor_names_list = "\n".join(f"🏛 {v['name']}" for v in vendors)
+    vendor_names_list = "\n\n".join(f"🏛 <b>{v['name']}</b>" for v in vendors)
 
     sent = await message.answer(
-        f"🔥 Today's open spots:\n{vendor_names_list}\n\nTap below to order ↓",
-        reply_markup=places_keyboard(vendors)
-)
+        (
+            "🔥 <b>Today's Open Spots</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"{vendor_names_list}\n\n"
+            "👇 <b>Tap below to order</b>"
+        ),
+        reply_markup=places_keyboard(vendors),
+        parse_mode="HTML"
+    )
 
 
     await state.set_state(OrderStates.choose_place)
@@ -397,7 +403,7 @@ async def menu_paginate(cb: CallbackQuery, state: FSMContext):
     await state.update_data(menu_page=page)
 
     # Re-render cinematic menu text
-    text = render_menu_text(menu, vendor.get("name", "Unknown Spot"))
+    text = render_menu_text(menu, vendor.get("name", "Unknown Spot"), page=page)
 
     # Build numeric keyboard for this page
     kb = menu_keyboard(menu, cart_counts, page)  # <-- pass cart_counts

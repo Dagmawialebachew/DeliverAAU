@@ -88,7 +88,6 @@ async def calc_acceptance_rate(self, dg_id: int) -> float:
 
         total_requests = int(row["total_requests"] or 0)
         accepted_requests = int(row["accepted_requests"] or 0)
-        print(f"[DEBUG] DG {dg_id} - Accepted: {accepted_requests}, Total: {total_requests}")
 
         if total_requests <= 0:
             return 100.0  # No requests yet → full acceptance by definition
@@ -119,7 +118,6 @@ async def get_all_active_orders_for_dg(self, dg_id: int) -> List[Dict[str, Any]]
         )
 
         # Debug print
-        print(f"[DEBUG] get_all_active_orders_for_dg for DG {dg_id}: {rows}")
 
         # Or use logging for better control
         import logging
