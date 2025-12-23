@@ -370,7 +370,7 @@ async def render_order_card(
             InlineKeyboardButton(text="🧾 View Receipt", callback_data=f"admin:order:receipt:{order_id}")
         ])
         
-    # Assignment Rows
+    # Assignment Rowsgit
     if status in ['preparing', 'ready', 'assigned', 'in_progress']:
         assign_label = "👤 Reassign DG" if order.get('delivery_guy_id') else "👤 Assign DG (Manual)"
         kb_rows.append([
@@ -706,6 +706,7 @@ async def action_accept(cb: CallbackQuery):
         await cb.answer("⚠️ Action failed.", show_alert=True)
         await admin_orders_filter_handler(cb, filter_key, page)
 
+
 @router.callback_query(F.data.startswith("admin:order:cancel"))
 async def action_cancel(cb: CallbackQuery):
     parts = cb.data.split(":")
@@ -716,19 +717,32 @@ async def action_cancel(cb: CallbackQuery):
     try:
         order = await db.get_order(order_id)
         if not order:
-             await cb.answer("Order not found.", show_alert=True)
-             await admin_orders_filter_handler(cb, filter_key, page)
-             return
+            await cb.answer("Order not found.", show_alert=True)
+            await admin_orders_filter_handler(cb, filter_key, page)
+            return
 
         # 1. DB Update
         await db.update_order_status(order_id, "cancelled")
-        
-        # 2. Notify Student
-        # Using a generic status or custom message logic based on existing notify_student capabilities
-        # If 'cancelled' isn't handled by notify_student, we might need a direct message.
-        # Assuming notify_student handles 'cancelled' status mapping.
-        await notify_student(cb.bot, order, status="cancelled")
-        
+
+        # 2. Notify Student (same careful message as vendor reject)
+        try:
+            student_chat_id = await db.get_student_chat_id(order)
+            if student_chat_id:
+                await safe_send(
+                    cb.bot,
+                    student_chat_id,
+                    (
+                        f"❌ Sorry, your order #{order_id} has been cancelled by an administrator.\n\n"
+                        "This may happen if:\n"
+                        "• The vendor was unavailable or closed\n"
+                        "• The item is out of stock\n"
+                        "• A delivery partner could not be assigned in time\n\n"
+                        "Please try again later or choose another meal provider."
+                    )
+                )
+        except Exception:
+            log.exception("Failed to notify student for cancelled order %s", order_id)
+
         # 3. Notify DG if assigned
         if order.get('delivery_guy_id'):
             dg = await db.get_delivery_guy(order['delivery_guy_id'])
@@ -744,6 +758,9 @@ async def action_cancel(cb: CallbackQuery):
         log.exception(f"Cancel failed: {e}")
         await cb.answer("⚠️ Action failed.", show_alert=True)
         await admin_orders_filter_handler(cb, filter_key, page)
+ 
+        
+        
 @router.callback_query(F.data.startswith("admin:order:ready"))
 async def action_ready(cb: CallbackQuery):
     parts = cb.data.split(":")

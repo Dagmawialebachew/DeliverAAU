@@ -1612,7 +1612,9 @@ async def analytics_view(message: Message):
 
         # Ratings
         avg_delivery_rating = await conn.fetchval("SELECT AVG(stars) FROM ratings WHERE type='delivery'")
-        avg_vendor_rating = await conn.fetchval("SELECT AVG(stars) FROM ratings WHERE type='vendor'")
+        avg_vendor_rating = await conn.fetchval(
+            "SELECT COALESCE(AVG(stars), 0) FROM ratings WHERE type='vendor'"
+        )        
         ratings_today = await conn.fetchval("SELECT COUNT(*) FROM ratings WHERE created_at::date=CURRENT_DATE")
 
         # System health

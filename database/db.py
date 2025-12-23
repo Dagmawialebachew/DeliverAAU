@@ -1751,7 +1751,7 @@ class AnalyticsService:
         # --- Vendors ---
         vendors_summary = await self.db.summarize_vendors_day(date=today)
         vendors_active = vendors_summary["active"]
-        avg_vendor_rating = vendors_summary["avg_rating"]
+        avg_vendor_rating = vendors_summary["avg_rating"] or 0
 
         # --- Delivery Guys ---
         dg_summary = await self.db.summarize_delivery_day(date=today)
@@ -2314,3 +2314,35 @@ async def debug_list_delivery_guys(db):
     rows = await db._pool.fetch("SELECT * FROM delivery_guys ORDER BY id")
     for r in rows:
         print(dict(r))
+
+
+
+
+async def update_menu_item_price(
+    db: Database,
+    vendor_telegram_id: int,
+    item_id: int,
+    new_price: int,
+) -> None:
+    async with db._open_connection() as conn:
+        await conn.execute(
+            """
+            UPDATE vendors
+            SET menu_json = (
+                SELECT jsonb_agg(
+                    CASE
+                        WHEN (item->>'id')::int = $2
+                        THEN jsonb_set(item, '{price}', to_jsonb($3::int), false)
+                        ELSE item
+                    END
+                )
+                FROM jsonb_array_elements(menu_json::jsonb) AS item
+            )
+            WHERE telegram_id = $1
+            """,
+            vendor_telegram_id,
+            item_id,
+            new_price,
+        )
+
+    print("✅ Menu item price updated successfully")
