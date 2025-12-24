@@ -14,7 +14,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.types import Update, BotCommand, BotCommandScopeDefault, BotCommandScopeChat
 
 from config import settings
-from database.db import Database, debug_list_delivery_guys, generate_delivery_guy_row, seed_delivery_guys, seed_vendors, seed_specific_dg, update_menu_item_price
+from database.db import Database, debug_list_delivery_guys, generate_delivery_guy_row, replace_menu_item, seed_delivery_guys, seed_vendors, seed_specific_dg, update_menu_item_price
 from utils.scheduler import BotScheduler
 
 # Middlewares
@@ -296,13 +296,24 @@ async def start_polling():
     
         # 2. Reset schema (drop/recreate tables)
     # await db.reset_schema.
-#     await seed_vendors(db)
+    await seed_vendors(db)
 #     await update_menu_item_price(
 #     db=db,
 #     vendor_telegram_id=8487056502,  # Tena Mgb Bet
 #     item_id=1,
 #     new_price=230,
 # )
+
+    # new_item = {
+    #     "id": 11,
+    #     "name": "ፍርፍር በቀይ",
+    #     "price": 120,
+    #     "category": "Fasting",
+    # }
+
+    # await replace_menu_item(db, 589745233, new_item)   # Abudabi #5kilo
+    # await replace_menu_item(db, 6567214347, new_item)  # Abudabi #6kilo
+
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 

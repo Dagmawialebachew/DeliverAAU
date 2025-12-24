@@ -2102,96 +2102,141 @@ class AnalyticsService:
 # -------------------- Seed Functions --------------------
 async def seed_vendors(db: Database) -> None:
     vendors = [
-        # {
-        # "telegram_id": 589745233,
-        #     "name": "Abudabi #5kilo",
-        #     "menu": [
-        #         {"id": 1, "name": "ሙሉ ኮርኒስ", "price": 250, "category": "Fasting"},
-        #         {"id": 2, "name": "ሃፍ ሃፍ", "price": 150, "category": "Fasting"},
-        #         {"id": 3, "name": "ግማሽ ኮርኒስ", "price": 150, "category": "Fasting"},
-        #         {"id": 4, "name": "ሙሉ አገልግል", "price": 280, "category": "Fasting"},
-        #         {"id": 5, "name": "ግማሽ አገልገል", "price": 170, "category": "Fasting"},
-        #         {"id": 6, "name": "በየዓይነት", "price": 130, "category": "Fasting"},
-        #         # {"id": 7, "name": "ተጋቢኖ", "price": 140, "category": "Fasting"},
-        #         # {"id": 8, "name": "ፓስታ በስጎ", "price": 120, "category": "Fasting"},
-        #         # {"id": 9, "name": "ፓስታ በአትክልት", "price": 120, "category": "Fasting"},
-        #         # {"id": 10, "name": "ፓስታ በቴስቲ", "price": 120, "category": "Fasting"},
-        #         # {"id": 11, "name": "ፍርፍር በቀይ", "price": 120, "category": "Fasting"},
-        #         # {"id": 12, "name": "ፍርፍር በአልጫ", "price": 120, "category": "Fasting"},
-        #         # {"id": 13, "name": "ስፔሻል ሽሮ", "price": 120, "category": "Fasting"},
-        #         {"id": 14, "name": "ቴስቲ ወጥ", "price": 120, "category": "Fasting"},
-        #         # {"id": 15, "name": "ቴስቲ ለብለብ", "price": 130, "category": "Fasting"},
-        #         {"id": 16, "name": "ቴስቲ ጥብስ", "price": 130, "category": "Fasting"},
-        #         # {"id": 17, "name": "ቴስቲ ምንቸት", "price": 130, "category": "Fasting"},
-        #         # {"id": 18, "name": "የጾም ድብልቅ", "price": 220, "category": "Fasting"},
-        #         {"id": 19, "name": "ስፔሻል ፍርፍር", "price": 150, "category": "Fasting"},
-        #         # {"id": 20, "name": "ጥብስ", "price": 250, "category": "Non Fasting"},
-        #         # {"id": 21, "name": "ምንቸት", "price": 250, "category": "Non Fasting"},
-        #         {"id": 22, "name": "ስጋ ፍርፍር", "price": 180, "category": "Non Fasting"},
-        #         {"id": 23, "name": "ጥብስ ፍርፍር", "price": 220, "category": "Non Fasting"},
-        #         {"id": 24, "name": "እንቁላል ፍርፍር", "price": 150, "category": "Non Fasting"},
-        #         {"id": 25, "name": "እንቁላል በስጋ", "price": 200, "category": "Non Fasting"},
-        #         {"id": 26, "name": "ሙሉ ኮርኒስ", "price": 350, "category": "Non Fasting"},
-        #         {"id": 27, "name": "ግማሽ ኮርኒስ", "price": 200, "category": "Non Fasting"},
-        #         {"id": 28, "name": "ፓስታ በእንቁላል", "price": 150, "category": "Non Fasting"},
-        #         # {"id": 29, "name": "ፓስታ በስጋ", "price": 180, "category": "Non Fasting"},
-        #         {"id": 31, "name": "ስፔሻል ፍርፍር", "price": 250, "category": "Non Fasting"},
-        #         # {"id": 32, "name": "እንቁላል በስጋ", "price": 200, "category": "Non Fasting"},
-        #         {"id": 33, "name": "ሙሉ አገልግል", "price": 400, "category": "Non Fasting"},
-        #         {"id": 34, "name": "ግማሽ አገልግል", "price": 250, "category": "Non Fasting"},
-        #         # {"id": 35, "name": "ምስር በስጋ", "price": 180, "category": "Non Fasting"},
-        #         # {"id": 36, "name": "ምስር በእንቁላል", "price": 150, "category": "Non Fasting"},
-        #         {"id": 37, "name": "አይብ", "price": 200, "category": "Non Fasting"},
-        #         {"id": 30, "name": "ስፔሻል ኮርኒስ (የፍስክ)", "price": 400, "category": "Specials"},
-        #     ],
-        # },
-        # {
-        # "telegram_id": 6567214347,
-        #     "name": "Abudabi #6kilo",
-        #     "menu": [
-        #         {"id": 1, "name": "ሙሉ ኮርኒስ", "price": 250, "category": "Fasting"},
-        #         {"id": 2, "name": "ሃፍ ሃፍ", "price": 150, "category": "Fasting"},
-        #         {"id": 3, "name": "ግማሽ ኮርኒስ", "price": 150, "category": "Fasting"},
-        #         {"id": 4, "name": "ሙሉ አገልግል", "price": 280, "category": "Fasting"},
-        #         {"id": 5, "name": "ግማሽ አገልገል", "price": 170, "category": "Fasting"},
-        #         {"id": 6, "name": "በየዓይነት", "price": 130, "category": "Fasting"},
-        #         # {"id": 7, "name": "ተጋቢኖ", "price": 140, "category": "Fasting"},
-        #         # {"id": 8, "name": "ፓስታ በስጎ", "price": 120, "category": "Fasting"},
-        #         # {"id": 9, "name": "ፓስታ በአትክልት", "price": 120, "category": "Fasting"},
-        #         # {"id": 10, "name": "ፓስታ በቴስቲ", "price": 120, "category": "Fasting"},
-        #         # {"id": 11, "name": "ፍርፍር በቀይ", "price": 120, "category": "Fasting"},
-        #         # {"id": 12, "name": "ፍርፍር በአልጫ", "price": 120, "category": "Fasting"},
-        #         # {"id": 13, "name": "ስፔሻል ሽሮ", "price": 120, "category": "Fasting"},
-        #         {"id": 14, "name": "ቴስቲ ወጥ", "price": 120, "category": "Fasting"},
-        #         # {"id": 15, "name": "ቴስቲ ለብለብ", "price": 130, "category": "Fasting"},
-        #         {"id": 16, "name": "ቴስቲ ጥብስ", "price": 130, "category": "Fasting"},
-        #         # {"id": 17, "name": "ቴስቲ ምንቸት", "price": 130, "category": "Fasting"},
-        #         # {"id": 18, "name": "የጾም ድብልቅ", "price": 220, "category": "Fasting"},
-        #         {"id": 19, "name": "ስፔሻል ፍርፍር", "price": 150, "category": "Fasting"},
-        #         # {"id": 20, "name": "ጥብስ", "price": 250, "category": "Non Fasting"},
-        #         # {"id": 21, "name": "ምንቸት", "price": 250, "category": "Non Fasting"},
-        #         {"id": 22, "name": "ስጋ ፍርፍር", "price": 180, "category": "Non Fasting"},
-        #         {"id": 23, "name": "ጥብስ ፍርፍር", "price": 220, "category": "Non Fasting"},
-        #         {"id": 24, "name": "እንቁላል ፍርፍር", "price": 150, "category": "Non Fasting"},
-        #         {"id": 25, "name": "እንቁላል በስጋ", "price": 200, "category": "Non Fasting"},
-        #         {"id": 26, "name": "ሙሉ ኮርኒስ", "price": 350, "category": "Non Fasting"},
-        #         {"id": 27, "name": "ግማሽ ኮርኒስ", "price": 200, "category": "Non Fasting"},
-        #         {"id": 28, "name": "ፓስታ በእንቁላል", "price": 150, "category": "Non Fasting"},
-        #         # {"id": 29, "name": "ፓስታ በስጋ", "price": 180, "category": "Non Fasting"},
-        #         {"id": 31, "name": "ስፔሻል ፍርፍር", "price": 250, "category": "Non Fasting"},
-        #         # {"id": 32, "name": "እንቁላል በስጋ", "price": 200, "category": "Non Fasting"},
-        #         {"id": 33, "name": "ሙሉ አገልግል", "price": 400, "category": "Non Fasting"},
-        #         {"id": 34, "name": "ግማሽ አገልግል", "price": 250, "category": "Non Fasting"},
-        #         # {"id": 35, "name": "ምስር በስጋ", "price": 180, "category": "Non Fasting "},
-        #         # {"id": 36, "name": "ምስር በእንቁላል", "price": 150, "category": "Non Fasting "},
-        #         {"id": 37, "name": "አይብ", "price": 200, "category": "Non Fasting"},
-        #         {"id": 30, "name": "ስፔሻል ኮርኒስ (የፍስክ)", "price": 400, "category": "Specials"},
-        #     ],
-        # },
+        {
+        "telegram_id": 589745233,
+            "name": "Abudabi #5kilo",
+            "menu": [
+                {"id": 1, "name": "ሃፍ ሃፍ", "price": 150, "category": "Fasting"},
+                {"id": 2, "name": "ፓስታ በስጎ", "price": 120, "category": "Fasting"},
+                {"id": 3, "name": "ፓስታ በአትክልት", "price": 120, "category": "Fasting"},
+                {"id": 4, "name": "ፍርፍር በቀይ", "price": 120, "category": "Fasting"},
+                {"id": 5, "name": "ፍርፍር በአልጫ", "price": 120, "category": "Fasting"},
+                {"id": 6, "name": "ግማሽ ኮርኒስ", "price": 150, "category": "Fasting"},
+                {"id": 7, "name": "ሙሉ ኮርኒስ", "price": 250, "category": "Fasting"},
+                {"id": 8, "name": "ሙሉ አገልግል", "price": 280, "category": "Fasting"},
+                {"id": 9, "name": "ግማሽ አገልገል", "price": 170, "category": "Fasting"},
+                {"id": 10, "name": "በየዓይነት", "price": 130, "category": "Fasting"},
+                # {"id": 11, "name": "ተጋቢኖ", "price": 140, "category": "Fasting"},
+                # {"id": 13, "name": "ስፔሻል ሽሮ", "price": 120, "category": "Fasting"},
+                {"id": 11, "name": "ቴስቲ ወጥ", "price": 120, "category": "Fasting"},
+                # {"id": 15, "name": "ቴስቲ ለብለብ", "price": 130, "category": "Fasting"},
+                {"id": 12, "name": "ቴስቲ ጥብስ", "price": 130, "category": "Fasting"},
+                # {"id": 17, "name": "ቴስቲ ምንቸት", "price": 130, "category": "Fasting"},
+                # {"id": 18, "name": "የጾም ድብልቅ", "price": 220, "category": "Fasting"},
+                {"id": 13, "name": "ስፔሻል ፍርፍር", "price": 150, "category": "Fasting"},
+                # {"id": 20, "name": "ጥብስ", "price": 250, "category": "Non Fasting"},
+                # {"id": 21, "name": "ምንቸት", "price": 250, "category": "Non Fasting"},
+                {"id": 14, "name": "ስጋ ፍርፍር", "price": 180, "category": "Non Fasting"},
+                {"id": 15, "name": "ጥብስ ፍርፍር", "price": 220, "category": "Non Fasting"},
+                {"id": 16, "name": "እንቁላል ፍርፍር", "price": 150, "category": "Non Fasting"},
+                {"id": 17, "name": "እንቁላል በስጋ", "price": 200, "category": "Non Fasting"},
+                {"id": 18, "name": "ሙሉ ኮርኒስ", "price": 350, "category": "Non Fasting"},
+                {"id": 19, "name": "ግማሽ ኮርኒስ", "price": 200, "category": "Non Fasting"},
+                {"id": 20, "name": "ፓስታ በእንቁላል", "price": 150, "category": "Non Fasting"},
+                {"id": 21, "name": "ፓስታ በስጋ", "price": 180, "category": "Non Fasting"},
+                {"id": 22, "name": "ስፔሻል ፍርፍር", "price": 250, "category": "Non Fasting"},
+                {"id": 23, "name": "እንቁላል በስጋ", "price": 200, "category": "Non Fasting"},
+                {"id": 24, "name": "ሙሉ አገልግል", "price": 400, "category": "Non Fasting"},
+                {"id": 25, "name": "ግማሽ አገልግል", "price": 250, "category": "Non Fasting"},
+                # {"id": 35, "name": "ምስር በስጋ", "price": 180, "category": "Non Fasting"},
+                # {"id": 36, "name": "ምስር በእንቁላል", "price": 150, "category": "Non Fasting"},
+                {"id": 26, "name": "አይብ", "price": 200, "category": "Non Fasting"},
+                {"id": 27, "name": "ስፔሻል ኮርኒስ (የፍስክ)", "price": 400, "category": "Specials"},
+                # {"id": 30, "name": "ዳቦ", "price": 400, "category": "Extras"},
+                # {"id": 30, "name": "ግማሽ እንጀራ", "price": 400, "category": "Specials"},
+            ],
+        },
+        {
+        "telegram_id": 6567214347,
+            "name": "Abudabi #6kilo",
+            "menu": [
+                {"id": 1, "name": "ሃፍ ሃፍ", "price": 150, "category": "Fasting"},
+                {"id": 2, "name": "ፓስታ በስጎ", "price": 120, "category": "Fasting"},
+                {"id": 3, "name": "ፓስታ በአትክልት", "price": 120, "category": "Fasting"},
+                {"id": 4, "name": "ፍርፍር በቀይ", "price": 120, "category": "Fasting"},
+                {"id": 5, "name": "ፍርፍር በአልጫ", "price": 120, "category": "Fasting"},
+                {"id": 6, "name": "ግማሽ ኮርኒስ", "price": 150, "category": "Fasting"},
+                {"id": 7, "name": "ሙሉ ኮርኒስ", "price": 250, "category": "Fasting"},
+                {"id": 8, "name": "ሙሉ አገልግል", "price": 280, "category": "Fasting"},
+                {"id": 9, "name": "ግማሽ አገልገል", "price": 170, "category": "Fasting"},
+                {"id": 10, "name": "በየዓይነት", "price": 130, "category": "Fasting"},
+                # {"id": 11, "name": "ተጋቢኖ", "price": 140, "category": "Fasting"},
+                # {"id": 12, "name": "ስፔሻል ሽሮ", "price": 120, "category": "Fasting"},
+                {"id": 11, "name": "ቴስቲ ወጥ", "price": 120, "category": "Fasting"},
+                # {"id": 15, "name": "ቴስቲ ለብለብ", "price": 130, "category": "Fasting"},
+                {"id": 12, "name": "ቴስቲ ጥብስ", "price": 130, "category": "Fasting"},
+                # {"id": 17, "name": "ቴስቲ ምንቸት", "price": 130, "category": "Fasting"},
+                # {"id": 18, "name": "የጾም ድብልቅ", "price": 220, "category": "Fasting"},
+                {"id": 13, "name": "ስፔሻል ፍርፍር", "price": 150, "category": "Fasting"},
+                # {"id": 20, "name": "ጥብስ", "price": 250, "category": "Non Fasting"},
+                # {"id": 21, "name": "ምንቸት", "price": 250, "category": "Non Fasting"},
+                {"id": 14, "name": "ስጋ ፍርፍር", "price": 180, "category": "Non Fasting"},
+                {"id": 15, "name": "ጥብስ ፍርፍር", "price": 220, "category": "Non Fasting"},
+                {"id": 16, "name": "እንቁላል ፍርፍር", "price": 150, "category": "Non Fasting"},
+                {"id": 17, "name": "እንቁላል በስጋ", "price": 200, "category": "Non Fasting"},
+                {"id": 18, "name": "ሙሉ ኮርኒስ", "price": 350, "category": "Non Fasting"},
+                {"id": 19, "name": "ግማሽ ኮርኒስ", "price": 200, "category": "Non Fasting"},
+                {"id": 20, "name": "ፓስታ በእንቁላል", "price": 150, "category": "Non Fasting"},
+                {"id": 21, "name": "ፓስታ በስጋ", "price": 180, "category": "Non Fasting"},
+                {"id": 22, "name": "ስፔሻል ፍርፍር", "price": 250, "category": "Non Fasting"},
+                {"id": 23, "name": "እንቁላል በስጋ", "price": 200, "category": "Non Fasting"},
+                {"id": 24, "name": "ሙሉ አገልግል", "price": 400, "category": "Non Fasting"},
+                {"id": 25, "name": "ግማሽ አገልግል", "price": 250, "category": "Non Fasting"},
+                # {"id": 35, "name": "ምስር በስጋ", "price": 180, "category": "Non Fasting"},
+                # {"id": 36, "name": "ምስር በእንቁላል", "price": 150, "category": "Non Fasting"},
+                {"id": 26, "name": "አይብ", "price": 200, "category": "Non Fasting"},
+                {"id": 27, "name": "ስፔሻል ኮርኒስ (የፍስክ)", "price": 400, "category": "Specials"},
+                # {"id": 30, "name": "ዳቦ", "price": 400, "category": "Extras"},
+                # {"id": 30, "name": "ግማሽ እንጀራ", "price": 400, "category": "Specials"},
+            ],
+        },
         
+        {
+        "telegram_id": 8487056502,
+            "name": "Tena Mgb Bet",
+            "menu": [
+                {"id": 1, "name": "ፓስታ በስጎ", "price": 120, "category": "Fasting"},
+                {"id": 2, "name": "ፓስታ በአትክልት", "price": 120, "category": "Fasting"},
+                # {"id": 10, "name": "ፓስታ በቴስቲ", "price": 120, "category": "Fasting"},
+                {"id": 3, "name": "ፍርፍር በቀይ", "price": 120, "category": "Fasting"},
+                {"id": 4, "name": "ፍርፍር በአልጫ", "price": 120, "category": "Fasting"},
+                {"id": 5, "name": "ሃፍ ሃፍ", "price": 150, "category": "Fasting"},
+                {"id": 6, "name": "ሙሉ አገልግል", "price": 250, "category": "Fasting"},
+                {"id": 7, "name": "ግማሽ አገልገል", "price": 170, "category": "Fasting"},
+                {"id": 8, "name": "በየዓይነት", "price": 150, "category": "Fasting"},
+                {"id": 9, "name": "ሙሉ ኮርኒስ", "price": 200, "category": "Fasting"},
+                # {"id": 7, "name": "ተጋቢኖ", "price": 150, "category": "Fasting"},
+                # {"id": 13, "name": "ስፔሻል ሽሮ", "price": 120, "category": "Fasting"},
+                {"id": 10, "name": "ቴስቲ ወጥ", "price": 130, "category": "Fasting"},
+                {"id": 11, "name": "ቴስቲ ለብለብ", "price": 140, "category": "Fasting"},
+                {"id": 12, "name": "ቴስቲ ጥብስ", "price": 150, "category": "Fasting"},
+                # {"id": 17, "name": "ቴስቲ ምንቸት", "price": 130, "category": "Fasting"},
+                {"id": 13, "name": "ድብልቅ", "price": 230, "category": "Fasting"},
+                {"id": 14, "name": "ፋሚሊ ኮምቦ", "price": 300, "category": "Fasting"},
+                # {"id": 20, "name": "ጥብስ", "price": 250, "category": "Non Fasting"},
+                # {"id": 21, "name": "ምንቸት", "price": 250, "category": "Non Fasting"},
+                {"id": 15, "name": "ስጋ ፍርፍር", "price": 200, "category": "Non Fasting"},
+                {"id": 16, "name": "ጥብስ ፍርፍር", "price": 220, "category": "Non Fasting"},
+                {"id": 17, "name": "እንቁላል ፍርፍር", "price": 150, "category": "Non Fasting"},
+                {"id": 18, "name": "እንቁላል በስጋ", "price": 200, "category": "Non Fasting"},
+                {"id": 19, "name": "ግማሽ ኮርኒስ", "price": 200, "category": "Non Fasting"},
+                # {"id": 28, "name": "ፓስታ በእንቁላል", "price": 150, "category": "Non Fasting"},
+                {"id": 20, "name": "ፓስታ በስጋ", "price": 180, "category": "Non Fasting"},
+                {"id": 21, "name": "ስፔሻል ፍርፍር", "price": 250, "category": "Non Fasting"},
+                # {"id": 32, "name": "እንቁላል በስጋ", "price": 200, "category": "Non Fasting"},
+                {"id": 22, "name": "ሙሉ አገልግል", "price": 400, "category": "Non Fasting"},
+                {"id": 23, "name": "ግማሽ አገልግል", "price": 250, "category": "Non Fasting"},
+                # {"id": 35, "name": "ምስር በስጋ", "price": 180, "category": "Non Fasting"},
+                # {"id": 36, "name": "ምስር በእንቁላል", "price": 150, "category": "Non Fasting"},
+                {"id": 24, "name": "አይብ", "price": 200, "category": "Non Fasting"},
+                {"id": 25, "name": "ስፔሻል ኮርኒስ (የጾም)", "price": 300, "category": "Specials"},
+                {"id": 26, "name": "ጤና ገበታ (የጾም)", "price": 350, "category": "Specials"},
+                {"id": 27, "name": "ጤና ስፔሻል ኮርኒስ (የፍስክ)", "price": 400, "category": "Specials"},
+            ],
+        },
         # {
-        # "telegram_id": 8487056502,
-        #     "name": "Tena Mgb Bet",
+        # "telegram_id":825505972,
+        #     "name": "Test Vendor",
         #     "menu": [
         #         {"id": 1, "name": "ሙሉ ኮርኒስ", "price": 200, "category": "Fasting"},
         #         {"id": 2, "name": "ሃፍ ሃፍ", "price": 150, "category": "Fasting"},
@@ -2232,69 +2277,45 @@ async def seed_vendors(db: Database) -> None:
         #         {"id": 26, "name": "ጤና ስፔሻል ኮርኒስ (የፍስክ)", "price": 400, "category": "Specials"},
         #     ],
         # },
-        {
-        "telegram_id":825505972,
-            "name": "Test Vendor",
-            "menu": [
-                {"id": 1, "name": "ሙሉ ኮርኒስ", "price": 200, "category": "Fasting"},
-                {"id": 2, "name": "ሃፍ ሃፍ", "price": 150, "category": "Fasting"},
-                {"id": 4, "name": "ሙሉ አገልግል", "price": 250, "category": "Fasting"},
-                {"id": 5, "name": "ግማሽ አገልገል", "price": 170, "category": "Fasting"},
-                {"id": 6, "name": "በየዓይነት", "price": 150, "category": "Fasting"},
-                # {"id": 7, "name": "ተጋቢኖ", "price": 150, "category": "Fasting"},
-                # {"id": 8, "name": "ፓስታ በስጎ", "price": 120, "category": "Fasting"},
-                # {"id": 9, "name": "ፓስታ በአትክልት", "price": 120, "category": "Fasting"},
-                # {"id": 10, "name": "ፓስታ በቴስቲ", "price": 120, "category": "Fasting"},
-                # {"id": 11, "name": "ፍርፍር በቀይ", "price": 120, "category": "Fasting"},
-                # {"id": 12, "name": "ፍርፍር በአልጫ", "price": 120, "category": "Fasting"},
-                # {"id": 13, "name": "ስፔሻል ሽሮ", "price": 120, "category": "Fasting"},
-                {"id": 14, "name": "ቴስቲ ወጥ", "price": 130, "category": "Fasting"},
-                {"id": 15, "name": "ቴስቲ ለብለብ", "price": 140, "category": "Fasting"},
-                {"id": 16, "name": "ቴስቲ ጥብስ", "price": 150, "category": "Fasting"},
-                # {"id": 17, "name": "ቴስቲ ምንቸት", "price": 130, "category": "Fasting"},
-                {"id": 18, "name": "ድብልቅ", "price": 230, "category": "Fasting"},
-                {"id": 19, "name": "ፋሚሊ ኮምቦ", "price": 300, "category": "Fasting"},
-                # {"id": 20, "name": "ጥብስ", "price": 250, "category": "Non Fasting"},
-                # {"id": 21, "name": "ምንቸት", "price": 250, "category": "Non Fasting"},
-                {"id": 22, "name": "ስጋ ፍርፍር", "price": 200, "category": "Non Fasting"},
-                {"id": 23, "name": "ጥብስ ፍርፍር", "price": 220, "category": "Non Fasting"},
-                {"id": 24, "name": "እንቁላል ፍርፍር", "price": 150, "category": "Non Fasting"},
-                {"id": 25, "name": "እንቁላል በስጋ", "price": 200, "category": "Non Fasting"},
-                {"id": 27, "name": "ግማሽ ኮርኒስ", "price": 200, "category": "Non Fasting"},
-                # {"id": 28, "name": "ፓስታ በእንቁላል", "price": 150, "category": "Non Fasting"},
-                {"id": 29, "name": "ፓስታ በስጋ", "price": 180, "category": "Non Fasting"},
-                {"id": 31, "name": "ስፔሻል ፍርፍር", "price": 250, "category": "Non Fasting"},
-                # {"id": 32, "name": "እንቁላል በስጋ", "price": 200, "category": "Non Fasting"},
-                {"id": 33, "name": "ሙሉ አገልግል", "price": 400, "category": "Non Fasting"},
-                {"id": 34, "name": "ግማሽ አገልግል", "price": 250, "category": "Non Fasting"},
-                # {"id": 35, "name": "ምስር በስጋ", "price": 180, "category": "Non Fasting"},
-                # {"id": 36, "name": "ምስር በእንቁላል", "price": 150, "category": "Non Fasting"},
-                {"id": 37, "name": "አይብ", "price": 200, "category": "Non Fasting"},
-                {"id": 30, "name": "ስፔሻል ኮርኒስ (የጾም)", "price": 300, "category": "Specials"},
-                {"id": 3, "name": "ጤና ገበታ (የጾም)", "price": 350, "category": "Specials"},
-                {"id": 26, "name": "ጤና ስፔሻል ኮርኒስ (የፍስክ)", "price": 400, "category": "Specials"},
-            ],
-        },
         
     ]
     
     
 
-    async with db._open_connection() as conn:
-    # Delete all existing vendors
-        # await conn.execute("TRUNCATE TABLE vendors RESTART IDENTITY CASCADE")
+    # async with db._open_connection() as conn:
+    # # Delete all existing vendors
+    #     # await conn.execute("TRUNCATE TABLE vendors RESTART IDENTITY CASCADE")
 
-        # Now insert fresh seed data
+    #     # Now insert fresh seed data
+    #     for v in vendors:
+    #         menu_json = json.dumps(v["menu"])
+    #         await conn.execute(
+    #             """
+    #             INSERT INTO vendors (telegram_id, name, menu_json)
+    #             VALUES ($1, $2, $3)
+    #             """,
+    #             v["telegram_id"], v["name"], menu_json
+    #         )
+    # print("✅ Vendors table truncated and seeded successfully")
+    
+    
+    async with db._open_connection() as conn:
         for v in vendors:
             menu_json = json.dumps(v["menu"])
             await conn.execute(
                 """
                 INSERT INTO vendors (telegram_id, name, menu_json)
                 VALUES ($1, $2, $3)
+                ON CONFLICT (telegram_id)
+                DO UPDATE SET
+                    name = EXCLUDED.name,
+                    menu_json = EXCLUDED.menu_json,
+                    updated_at = CURRENT_TIMESTAMP
                 """,
                 v["telegram_id"], v["name"], menu_json
             )
-    print("✅ Vendors table truncated and seeded successfully")
+    print("✅ Vendors table upserted successfully")
+
 
 
 
@@ -2449,3 +2470,41 @@ async def update_menu_item_price(
         )
 
     print("✅ Menu item price updated successfully")
+
+
+import json
+from typing import Dict, Any
+
+async def replace_menu_item(
+    db: Database,
+    vendor_telegram_id: int,
+    item: Dict[str, Any],
+) -> None:
+    """
+    Remove any existing menu item with the same id and insert the new one.
+    Ensures menu_json stays a valid JSON array of objects.
+    """
+    async with db._open_connection() as conn:
+        await conn.execute(
+            """
+            UPDATE vendors
+            SET menu_json = (
+                SELECT jsonb_agg(elem)
+                FROM (
+                    -- keep all items except the one with matching id
+                    SELECT elem
+                    FROM jsonb_array_elements(menu_json::jsonb) AS elem
+                    WHERE (elem->>'id')::int <> $2
+
+                    UNION ALL
+                    -- add the new corrected item
+                    SELECT to_jsonb($3::jsonb)
+                ) AS elem
+            )
+            WHERE telegram_id = $1
+            """,
+            vendor_telegram_id,
+            item["id"],              # the id to replace
+            json.dumps(item),        # the new item as JSON
+        )
+    print(f"✅ Replaced menu item {item['id']} for vendor {vendor_telegram_id}")

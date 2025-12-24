@@ -114,7 +114,7 @@ def menu_keyboard(items: List[Dict[str, Any]], cart_counts: Dict[Any, int], page
     nav = []
     if page > 1:
         nav.append(InlineKeyboardButton(text="⬅️ Prev", callback_data=f"menu:page:{page-1}"))
-    nav.append(InlineKeyboardButton(text=f"Page {page}/{total_pages}", callback_data="menu:noop"))
+    nav.append(InlineKeyboardButton(text=f"🗑 Clear Cart", callback_data="cart:clear"))
     if page < total_pages:
         nav.append(InlineKeyboardButton(text="➡️ Next", callback_data=f"menu:page:{page+1}"))
     rows.append(nav)
@@ -233,9 +233,12 @@ def render_menu_text(menu: List[Dict[str, Any]], vendor_name: str, page: int = 1
             current_cat = cat
         lines.append(f"{it['id']}️⃣ {it['name']} — *{it['price']} birr*")
 
-    lines.append("\n🛒 *Tap the numbers below to add items to your cart!*")
-    lines.append("───────────────────────────────")
-    lines.append("💡 Click view cart after you finished adding items to proceed .")
+
+    lines.append("\n🛒 *Tap numbers to add foods*")
+    lines.append("───")
+    lines.append("Double tap → 2 items, Triple tap → cancel all.")
+    lines.append("💡 *View cart* when done")
+    lines.append("➡️ Next/Prev to see more")    
     lines.append(f"\n📄 Page {page}/{total_pages}")
 
     return "\n".join(lines)
