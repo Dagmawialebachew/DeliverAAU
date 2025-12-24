@@ -396,7 +396,6 @@ async def render_dg_list(
 ) -> Tuple[str, InlineKeyboardMarkup]:
     ...
     
-    
     total_pages = max(1, math.ceil(total_count / page_size))
 
     # Base header
@@ -404,29 +403,34 @@ async def render_dg_list(
         f"⚡️ <b>Assign Delivery Guy</b>\n"
         f"📦 Order <b>#{order_id}</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📄 Page <b>{page + 1}</b> / {total_pages}\n"
+        f"📄 Page <b>{page + 1}</b> / {total_pages}\n\n"
     )
 
     kb_rows = []
 
     if candidates:
-        text += "🛵 Choose the best Delivery Guy below:\n"
+        text += "🛵 <b>Available Delivery Guys</b>\n\n"
+
         for dg in candidates:
             name = dg.get("name", "Unknown")
             campus = dg.get("campus", "N/A")
 
             active_count, in_progress_count = await db.count_today_orders_for_dg(dg["id"])
 
-            btn_text = (
-                f"🛵 {name} • {campus} | "
-                f"📊 Active: {active_count} | 🚴 In‑Progress: {in_progress_count}"
+            # 👇 Stats in TEXT (not button)
+            text += (
+                f"🛵 <b>{name}</b> ({campus})\n"
+                f"   • 📊 Active today: <code>{active_count}</code>\n"
+                f"   • 🚴 In-progress: <code>{in_progress_count}</code>\n\n"
             )
 
+            # 👇 Button = name only
             kb_rows.append([
                 InlineKeyboardButton(
-                    text=btn_text,
+                    text=f"🛵 {name}",
                     callback_data=(
-                        f"admin:order:assign_confirm:{order_id}:dg:{dg['id']}:page:{parent_page}:filter:{filter_key}"
+                        f"admin:order:assign_confirm:{order_id}:dg:{dg['id']}"
+                        f":page:{parent_page}:filter:{filter_key}"
                     )
                 )
             ])
@@ -918,7 +922,7 @@ async def render_dg_list_handler(cb: CallbackQuery, order_id: int, dg_page: int,
         # Use real count if available
         total_count = await db.count_active_delivery_guys()
 
-        text, kb = render_dg_list(
+        text, kb = await render_dg_list(
             candidates,
             order_id,
             dg_page,
@@ -1003,7 +1007,7 @@ async def action_assign_confirm(cb: CallbackQuery):
             order['delivery_guy_name'] = dg.get('name')
             order['campus'] = dg.get('campus')
             
-        await notify_student(cb.bot, order, status="assigned")
+        await notify_student(cb.bot, order, status="reassigned")
         
         # 4. Notify New DG
         try:

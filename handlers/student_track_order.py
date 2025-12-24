@@ -3,6 +3,7 @@ import asyncio
 from collections import Counter
 import inspect
 import json
+import logging
 from typing import Optional, Dict, Any, List, Tuple
 from aiogram.fsm.context import FSMContext
 from aiogram import Router, F
@@ -51,9 +52,12 @@ def animated_dot(stage: int, tick: int = 0) -> str:
 async def safe_send(bot: Bot, chat_id: int, text: str, **kwargs):
     try:
         await bot.send_message(chat_id, text, **kwargs)
-    except Exception:
-        # swallow—optionally log to DB or Sentry
-        pass
+    except Exception as e:
+        log = logging.getLogger(__name__)
+
+        log.warning(
+            f"[SAFE_SEND FAILED] chat_id={chat_id} | error={e}"
+        )
 
 async def notify_dg_ping(bot: Bot, dg_user_id: int, order_id: int, vendor_name: str):
     msg = f"📣 Pickup Reminder — Order #{order_id} at {vendor_name} is READY. Please collect now."

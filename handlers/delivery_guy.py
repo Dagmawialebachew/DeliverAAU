@@ -1222,6 +1222,19 @@ async def notify_student(bot, order: Dict[str, Any], status: str) -> None:
                 "✨ Sit back and relax — we're getting everything ready behind the scenes!"
             )
             await bot.send_message(student_tg, msg, reply_markup=kb, parse_mode="Markdown")
+        elif status == "reassigned":
+            dg_name = order.get("delivery_guy_name") or "Delivery Partner"
+            campus = order.get("campus") or ""
+            msg = (
+                f"🚴 *Delivery Partner is ReAssigned*\n"
+                "──────────────────────\n"
+                f"📦 *Order #{order_id}*\n"
+                f"👤 Partner: *{dg_name}* ({campus})\n"
+                f"📍 Drop-off: {dropoff}\n\n"
+                "🧭 Track every step in *📍 Track Order*.\n\n"
+                "✨ Sit back and relax — we're getting everything ready behind the scenes!"
+            )
+            await bot.send_message(student_tg, msg, reply_markup=kb, parse_mode="Markdown")
 
         elif status == "delivered":
             # Grant XP safely, with logs

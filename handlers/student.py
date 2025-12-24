@@ -283,15 +283,15 @@ async def start_order(message: Message, state: FSMContext):
     # Check current time
     from datetime import datetime, time
     now = datetime.now().time()
-    # if now >= time(21, 30) or now < time(7, 0):
-    #     await message.answer(
-    #         "🌙 <b>Ordering is closed for the night</b>\n"
-    #         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-    #         "We only accept orders between <b>7:00 AM</b> and <b>9:30 PM</b>.\n"
-    #         "Please come back during service hours — we’ll be ready with fresh spots!",
-    #         parse_mode="HTML"
-    #     )
-    #     return
+    if now >= time(18, 20) or now < time(4, 00):
+        await message.answer(
+            "🌙 <b>Ordering is closed for the night</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "We only accept orders between <b>7:00 AM</b> and <b>9:20 PM</b>.\n"
+            "Please come back during service hours — we’ll be ready with fresh spots!",
+            parse_mode="HTML"
+        )
+        return
 
     # Normal flow
     user = await db.get_user(message.from_user.id)

@@ -296,13 +296,13 @@ async def start_polling():
     
         # 2. Reset schema (drop/recreate tables)
     # await db.reset_schema.
-    # await seed_vendors(db)
-    await update_menu_item_price(
-    db=db,
-    vendor_telegram_id=8487056502,  # Tena Mgb Bet
-    item_id=1,
-    new_price=230,
-)
+#     await seed_vendors(db)
+#     await update_menu_item_price(
+#     db=db,
+#     vendor_telegram_id=8487056502,  # Tena Mgb Bet
+#     item_id=1,
+#     new_price=230,
+# )
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
