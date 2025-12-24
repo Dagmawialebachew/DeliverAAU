@@ -72,8 +72,8 @@ class AdminReplyState(StatesGroup):
 def get_main_menu_kb() -> ReplyKeyboardMarkup:
     kb = [
         [KeyboardButton(text="🏪 Vendors"), KeyboardButton(text="🚴 Delivery Guys")],
-        [KeyboardButton(text="📦 Orders"), KeyboardButton(text="📈 Analytics")]
-        # [KeyboardButton(text="📢 Broadcast"), KeyboardButton(text="💰 Finance")],
+        [KeyboardButton(text="📦 Orders"), KeyboardButton(text="📈 Analytics")],
+        [KeyboardButton(text="📢 Broadcast")]
         # [KeyboardButton(text="⚙️ Settings"), KeyboardButton(text="🛡 System Status")],
         # [KeyboardButton(text="🆘 Support"), KeyboardButton(text="🛑 Emergency Stop")]
     ]
@@ -1837,3 +1837,132 @@ async def delivery_report(message: Message):
     analytics = AnalyticsService(db)
     report = await analytics.delivery_report_text()
     await message.answer(report, parse_mode="Markdown")
+
+
+
+
+
+
+class BroadcastStates(StatesGroup):
+    composing = State()
+    confirming = State()
+
+# Entry (admin menu button)
+@router.message(F.text == "📢 Broadcast", F.from_user.id.in_(settings.ADMIN_IDS))
+async def start_broadcast(message: Message, state: FSMContext):
+    await state.set_state(BroadcastStates.composing)
+    await state.update_data()
+    await message.answer(
+        "✍️ <b>Broadcast Composer</b>\n\n"
+        "Type the message you want to send to all users.\n\n"
+        "You can include HTML formatting. When ready, I'll show a preview.",
+        parse_mode="HTML"
+    )
+
+# Receive text and show preview
+@router.message(BroadcastStates.composing)
+async def receive_broadcast_text(message: Message, state: FSMContext):
+    text = message.text.strip()
+    if not text:
+        await message.answer("Please type a non-empty message.")
+        return
+
+    await state.update_data(broadcast_text=text)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Confirm & Send", callback_data="broadcast:confirm")],
+        [InlineKeyboardButton(text="✏️ Edit", callback_data="broadcast:edit")],
+        [InlineKeyboardButton(text="❌ Cancel", callback_data="broadcast:cancel")]
+    ])
+    preview = (
+        "📢 <b>Broadcast Preview</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"{text}\n\n"
+        "<i>Confirm to send this message to all users.</i>"
+    )
+    await state.set_state(BroadcastStates.confirming)
+    await message.answer(preview, reply_markup=kb, parse_mode="HTML")
+
+from aiogram.exceptions import TelegramBadRequest
+
+async def safe_send(bot: Bot, chat_id: int, text: str, **kwargs) -> bool:
+    try:
+        await bot.send_message(chat_id, text, **kwargs)
+        return True
+    except TelegramBadRequest as e:
+        return False
+    except Exception:
+        return False
+
+# Confirm send
+@router.callback_query(BroadcastStates.confirming, F.data == "broadcast:confirm")
+async def confirm_broadcast(cb: CallbackQuery, state: FSMContext):
+    await cb.answer()  # immediate ack
+    data = await state.get_data()
+    text = data.get("broadcast_text")
+    if not text:
+        await cb.message.answer("Nothing to send. Please compose a message first.")
+        await state.clear()
+        return
+
+    # Fetch recipients
+    recipients = await db.list_all_users()  # implement below if missing
+    total = len(recipients)
+    sent = 0
+    failed = 0
+    failed_ids = []
+
+    # Batch send to avoid hitting Telegram rate limits
+    BATCH_SIZE = 25
+    PAUSE_BETWEEN_BATCHES = 1.0  # seconds
+
+    await cb.message.edit_text("🚀 Sending broadcast... This may take a moment.", parse_mode="HTML")
+
+    for i in range(0, total, BATCH_SIZE):
+        batch = recipients[i:i + BATCH_SIZE]
+        tasks = []
+        for u in batch:
+            chat_id = u.get("telegram_id")
+            if not chat_id:
+                failed += 1
+                failed_ids.append(u.get("id"))
+                continue
+            try:
+                ok = await safe_send(cb.bot, chat_id, text, parse_mode="HTML")
+                if ok:
+                    sent += 1
+                else:
+                    failed += 1
+                    failed_ids.append(u.get("id"))
+            except Exception:
+                failed += 1
+                failed_ids.append(u.get("id"))
+        # polite pause
+        await asyncio.sleep(PAUSE_BETWEEN_BATCHES)
+
+    summary = (
+        f"✅ Broadcast complete.\n\n"
+        f"Total recipients: {total}\n"
+        f"Sent: {sent}\n"
+        f"Failed: {failed}\n"
+    )
+    if failed_ids:
+        summary += "\nFailed user IDs logged."
+
+    await cb.message.answer(summary)
+    from handlers.admin_order import _notify_admin_action
+    await _notify_admin_action(cb.bot, cb.from_user, "Broadcast sent", extra={"sent": sent, "failed": failed})
+    await state.clear()
+
+# Edit callback
+@router.callback_query(BroadcastStates.confirming, F.data == "broadcast:edit")
+async def edit_broadcast(cb: CallbackQuery, state: FSMContext):
+    await cb.answer()
+    await state.set_state(BroadcastStates.composing)
+    await cb.message.answer("✏️ Edit your broadcast message. Send the new text when ready.")
+
+# Cancel callback
+@router.callback_query(BroadcastStates.confirming, F.data == "broadcast:cancel")
+async def cancel_broadcast(cb: CallbackQuery, state: FSMContext):
+    await cb.answer("Broadcast cancelled.")
+    await state.clear()
+    await cb.message.edit_text("❌ Broadcast cancelled.")

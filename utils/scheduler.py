@@ -810,6 +810,116 @@ class BotScheduler:
         """Reset daily leaderboard stats (optional feature)."""
         log.info("Running daily leaderboard reset task")
         # Placeholder for future leaderboard reset logic
+        
+  
+    async def safe_send(self, chat_id: int, text: str, **kwargs) -> bool:
+        try:
+            await self.bot.send_message(chat_id, text, **kwargs)
+            return True
+        except Exception as e:
+            log.exception("safe_send failed for %s: %s", chat_id, e)
+            return False
+
+    async def send_meal_reminder(self, meal: str) -> None:
+        """Send meal reminder (breakfast, lunch, dinner) to active students."""
+        log.info("Sending %s reminder", meal)
+
+        REMINDER_TEMPLATES = {
+            "breakfast": {
+                "title": "🌅 *Good Morning! Breakfast is Ready!*",
+                "body": (
+                    "Hey! Your breakfast is ready and waiting.\n\n"
+                    "Order now so you don’t miss out—breakfast gets full fast!"
+                ),
+                "time_note": "Served from 7:00 AM"
+            },
+            "lunch": {
+                "title": "🍽️ *Lunch Time! Don’t Wait!*",
+                "body": (
+                    "Hungry? Lunch is ready and hot.\n\n"
+                    "Order now before spots run out!"
+                ),
+                "time_note": "Served from 11:00 AM"
+            },
+            "dinner": {
+                "title": "🌙 *Dinner’s Ready — Get It Now!*",
+                "body": (
+                    "Dinner is fresh and ready for you.\n\n"
+                    "Order now so you get it before others grab the slots!"
+                ),
+                "time_note": "Served from 6:00 PM"
+            }
+        }
+
+        tpl = REMINDER_TEMPLATES.get(meal)
+        if not tpl:
+            log.error("Unknown meal type for reminder: %s", meal)
+            return
+
+        try:
+            students = await self.db.list_active_students()
+        except Exception as e:
+            log.exception("Failed to fetch students for %s reminder: %s", meal, e)
+            return
+
+        if not students:
+            log.info("No active students to remind for %s.", meal)
+            return
+
+        header = tpl["title"]
+        body = tpl["body"]
+        time_note = tpl["time_note"]
+
+        message_text = (
+            f"{header}\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"{body}\n\n"
+            f"*{time_note}*"
+        )
+
+        
+
+        BATCH_SIZE = 25
+        PAUSE_SECONDS = 1.0
+        sent, failed = 0, 0
+
+        for i in range(0, len(students), BATCH_SIZE):
+            batch = students[i:i + BATCH_SIZE]
+            for s in batch:
+                chat_id = s.get("telegram_id")
+                if not chat_id:
+                    failed += 1
+                    continue
+                ok = await self.safe_send(chat_id, message_text, parse_mode="Markdown")
+                if ok:
+                    sent += 1
+                else:
+                    failed += 1
+            await asyncio.sleep(PAUSE_SECONDS)
+
+        log.info("Reminders (%s) finished: sent=%s failed=%s", meal, sent, failed)
+
+        try:
+            async with self.db._open_connection() as conn:
+                await conn.execute(
+                    "INSERT INTO jobs_log (job_name, key, status) VALUES ($1, $2, $3)",
+                    f"reminder_{meal}", f"sent={sent},failed={failed}", "completed"
+                )
+        except Exception:
+            log.debug("Job log write failed for reminder_%s", meal)
+
+    def register_reminder_jobs(self, scheduler: AsyncIOScheduler):
+        """Register breakfast, lunch, and dinner reminder jobs."""
+        scheduler.add_job(self.send_meal_reminder, "cron",
+                          hour=7, minute=30, timezone="Africa/Addis_Ababa",
+                          args=["breakfast"], id="reminder_breakfast")
+        scheduler.add_job(self.send_meal_reminder, "cron",
+                          hour=11, minute=30, timezone="Africa/Addis_Ababa",
+                          args=["lunch"], id="reminder_lunch")
+        scheduler.add_job(self.send_meal_reminder, "cron",
+                          hour=18, minute=0, timezone="Africa/Addis_Ababa",
+                          args=["dinner"], id="reminder_dinner")
+
     async def send_admin_summary(self) -> None:
         """Send daily summary (operational + financial + vendor payouts) to admins."""
         log.info("Sending admin summary")
@@ -934,6 +1044,28 @@ class BotScheduler:
             CronTrigger(hour=21, minute=0),
             id="vendor_daily_summary"
         )
+        
+        
+                # Student meal reminders
+        self.scheduler.add_job(
+            self.send_meal_reminder,
+            CronTrigger(hour=7, minute=30, timezone="Africa/Addis_Ababa"),
+            args=["breakfast"],
+            id="reminder_breakfast"
+        )
+        self.scheduler.add_job(
+            self.send_meal_reminder,
+            CronTrigger(hour=11, minute=00, timezone="Africa/Addis_Ababa"),
+            args=["lunch"],
+            id="reminder_lunch"
+        )
+        self.scheduler.add_job(
+            self.send_meal_reminder,
+            CronTrigger(hour=18, minute=0, timezone="Africa/Addis_Ababa"),
+            args=["dinner"],
+            id="reminder_dinner"
+        )
+
 
         # Weekly vendor summary (Sunday 21:10)
         self.scheduler.add_job(

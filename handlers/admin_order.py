@@ -1145,3 +1145,6 @@ async def admin_order_receipt(cb: CallbackQuery):
 @router.callback_query(F.data == "admin:orders:noop")
 async def noop_handler(cb: CallbackQuery):
     await cb.answer()
+    
+    
+    

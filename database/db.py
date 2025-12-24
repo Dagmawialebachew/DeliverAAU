@@ -1121,6 +1121,56 @@ class Database:
                 "UPDATE delivery_guys SET active = TRUE, last_online_at = CURRENT_TIMESTAMP WHERE id = $1",
                 dg_id
             )
+            
+    
+    # in your db layer
+    async def list_all_users(self) -> List[Dict[str, Any]]:
+        async with self._open_connection() as conn:
+            rows = await conn.fetch(
+                "SELECT id, telegram_id FROM users WHERE status = 'active' AND role = 'student'"
+            )
+            return [dict(r) for r in rows]
+        
+    
+    # async def set_user_opt_out(self, telegram_id: int, opt_out: bool):
+    #     async with self._open_connection() as conn:
+    #         await conn.execute(
+    #             "UPDATE users SET opt_out_reminders = $1 WHERE telegram_id = $2",
+    #             opt_out, telegram_id
+    #         )
+
+
+
+
+
+    # in your db layer
+    async def list_active_students(self) -> List[Dict[str, Any]]:
+        async with self._open_connection() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, telegram_id, first_name
+                FROM users
+                WHERE status = 'active'
+                AND role = 'student'
+                AND (opt_out_reminders IS DISTINCT FROM TRUE)
+                """
+            )
+            return [dict(r) for r in rows]
+        
+    
+    async def list_active_studentss(self) -> List[Dict[str, Any]]:
+        async with self._open_connection() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, telegram_id, first_name
+                FROM users
+                WHERE status = 'active'
+                  AND role = 'student'
+                  AND (opt_out_reminders IS DISTINCT FROM TRUE)
+                """
+            )
+            return [dict(r) for r in rows]
+    
 
     async def set_delivery_guy_offline(self, dg_id: int) -> None:
         """Sets active=0 and updates last_offline_at."""
