@@ -980,9 +980,9 @@ class Database:
 
 
     async def get_daily_stats_for_dg(self, dg_id: int, date: str) -> Dict[str, Any]:
-        """
+        """ 
         Returns stats for a delivery guy on a given date.
-        Includes deliveries, earnings, xp, coins.
+        Includes delivered orders only.
         """
         async with self._open_connection() as conn:
             row = await conn.fetchrow(
@@ -991,10 +991,15 @@ class Database:
                     COALESCE(SUM(delivery_fee), 0) AS earnings,
                     COUNT(*) AS deliveries
                 FROM orders
-                WHERE delivery_guy_id = $1 AND DATE(updated_at) = $2
+                WHERE delivery_guy_id = $1
+                AND DATE(updated_at) = $2
+                AND status = 'delivered'
                 """,
-                dg_id, date
+                dg_id,
+                date
             )
+
+
         if not row:
             return {"earnings": 0, "deliveries": 0}
         
@@ -1047,7 +1052,9 @@ class Database:
                     COALESCE(SUM(delivery_fee), 0) AS earnings,
                     COUNT(*) AS deliveries
                 FROM orders
-                WHERE delivery_guy_id = $1 AND DATE(updated_at) BETWEEN $2 AND $3
+                WHERE delivery_guy_id = $1
+                AND status = 'delivered'
+                AND DATE(updated_at) BETWEEN $2 AND $3
                 GROUP BY day
                 ORDER BY day ASC
                 """,
@@ -1072,15 +1079,18 @@ class Database:
         """
         async with self._open_connection() as conn:
             row = await conn.fetchrow(
-                """
-                SELECT 
-                    COALESCE(SUM(delivery_fee), 0) AS earnings,
-                    COUNT(*) AS deliveries
-                FROM orders
-                WHERE delivery_guy_id = $1 AND DATE(updated_at) BETWEEN $2 AND $3
-                """,
-                dg_id, week_start, week_end
-            )
+    """
+    SELECT 
+        COALESCE(SUM(delivery_fee), 0) AS earnings,
+        COUNT(*) AS deliveries
+    FROM orders
+    WHERE delivery_guy_id = $1
+      AND status = 'delivered'
+      AND DATE(updated_at) BETWEEN $2 AND $3
+    """,
+    dg_id, week_start, week_end
+)
+
         if not row:
             return {"earnings": 0, "deliveries": 0, "xp": 0, "coins": 0}
         
