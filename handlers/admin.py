@@ -1494,20 +1494,25 @@ async def broadcast_preview(message: Message, state: FSMContext):
 @router.callback_query(F.data == "broadcast_confirm", AdminStates.broadcast_confirm)
 async def broadcast_execute(call: CallbackQuery, state: FSMContext, bot: Bot):
     data = await state.get_data()
-    
-    # Placeholder for background task
-    # In production: Use Celery or asyncio.create_task for the loop
-    simulated_count = 1420 
-    
+    msg_id = data["msg_id"]
+    chat_id = data["chat_id"]
+
+    # fetch recipients
+    recipients = await db.list_all_users()
+
+    # notify admin that process started
     await call.message.edit_text(
         f"🚀 <b>TRANSMISSION STARTED</b>\n"
-        f"Target Audience: ~{simulated_count} nodes.\n"
-        f"<i>Process is running in background.</i>",
+        f"Target Audience: {len(recipients)} users.\n"
+        f"<i>Process running in background…</i>",
         parse_mode="HTML"
     )
-    logger.info(f"[ADMIN:BROADCAST] Started broadcast msg_id={data['msg_id']}")
-    await call.message.answer("Systems Normal.", reply_markup=get_main_menu_kb())
+
+    # run broadcast in background
+    asyncio.create_task(run_broadcast(bot, Message(message_id=msg_id, chat=call.message.chat), recipients, call.message.chat.id))
+
     await state.clear()
+
 
 # ==============================================================================
 # ⚙️ PROTOCOL: SETTINGS & MODERATION
@@ -1551,26 +1556,49 @@ async def block_dg_confirm_step(message: Message, state: FSMContext):
     )
     await state.set_state(AdminStates.block_dg_confirm)
 
-@router.callback_query(F.data == "block_dg_confirm", AdminStates.block_dg_confirm)
-async def block_dg_execute(call: CallbackQuery, state: FSMContext, db: Database, bot: Bot):
+
+@router.callback_query(F.data == "broadcast_confirm", AdminStates.broadcast_confirm)
+async def broadcast_execute(call: CallbackQuery, state: FSMContext, bot: Bot):
     data = await state.get_data()
-    target_id = int(data['target_id'])
-    
-    try:
-        await db.block_delivery_guy(target_id, data['reason'])
-        
-        # Notify user safely
-        with contextlib.suppress(Exception):
-            await bot.send_message(target_id, f"⛔ <b>Access Revoked.</b> Reason: {data['reason']}", parse_mode="HTML")
-            
-        await call.message.edit_text("✅ <b>Target Neutralized (Blocked).</b>", parse_mode="HTML")
-        logger.warning(f"[ADMIN:BAN] Blocked {target_id} - {data['reason']}")
-        
-    except Exception as e:
-        await call.message.edit_text(f"❌ Error: {e}")
-        
-    await call.message.answer("Returning to Command.", reply_markup=get_main_menu_kb())
+    msg_id = data["msg_id"]
+    from_chat_id = data["chat_id"]
+
+    recipients = await db.list_all_users()
+
+    await call.message.edit_text(
+        f"🚀 <b>TRANSMISSION STARTED</b>\nTarget Audience: {len(recipients)} users.\n<i>Process running in background…</i>",
+        parse_mode="HTML"
+    )
+
+    asyncio.create_task(run_broadcast(bot, from_chat_id, msg_id, recipients, call.message.chat.id))
     await state.clear()
+
+
+async def run_broadcast(bot: Bot, from_chat_id: int, msg_id: int, recipients: list[dict], admin_chat_id: int):
+    sent, failed = 0, 0
+    BATCH_SIZE = 25
+    PAUSE = 1.0
+
+    for i in range(0, len(recipients), BATCH_SIZE):
+        batch = recipients[i:i+BATCH_SIZE]
+        for u in batch:
+            chat_id = u.get("telegram_id")
+            if not chat_id:
+                failed += 1
+                continue
+            try:
+                await bot.copy_message(chat_id, from_chat_id=from_chat_id, message_id=msg_id)
+                sent += 1
+            except Exception as e:
+                logger.warning(f"Broadcast failed for {chat_id}: {e}")
+                failed += 1
+        await asyncio.sleep(PAUSE)
+
+    summary = f"✅ Broadcast finished\nTotal: {len(recipients)}\nSent: {sent}\nFailed: {failed}"
+    await bot.send_message(admin_chat_id, summary)
+
+
+
 
 # ==============================================================================
 # 📈 DASHBOARDS: ANALYTICS & FINANCE

@@ -1061,7 +1061,7 @@ class BotScheduler:
         )
         self.scheduler.add_job(
             self.send_meal_reminder,
-            CronTrigger(hour=18, minute=0, timezone="Africa/Addis_Ababa"),
+            CronTrigger(hour=18, minute=16, timezone="Africa/Addis_Ababa"),
             args=["dinner"],
             id="reminder_dinner"
         )

@@ -1152,7 +1152,7 @@ class Database:
                 FROM users
                 WHERE status = 'active'
                 AND role = 'student'
-                AND (opt_out_reminders IS DISTINCT FROM TRUE)
+         
                 """
             )
             return [dict(r) for r in rows]
@@ -1166,7 +1166,6 @@ class Database:
                 FROM users
                 WHERE status = 'active'
                   AND role = 'student'
-                  AND (opt_out_reminders IS DISTINCT FROM TRUE)
                 """
             )
             return [dict(r) for r in rows]
