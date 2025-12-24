@@ -870,12 +870,12 @@ class BotScheduler:
         )
         
         # 🆕 NEW JOB 2: Auto-reassign orders every 5 minutes (Fallback)
-        self.scheduler.add_job(
-            self.auto_reassign_unaccepted_orders,
-            'interval',
-            minutes=10,
-            id='auto_reassign_unaccepted_orders'
-        )
+        # self.scheduler.add_job(
+        #     self.auto_reassign_unaccepted_orders,
+        #     'interval',
+        #     minutes=10,
+        #     id='auto_reassign_unaccepted_orders'
+        # )
         
         # 🆕 NEW JOB 3: Update live offers every 5 seconds
         self.scheduler.add_job(
