@@ -67,7 +67,7 @@ async def set_commands(bot, admin_ids: list[int]):
         BotCommand(command="admin", description="🔐 Admin Command Center"),
     ]
     for admin_id in admin_ids:
-        await bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=admin_id))
+        await bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=admin_id), request_timeout=30)
 
 # --- Startup / Shutdown ---
 async def on_startup(bot: Bot):
@@ -100,8 +100,9 @@ async def create_app() -> web.Application:
 
     setup_application(app, dp, bot=bot)
 
-    app.on_startup.append(lambda app: on_startup(bot))
-    app.on_cleanup.append(lambda app: on_shutdown(bot))
+    app.on_startup.append(lambda app: asyncio.create_task(on_startup(bot)))
+    app.on_cleanup.append(lambda app: asyncio.create_task(on_shutdown(bot)))
+
     return app
 
 # --- Polling mode ---
