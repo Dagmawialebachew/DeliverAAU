@@ -746,6 +746,26 @@ async def action_cancel(cb: CallbackQuery):
                 )
         except Exception:
             log.exception("Failed to notify student for cancelled order %s", order_id)
+            
+        
+        if order.get('vendor_id'):
+            vendor = await db.get_vendor(order['vendor_id'])
+            if vendor and vendor.get('telegram_id'):
+                try:
+                    await safe_send(
+                        cb.bot,
+                        vendor['telegram_id'],
+                        (
+                            f"⚠️ ትእዛዝ #{order_id} በአስተዳዳሪ ተሰርዟል።\n\n"
+                            "ይህ ሊከሰት የሚችለው:\n"
+                            "• ተማሪው ትእዛዙን ሰርዟል\n"
+                            "• ተማሪው ስልክ አያነሳም\n"
+                            "እባክዎ ትእዛዙን እንደማይቀጥል ይወቁ።"
+                        )
+                    )
+                except Exception:
+                    log.exception("Failed to notify vendor for cancelled order %s", order_id)
+        
 
         # 3. Notify DG if assigned
         if order.get('delivery_guy_id'):

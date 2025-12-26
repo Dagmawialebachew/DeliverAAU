@@ -550,6 +550,21 @@ async def vendor_accept_order(cb: CallbackQuery, bot: Bot):
         except Exception as e:
             print(f"[vendor_accept_order] Failed to notify admin about expired order #{order_id}: {e}")
         return
+    
+    # 2b. Status check before update
+    current_status = order.get("status")
+    if current_status != "pending":
+        
+        await cb.message.answer(
+            f"❌ ይህ ትዕዛዝ መቀበል አይቻልም፣ ጊዜው አልፎበታል።"
+            f"በተማሪው ተሰርዟል። እባክዎ ይህንን ትእዛዝ መስራት ያቁሙ ወይም አይስሩ።"
+        )
+        try:
+            await notify_admin_log(bot, ADMIN_GROUP_ID,
+                f"⚠️ Vendor tried to accept Order #{order_id} but status was {current_status}")
+        except Exception as e:
+            print(f"[vendor_accept_order] Failed to notify admin about invalid accept for order #{order_id}: {e}")
+
 
     # 3) Update status and timestamp
     try:

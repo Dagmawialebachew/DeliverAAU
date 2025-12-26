@@ -1460,59 +1460,6 @@ async def dg_commit(call: CallbackQuery, state: FSMContext, db: Database):
     
     await state.clear()
 
-# ==============================================================================
-# 📢 PROTOCOL: BROADCAST SYSTEM
-# ==============================================================================
-@router.message(F.text == "📢 Broadcast", F.from_user.id.in_(settings.ADMIN_IDS))
-async def broadcast_start(message: Message, state: FSMContext):
-    await message.answer(
-        "<b>📢 BROADCAST TRANSMISSION</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "Send the message (Text/Photo/Video) you wish to send to <b>ALL USERS</b>.\n"
-        "<i>Markdown formatting is supported.</i>",
-        parse_mode="HTML",
-        reply_markup=ReplyKeyboardRemove()
-    )
-    await state.set_state(AdminStates.broadcast_get_content)
-
-@router.message(AdminStates.broadcast_get_content)
-async def broadcast_preview(message: Message, state: FSMContext):
-    # Copy message to show preview
-    await state.update_data(msg_id=message.message_id, chat_id=message.chat.id)
-    
-    await message.answer("<b>👁 PREVIEWING TRANSMISSION...</b>", parse_mode="HTML")
-    await message.copy_to(chat_id=message.chat.id)
-    
-    await message.answer(
-        "<b>⚠️ CONFIRM MASS TRANSMISSION</b>\n"
-        "This will reach all active users.", 
-        parse_mode="HTML", 
-        reply_markup=get_confirm_cancel_kb("broadcast")
-    )
-    await state.set_state(AdminStates.broadcast_confirm)
-
-@router.callback_query(F.data == "broadcast_confirm", AdminStates.broadcast_confirm)
-async def broadcast_execute(call: CallbackQuery, state: FSMContext, bot: Bot):
-    data = await state.get_data()
-    msg_id = data["msg_id"]
-    chat_id = data["chat_id"]
-
-    # fetch recipients
-    recipients = await db.list_all_users()
-
-    # notify admin that process started
-    await call.message.edit_text(
-        f"🚀 <b>TRANSMISSION STARTED</b>\n"
-        f"Target Audience: {len(recipients)} users.\n"
-        f"<i>Process running in background…</i>",
-        parse_mode="HTML"
-    )
-
-    # run broadcast in background
-    asyncio.create_task(run_broadcast(bot, Message(message_id=msg_id, chat=call.message.chat), recipients, call.message.chat.id))
-
-    await state.clear()
-
 
 # ==============================================================================
 # ⚙️ PROTOCOL: SETTINGS & MODERATION
@@ -1570,7 +1517,7 @@ async def broadcast_execute(call: CallbackQuery, state: FSMContext, bot: Bot):
         parse_mode="HTML"
     )
 
-    asyncio.create_task(run_broadcast(bot, from_chat_id, msg_id, recipients, call.message.chat.id))
+    asyncio.create_task(run_broadcast(bot, from_chat_id, msg_id, recipients, -1003308378347))
     await state.clear()
 
 
