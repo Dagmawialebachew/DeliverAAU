@@ -291,16 +291,16 @@ def render_cart(cart_counts: Dict[Any,int], menu: List[Dict[str,Any]], half_look
 @router.message(F.text == "🛒 Order")
 async def start_order(message: Message, state: FSMContext):
     from datetime import datetime, time
-    # now = datetime.now().time()
-    # if now >= time(18, 20) or now < time(4, 00):
-    #     await message.answer(
-    #         "🌙 <b>Ordering is closed for the night</b>\n"
-    #         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-    #         "We only accept orders between <b>7:00 AM</b> and <b>9:20 PM</b>.\n"
-    #         "Please come back during service hours — we’ll be ready with fresh spots!",
-    #         parse_mode="HTML"
-    #     )
-    #     return
+    now = datetime.now().time()
+    if now >= time(18, 20) or now < time(4, 00):
+        await message.answer(
+            "🌙 <b>Ordering is closed for the night</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "We only accept orders between <b>7:00 AM</b> and <b>9:20 PM</b>.\n"
+            "Please come back during service hours — we’ll be ready with fresh spots!",
+            parse_mode="HTML"
+        )
+        return
 
     # Normal flow
     user = await db.get_user(message.from_user.id)
