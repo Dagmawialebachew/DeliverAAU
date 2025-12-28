@@ -133,10 +133,10 @@ def cart_keyboard() -> InlineKeyboardMarkup:
 
 def dropoff_keyboard(campus: str) -> InlineKeyboardMarkup:
     presets_map = {
-        "4kilo": ["Library", "Main Gate"],
-        "5kilo": ["Library", "Main Gate"],
-        "6kilo": ["Main Gate", "False Gate", "Lounge", "Law Cafeteria", "AKO Coffee", "Stadium"],
-        "FBE": ["Library", "Main Gate"],
+        "4kilo": ["Library", "Main Gate", "Arts School", "Dorm"],
+        "5kilo": ["Library", "Main Gate", "Dorm", "Launch"],
+        "6kilo": ["Main Gate", "False Gate", "Lounge", "Law Cafeteria", "AKO Coffee", "Dorm"],
+        "FBE": ["Library", "Main Gate", "Dorm", "Lounge"],
     }
     presets = presets_map.get(campus, ["Library", "Main Gate"])
     rows: List[List[InlineKeyboardButton]] = []
@@ -171,12 +171,19 @@ def notes_keyboard() -> InlineKeyboardMarkup:
 async def live_change_campus(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
     kb = InlineKeyboardMarkup(inline_keyboard=[
-[
-            [InlineKeyboardButton(text="🏛 4kilo", callback_data="campus:4kilo"), InlineKeyboardButton(text="📚 5kilo", callback_data="campus:5kilo")],
-            [InlineKeyboardButton(text="🎓 6kilo", callback_data="campus:6kilo"), InlineKeyboardButton(text="💹 FBE", callback_data="campus:FBE")],
-        ]
-        [InlineKeyboardButton(text="⬅️ Back", callback_data="live:change")]
-    ])
+    [
+        InlineKeyboardButton(text="🏛 4kilo", callback_data="campus:4kilo"),
+        InlineKeyboardButton(text="📚 5kilo", callback_data="campus:5kilo")
+    ],
+    [
+        InlineKeyboardButton(text="🎓 6kilo", callback_data="campus:6kilo"),
+        InlineKeyboardButton(text="💹 FBE", callback_data="campus:FBE")
+    ],
+    [
+        InlineKeyboardButton(text="⬅️ Back", callback_data="live:change")
+    ]
+])
+
     await cb.message.edit_text("🏫 Choose a campus for this order:", reply_markup=kb)
     await state.set_state(OrderStates.campus_choice)
 
@@ -283,18 +290,17 @@ def render_cart(cart_counts: Dict[Any,int], menu: List[Dict[str,Any]], half_look
 
 @router.message(F.text == "🛒 Order")
 async def start_order(message: Message, state: FSMContext):
-    # Check current time
     from datetime import datetime, time
-    now = datetime.now().time()
-    if now >= time(18, 20) or now < time(4, 00):
-        await message.answer(
-            "🌙 <b>Ordering is closed for the night</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "We only accept orders between <b>7:00 AM</b> and <b>9:20 PM</b>.\n"
-            "Please come back during service hours — we’ll be ready with fresh spots!",
-            parse_mode="HTML"
-        )
-        return
+    # now = datetime.now().time()
+    # if now >= time(18, 20) or now < time(4, 00):
+    #     await message.answer(
+    #         "🌙 <b>Ordering is closed for the night</b>\n"
+    #         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    #         "We only accept orders between <b>7:00 AM</b> and <b>9:20 PM</b>.\n"
+    #         "Please come back during service hours — we’ll be ready with fresh spots!",
+    #         parse_mode="HTML"
+    #     )
+    #     return
 
     # Normal flow
     user = await db.get_user(message.from_user.id)
@@ -1172,6 +1178,7 @@ async def final_confirm(cb: CallbackQuery, state: FSMContext):
         food_subtotal=subtotal,
         delivery_fee=float(data.get("delivery_fee", 0.0)),
         status="pending",
+        notes = data.get("notes", ""),
         payment_method="cod",
         payment_status="unpaid",
         receipt_id=0,
@@ -1263,19 +1270,47 @@ async def final_confirm(cb: CallbackQuery, state: FSMContext):
     with contextlib.suppress(Exception):
         await status_msg.delete()
     await cb.message.answer("🔥 +10 XP will be added after delivery!", parse_mode="Markdown", reply_markup=main_menu())
+    user_stats = await db.get_user_stats(cb.from_user.id)
+
+    if not user_stats:
+        user_info = "⚠️ Unknown user"
+    else:
+        username = cb.from_user.username or "N/A"
+        order_count = user_stats["order_count"]
+        xp = user_stats["xp"]
+        level = user_stats["level"]
+
+        if order_count <= 0:
+            user_info = (
+                f"👤 Customer: {user_stats['first_name']} (@{username}) ({user_stats.get('phone','N/A')})\n"
+                f"✨ First-time user!"
+            )
+        else:
+            user_info = (
+                f"👤 Customer: {user_stats['first_name']} (@{username}) ({user_stats.get('phone','N/A')})\n"
+                f"🛒 Orders placed: {order_count}"
+            )
+
+        
+
+
 
     # Admin log: order placed, waiting for vendor
     if settings.ADMIN_DAILY_GROUP_ID:
         try:
             admin_msg = (
-                f"📢 *New Order Placed: #{order_id}*\n"
-                f"👤 Customer: {user['first_name']} ({user.get('phone', 'N/A')})\n"
-                f"🏛 Campus: {user.get('campus', 'N/A')}\n"
-                f"🍴 Vendor: {vendor_name}\n"
-                f"📍 Drop-off: {data.get('dropoff', '')}\n"
-                f"💵 Total: {total_payable:.2f} birr (COD)\n"
-                f"⚡ Status: Meal request sent — waiting for confirmation…"
-            )
+        f"📢 *New Order Placed: #{order_id}*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{user_info}\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🏛 Campus: {user_stats.get('campus', 'N/A')}\n"
+        f"🍴 Vendor: {vendor_name}\n"
+        f"📍 Drop-off: {data.get('dropoff', '')}\n"
+        f"{('📝 Notes: ' + data.get('notes', '') + '\n') if data.get('notes') else ''}"
+        f"🛒 Foods:\n{items}\n\n"
+        f"💵 Total: {total_payable:.2f} birr (COD)\n"
+        f"⚡ Status: Meal request sent — waiting for confirmation…"
+    )
             await cb.bot.send_message(settings.ADMIN_DAILY_GROUP_ID, admin_msg, parse_mode="Markdown")
         except Exception:
             pass

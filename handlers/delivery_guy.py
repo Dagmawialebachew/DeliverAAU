@@ -429,6 +429,8 @@ async def _send_my_orders_view(bot: Bot, dg: Dict[str, Any], message: Message):
                 "──────────────────────\n"
                 f"🏠 Pickup: *{order.get('pickup')}*\n"
                 f"📍 Drop-off: *{dropoff}*\n"
+                f"{('📝 Notes: ' + order.get('notes', '') + '\n') if order.get('notes') else ''}"
+
                 f"💰 Subtotal Fee: *{subtotal_fee} birr*\n"
                 f"🚚 _Delivery fee:_ *{delivery_fee} birr*\n"
                 "──────────────────────\n"
@@ -914,6 +916,8 @@ async def _validate_dg_order_simple_by_message(message: types.Message, order_id:
     if not order or order.get('delivery_guy_id') != dg['id']:
         return dg, None
     return dg, order
+
+
 @router.callback_query(F.data.startswith("start_order_"))
 async def handle_start_order(call: CallbackQuery):
     order_id = int(call.data.split('_')[-1])
@@ -936,6 +940,7 @@ async def handle_start_order(call: CallbackQuery):
     asyncio.create_task(_process_start_order(call, dg, order_id, order))
 
 
+
 async def _process_start_order(call: CallbackQuery, dg: dict, order_id: int, order: dict):
     try:
         await db.update_order_status(order_id, "in_progress")
@@ -945,14 +950,16 @@ async def _process_start_order(call: CallbackQuery, dg: dict, order_id: int, ord
 
     updated_order = await db.get_order(order_id)
     await notify_student(call.bot, updated_order, "on_the_way")
+
     subtotal = order.get("food_subtotal", 0)
     delivery_fee = order.get("delivery_fee", 0)
     total_payable = subtotal + delivery_fee
     status_label = STATUS_LABELS.get(order.get("status"), "ℹ️ Unknown status")
-    dropoff = order.get('dropoff', 'N/A')
-    campus_text = await db.get_user_campus_by_order(order['id'])
+
+    dropoff = order.get("dropoff", "N/A")
+    campus_text = await db.get_user_campus_by_order(order["id"])
     dropoff = f"{dropoff} • {campus_text}" if campus_text else dropoff
-    
+
     try:
         items = json.loads(order.get("items_json", "[]")) or []
         names = [i.get("name", "") if isinstance(i, dict) else str(i) for i in items]
@@ -964,8 +971,6 @@ async def _process_start_order(call: CallbackQuery, dg: dict, order_id: int, ord
         )
     except Exception:
         items_str = "Items unavailable"
-    
-
 
     message_text = (
         f"📦 Order #{order_id}\n"
@@ -973,6 +978,7 @@ async def _process_start_order(call: CallbackQuery, dg: dict, order_id: int, ord
         "──────────────────────\n"
         f"🏠 Pickup: {order.get('pickup')}\n"
         f"📍 Drop-off: {dropoff}\n"
+        f"{('📝 Notes: ' + order.get('notes', '') + '\n') if order.get('notes') else ''}"
         f"💰 Subtotal Fee: {subtotal} birr\n"
         f"🚚 Delivery fee: {delivery_fee} birr\n"
         "──────────────────────\n"
@@ -988,6 +994,21 @@ async def _process_start_order(call: CallbackQuery, dg: dict, order_id: int, ord
         )
     except TelegramBadRequest:
         pass
+
+    # ✅ Announce to daily admin group
+    if settings.ADMIN_DAILY_GROUP_ID:
+        admin_msg = (
+            f"🚴 *Delivery Started: Order #{order_id}*\n"
+            f"👤 DG: {dg.get('name','Unknown')} ({dg.get('phone','N/A')})\n"
+        )
+        try:
+            await call.bot.send_message(
+                settings.ADMIN_DAILY_GROUP_ID,
+                admin_msg,
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            log.warning(f"Failed to notify admin group for started order {order_id}: {e}")
 
 @router.callback_query(F.data.startswith("delivered_"))
 async def handle_delivered(call: CallbackQuery):
@@ -1103,6 +1124,8 @@ async def handle_refresh_order(call: CallbackQuery):
         "──────────────────────\n"
         f"🏠 Pickup: {order.get('pickup')}\n"
         f"📍 Drop-off: {dropoff}\n"
+        f"{('📝 Notes: ' + order.get('notes', '') + '\n') if order.get('notes') else ''}"
+
         f"💰 Subtotal Fee: {subtotal} birr\n"
         f"🚚 Delivery fee: {delivery_fee} birr\n"
         "──────────────────────\n"

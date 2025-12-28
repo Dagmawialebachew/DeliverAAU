@@ -600,7 +600,8 @@ async def vendor_name_captured(message: Message, state: FSMContext):
         )
         await message.answer(summary, parse_mode="HTML", reply_markup=get_confirm_cancel_kb("vendor"))
         await state.set_state(AdminStates.vendor_confirm)
-  
+        
+        
 @router.callback_query(F.data.startswith("vendor_status:"))
 async def vendor_status_view(callback: CallbackQuery):
     vendor_id = int(callback.data.split(":")[1])
@@ -626,15 +627,24 @@ async def vendor_status_view(callback: CallbackQuery):
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         f"🏷 <b>Name:</b> {vendor['name']}\n"
         f"📊 <b>Status:</b> {status_emoji}\n"
-        f"⭐ <b>Rating:</b> {round(vendor['rating_avg'],1)} ({vendor['rating_count']} ratings)\n"
+        f"⭐ <b>Rating:</b> {round(vendor['rating_avg'], 1)} "
+        f"({vendor['rating_count']} ratings)\n"
         "━━━━━━━━━━━━━━━━━━━━━━"
     )
 
-    await callback.message.edit_text(
-        stats_text,
-        parse_mode="HTML",
-        reply_markup=get_vendor_card_kb(vendor_id)
-    )
+    new_kb = get_vendor_card_kb(vendor_id)
+    msg = callback.message
+
+    # ✅ SAFE EDIT GUARD (prevents "message is not modified")
+    if msg.text != stats_text or msg.reply_markup != new_kb:
+        await msg.edit_text(
+            stats_text,
+            parse_mode="HTML",
+            reply_markup=new_kb
+        )
+    else:
+        await callback.answer("ℹ️ Already up to date")
+
     await callback.answer()
 
 # INIT: show confirmation prompt
@@ -1779,9 +1789,8 @@ def get_analytics_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="🔙 Back to Main Menu")],
-            [KeyboardButton(text="📊 Today's Analytics")],
-            [KeyboardButton(text="💰 Financial Summary")],
-            [KeyboardButton(text="🚚 Delivery Report")],
+            [KeyboardButton(text="📊 Today's Analytics"),KeyboardButton(text="💰 Financial Summary")],
+            [KeyboardButton(text="🚚 Delivery Report"),KeyboardButton(text="📈 Weekly Analytics")],
         ],
         resize_keyboard=True
     )
@@ -1798,8 +1807,48 @@ async def todays_analytics(message: Message):
     analytics = AnalyticsService(db)
     summary = await analytics.summary_text()
     await message.answer(summary, parse_mode="Markdown")
+    
 
 
+import re
+
+def escape_md_v2(text: str) -> str:
+    """Escape special chars for Telegram MarkdownV2."""
+    escape_chars = r"_*[]()~`>#+-=|{}.!"
+    return re.sub(rf"([{re.escape(escape_chars)}])", r"\\\1", text)
+
+
+from pathlib import Path
+from aiogram.types.input_file import InputFile
+
+
+from aiogram.types import FSInputFile  # <- Correct for local files
+
+@router.message(F.text == "📈 Weekly Analytics", F.from_user.id.in_(settings.ADMIN_IDS))
+async def weekly_analytics(message: Message):
+    analytics = AnalyticsService(db)
+
+    # 1️⃣ Send weekly summary text safely
+    summary_text = await analytics.summary_week_text()
+
+    # Escape only dynamic values, not the formatting markers
+
+    await message.answer(summary_text, parse_mode="Markdown")
+
+    # 2️⃣ Export PDF
+    summary_data = await analytics.summarize_week()
+    pdf_path = Path("weekly_summary.xlsx")
+    analytics.export_weekly_pdf(summary_data, str(pdf_path))
+
+    # 3️⃣ Send PDF using FSInputFile
+    try:
+        pdf_file = FSInputFile(str(pdf_path))  # ✅ Correct for local file upload
+        await message.answer_document(document=pdf_file, caption="📊 Weekly Summary PDF")
+    except Exception as e:
+        await message.answer(f"❌ Failed to send PDF: {e}")
+        
+        
+        
 @router.message(F.text == "💰 Financial Summary", F.from_user.id.in_(settings.ADMIN_IDS))
 async def financial_summary(message: Message):
     analytics = AnalyticsService(db)

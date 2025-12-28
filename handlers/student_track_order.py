@@ -79,8 +79,9 @@ def build_track_keyboard(
     dg_user_id: Optional[int] = None,
     dg_phone: Optional[str] = None,
     is_ready: bool = False,
+    is_pending: bool = False,   # NEW: pending flag
     map_url: Optional[str] = None,
-    paused: bool = False,   # NEW: pause flag
+    paused: bool = False,
 ) -> InlineKeyboardMarkup:
     rows = []
 
@@ -101,7 +102,13 @@ def build_track_keyboard(
         rows.append([call_btn, refresh_btn])
     else:
         rows.append([refresh_btn])
-    # Row 3: Pause/Resume toggle
+
+    # Row 3: Cancel option if pending
+    if is_pending:
+        cancel_btn = InlineKeyboardButton(text="❌ Cancel Offer", callback_data=f"order:cancel:{order_id}")
+        rows.append([cancel_btn])
+
+    # Row 4: Pause/Resume toggle (optional)
     # if paused:
     #     resume_btn = InlineKeyboardButton(text="▶️ Resume", callback_data=f"order:resume:{order_id}")
     #     rows.append([resume_btn])
@@ -143,6 +150,11 @@ async def refresh_order_card(callback: CallbackQuery):
             await callback.message.answer(text, reply_markup=kb, parse_mode="HTML")
             await callback.answer("🔄 Refreshed with new message")
 
+
+
+
+
+
 @router.callback_query(F.data.startswith("track:call_dg:"))
 async def handle_contact_dg(call: CallbackQuery):
     await call.answer()
@@ -183,6 +195,84 @@ async def handle_contact_dg(call: CallbackQuery):
     else:
         await call.answer("❌ No phone number available for this delivery partner.", show_alert=True)
 
+
+
+@router.callback_query(F.data.startswith("order:cancel:"))
+async def order_cancel_view(callback: CallbackQuery):   
+    parts = callback.data.split(":")
+    if len(parts) < 3 or not parts[2].isdigit(): 
+        await callback.answer("⚠️ Invalid cancel request.", show_alert=True) 
+        return
+    order_id = int(parts[2])
+    async with db._open_connection() as conn:
+        order = await conn.fetchrow(
+            "SELECT id, status, vendor_id, user_id FROM orders WHERE id=$1",
+            order_id
+        )
+
+    if not order:
+        await callback.answer("⚠️ Order not found.", show_alert=True)
+        return
+
+    # Only allow cancel if still pending
+    if order["status"] != "pending":
+        await callback.answer("❌ This order can no longer be cancelled.", show_alert=True)
+        return
+
+    # Update status to cancelled
+    async with db._open_connection() as conn:
+        await conn.execute(
+            "UPDATE orders SET status='cancelled', updated_at=NOW() WHERE id=$1",
+            order_id
+        )
+
+    # Fetch vendor info
+    vendor = await db.get_vendor(order["vendor_id"])
+    vendor_chat_id = vendor.get("telegram_id") if vendor else None
+
+    # Fetch user info
+    user_id = order.get("user_id")
+    if not user_id:
+            return None
+
+    user = await db.get_user_by_id(user_id)
+
+    # Notify vendor in Amharic
+    if vendor_chat_id:
+        vendor_text = (
+            f"❌ ትዕዛዝ #{order_id} ተሰርዟል።\n"
+            f"⚠️ እባክዎት ትእዛዙ ማዘጋጀት እንዳይጀምሩ ።"
+        )
+        try:
+            await callback.bot.send_message(vendor_chat_id, vendor_text)
+        except Exception as e:
+            print(f"Failed to notify vendor {vendor_chat_id} for cancelled order {order_id}: {e}")
+
+    # Notify admin group in English
+    if settings.ADMIN_DAILY_GROUP_ID:
+        admin_msg = (
+            f"⚠️ *Order Cancelled: #{order_id}*\n"
+            f"👤 Customer: {user.get('first_name','')} ({user.get('phone','N/A')})\n"
+            f"🍴 Vendor: {vendor.get('name','Unknown') if vendor else 'Unknown'}\n"
+            f"⚡ Status: Cancelled by customer"
+        )
+        try:
+            await callback.bot.send_message(settings.ADMIN_DAILY_GROUP_ID, admin_msg, parse_mode="Markdown")
+        except Exception:
+            pass
+
+    # Feedback to user
+    # Option A: edit text without reply markup
+    await callback.message.edit_text(
+        f"🛑 Order #{order_id} has been cancelled.\n"
+        f"Please contact us @unibites_support for more information.",
+        parse_mode="HTML"
+    )
+
+    # Then send a fresh message with ReplyKeyboardMarkup
+    await callback.message.answer("⬇️ Back to main menu", reply_markup=main_menu())
+
+    await callback.answer("Order cancelled successfully ✅")
 
 ACTIVE_STATUSES = ('pending', 'assigned', 'preparing', 'ready', 'in_progress')
 
@@ -1104,9 +1194,17 @@ async def render_order_summary(order_id: int, tick: int = 0, paused: bool = Fals
         "✨ Hang tight — your campus meal is on its way!"
     )
 
-    kb = build_track_keyboard(order["id"], has_dg=bool(dg), dg_user_id=dg.get("user_id") if dg else None,
-                              dg_phone=dg.get("phone") if dg else None, is_ready=(order.get("status")=="ready"),
-                              map_url=map_url, paused=paused)
+    kb = build_track_keyboard(
+    order["id"],
+    has_dg=bool(dg),
+    dg_user_id=dg.get("user_id") if dg else None,
+    dg_phone=dg.get("phone") if dg else None,
+    is_ready=(order.get("status") == "ready"),
+    is_pending=(order.get("status") == "pending"),
+    map_url=map_url,
+    paused=paused,
+)
+
 
     # Kick off ETA update in background
     if dg and dg.get("last_lat") and dg.get("last_lon") and breakdown.get("drop_lat") and breakdown.get("drop_lon"):

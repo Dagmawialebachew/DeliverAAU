@@ -9,6 +9,7 @@ from typing import Optional, Tuple, Dict, Any, List
 from datetime import datetime, timedelta
 from aiogram import Bot
 from aiogram import Router, F, types
+from config import settings
 from aiogram.types import (
     Message,
     CallbackQuery,
@@ -68,6 +69,7 @@ async def post_accept_updates(call: CallbackQuery, order_id: int, dg: Dict[str, 
             "──────────────────────\n"
             f"🏠 Pickup: {order.get('pickup')}\n"
             f"📍 Drop-off: {dropoff}\n"
+            f"{('📝 Notes: ' + order.get('notes', '') + '\n') if order.get('notes') else ''}"
             f"💰 Subtotal Fee: {subtotal} birr\n"
             f"🚚 Delivery fee: {delivery_fee} birr\n"
             "──────────────────────\n"
@@ -76,6 +78,24 @@ async def post_accept_updates(call: CallbackQuery, order_id: int, dg: Dict[str, 
             "⚡ Manage this order below.\n\n"
             "For robust and fast use My Orders in the dashboard."
         )
+
+
+        # ✅ Notify daily admin group
+        if settings.ADMIN_DAILY_GROUP_ID:
+            admin_msg = (
+                f"🚴 *Delivery Guy Accepted Order #{order_id}*\n"
+                f"👤 DG: {dg.get('name','Unknown')} ({dg.get('phone','N/A')})\n"
+            )
+            try:
+                await call.bot.send_message(
+                    settings.ADMIN_DAILY_GROUP_ID,
+                    admin_msg,
+                    parse_mode="Markdown"
+                )
+            except Exception as e:
+                logging.warning(f"Failed to notify admin group for accepted order {order_id}: {e}")
+
+    
 
         # Edit vendor message
         try:

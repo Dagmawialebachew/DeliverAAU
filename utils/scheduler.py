@@ -2,6 +2,7 @@ import asyncio
 import logging
 import json 
 from datetime import datetime, timedelta
+import os
 from typing import Optional, Tuple
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -256,14 +257,40 @@ class BotScheduler:
                 PENDING_OFFERS.pop(order_id, None)
 
                 # Admin event
+                # Admin event
                 reason = "blocked bot" if marker == "blocked" else "offer expired"
                 msg = (
                     f"{'🚫 DG blocked' if marker == 'blocked' else '⏰ Offer expired'}\n"
                     f"📦 Order #{order_id}\n"
-                    f"🚴 DG: {dg.get('name') if dg else 'Unknown'} (id={dg.get('id') if dg else 'N/A'}, chat_id={chat_id})\n"
+                    f"🚴 DG: {dg.get('name') if dg else 'Unknown'} "
+                    f"(id={dg.get('id') if dg else 'N/A'}, chat_id={chat_id})\n"
                     f"🕒 Last countdown seen: {countdown or 'N/A'}\n"
                 )
                 admin_events.append(msg)
+
+                # ✅ Notify the delivery guy if expired
+                if marker == "expired":
+                    try:
+                        await self.bot.edit_message_text(
+                            chat_id=offer["chat_id"],
+                            message_id=offer["message_id"],
+                            text=f"❌ Offer expired for Order #{order_id}.",
+                            parse_mode="Markdown"
+                        )
+                    except Exception as e:
+                        log.warning("[OFFERS:RESOLVE] Failed to notify DG about expired order %s: %s", order_id, e)
+
+                    # 🔄 Also check thresholds and notify DG/admin about reliability
+                    if dg:
+                        try:
+                            await self.check_thresholds_and_notify(
+                                bot=self.bot,
+                                dg_id=dg["id"],
+                                admin_group_id=settings.ADMIN_DAILY_GROUP_ID,
+                                max_skips=3  # or configurable
+                            )
+                        except Exception as e:
+                            log.warning("[OFFERS:RESOLVE] Failed to run threshold check for DG %s: %s", dg.get("id"), e)
 
                 # increment skip for the DG if present
                 if dg:
@@ -276,6 +303,17 @@ class BotScheduler:
                 try:
                     order = await self.db.get_order(order_id)
                     if order:
+                        # ✅ Check if already assigned
+                        if order.get("delivery_guy_id"):
+                            admin_events.append(
+                                f"ℹ️ Order #{order_id} already has DG {order.get('delivery_guy_id')} assigned "
+                                f"(manual/admin assignment detected). Skipping re-offer."
+                            )
+                            log.info("[OFFERS:RESOLVE] Skipped re-offer for order %s, DG already assigned", order_id)
+                            # also remove from pending offers
+                            PENDING_OFFERS.pop(order_id, None)
+                            return
+
                         next_dg = await find_next_candidate(self.db, order_id, order)
                         if next_dg:
                             try:
@@ -388,7 +426,7 @@ class BotScheduler:
                     try:
                         await self.bot.send_message(
                             vendor["telegram_id"],
-                            f"⚠️ ትዕዛዝ #{order_id} በ 3 ደቂቃ ውስጥ ተቀባይነት ሳላላገኘ ከትእዛዞች ተወግዷል።\n"
+                            f"⚠️ ትዕዛዝ #{order_id} በ 6-8 ደቂቃ ውስጥ ተቀባይነት ሳላላገኘ ከትእዛዞች ተወግዷል።\n"
                             "እባክዎ ትዕዛዞችን በፍጥነት ይቀበሉ ወይም ይሰርዙ።"
                         )
                     except (TelegramBadRequest, TelegramForbiddenError):
@@ -955,6 +993,56 @@ class BotScheduler:
 
         except Exception as e:
             log.error(f"Error in admin summary task: {e}")
+    
+    async def send_admin_weekly_summary(self) -> None:
+        """Send weekly analytics summary to admins (Sunday 4:00 AM)."""
+        log.info("Sending weekly admin analytics")
+
+        try:
+            analytics = AnalyticsService(self.db)
+
+            # 1️⃣ Generate weekly summary text
+            weekly_summary = await analytics.summary_week_text()
+
+            # 2️⃣ Generate weekly summary dict for PDF
+            # Make sure this contains all required keys for export_weekly_pdf
+            summary_dict = await analytics.summarize_week(
+                start_date=analytics.start_date, 
+                end_date=analytics.end_date
+            )
+
+            # 3️⃣ Export PDF
+            pdf_filename = f"weekly_summary_{datetime.now().strftime('%Y%m%d')}.pdf"
+            pdf_path = os.path.join("reports", pdf_filename)  # make sure "reports" folder exists
+            os.makedirs("reports", exist_ok=True)
+            analytics.export_weekly_pdf(summary_dict, pdf_path)
+            log.info(f"✅ Weekly PDF generated at {pdf_path}")
+
+            # 4️⃣ Send text summary to admin
+            try:
+                await self.bot.send_message(
+                    ADMIN_GROUP_ID,
+                    weekly_summary,
+                    parse_mode="Markdown"
+                )
+                log.info(f"✅ Sent weekly analytics text to admin {ADMIN_GROUP_ID}")
+            except Exception as e:
+                log.error(f"❌ Failed to send weekly analytics text to admin {ADMIN_GROUP_ID}: {e}")
+
+            # 5️⃣ Send PDF to admin
+            try:
+                with open(pdf_path, "rb") as pdf_file:
+                    await self.bot.send_document(
+                        ADMIN_GROUP_ID,
+                        document=pdf_file,
+                        caption="📊 Weekly Analytics PDF"
+                    )
+                log.info(f"✅ Sent weekly analytics PDF to admin {ADMIN_GROUP_ID}")
+            except Exception as e:
+                log.error(f"❌ Failed to send weekly analytics PDF to admin {ADMIN_GROUP_ID}: {e}")
+
+        except Exception as e:
+            log.error(f"Error in weekly admin analytics task: {e}")
 
     async def cleanup_inactive_sessions(self) -> None:
         """Clean up inactive user sessions (placeholder)."""
@@ -998,7 +1086,7 @@ class BotScheduler:
         self.scheduler.add_job(
             self.expire_stale_orders,
             'interval',
-            minutes=3,
+            minutes=8,
             id='expire_stale_orders'
         )
         self.scheduler.add_job(
@@ -1080,6 +1168,17 @@ class BotScheduler:
             CronTrigger(hour=17, minute=0),
             id="vendor_reliability_alerts"
         )
+
+        self.scheduler.add_job(
+    self.send_admin_weekly_summary,
+    trigger="cron",
+    day_of_week="sun",
+    hour=19,
+    minute=0,
+    id="weekly_admin_analytics",
+    replace_existing=True,
+)
+
 
         self.scheduler.start()
         log.info("Scheduler started with all jobs")

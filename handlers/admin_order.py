@@ -1060,6 +1060,7 @@ async def action_assign_confirm(cb: CallbackQuery):
             "──────────────────────\n"
             f"🏠 Pickup: {order.get('pickup')}\n"
             f"📍 Drop-off: {dropoff}\n"
+            f"{('📝 Notes: ' + order.get('notes', '') + '\n') if order.get('notes') else ''}"
             f"💰 Subtotal Fee: {order.get('food_subtotal')} birr\n"
             f"🚚 Delivery fee: {order.get('delivery_fee')} birr\n"
             "──────────────────────\n"

@@ -554,17 +554,22 @@ async def vendor_accept_order(cb: CallbackQuery, bot: Bot):
     # 2b. Status check before update
     current_status = order.get("status")
     if current_status != "pending":
-        
-        await cb.message.answer(
-            f"❌ ይህ ትዕዛዝ መቀበል አይቻልም፣ ጊዜው አልፎበታል።"
-            f"በተማሪው ተሰርዟል። እባክዎ ይህንን ትእዛዝ መስራት ያቁሙ ወይም አይስሩ።"
+        # Edit the original vendor message instead of sending a new one
+        await cb.message.edit_text(
+            f"❌ ይህ ትዕዛዝ መቀበል አይቻልም፣ ጊዜው አልፎበታል።\n\n"
+            f"ምክንያት፦ በተማሪው ተሰርዟል ወይም ከታዘዘ ቆይቷል\n\n"
+            f"⚠️ እባክዎ ይህንን ትእዛዝ መስራት ያቁሙ።",
+            parse_mode="HTML"
         )
         try:
-            await notify_admin_log(bot, ADMIN_GROUP_ID,
-                f"⚠️ Vendor tried to accept Order #{order_id} but status was {current_status}")
+            await notify_admin_log(
+                bot,
+                ADMIN_GROUP_ID,
+                f"⚠️ Vendor tried to accept Order #{order_id} but status was {current_status}"
+            )
         except Exception as e:
             print(f"[vendor_accept_order] Failed to notify admin about invalid accept for order #{order_id}: {e}")
-
+        return
 
     # 3) Update status and timestamp
     try:
@@ -700,6 +705,19 @@ async def vendor_reject_order(cb: CallbackQuery, bot: Bot):
 
     # 2) Update status in DB first
     await db.update_order_status(order_id, "cancelled")
+    
+    current_status = order.get("status")
+    if current_status != "pending":
+        
+        await cb.message.edit_text(
+            f"❌ ይህ ትዕዛዝ {order_id} ተሰርዟል\n\n"
+        )
+        try:
+            await notify_admin_log(bot, ADMIN_GROUP_ID,
+                f"⚠️ Vendor tried to skip Order #{order_id} but status was {current_status}")
+        except Exception as e:
+            print(f"[vendor_accept_order] Failed to notify admin about invalid accept for order #{order_id}: {e}")
+        return
 
     # Optionally clear assigned delivery guy on the order
     if order.get("delivery_guy_id"):

@@ -273,7 +273,7 @@ async def handle_contact(message: Message, state: FSMContext):
     phone = format_phone_number(message.contact.phone_number)
     await state.update_data(phone=phone)
 
-    await message.answer("✅ Phone linked successfully!", reply_markup=ReplyKeyboardRemove())
+    await message.answer("✅ Your phone number has been linked successfully.\nTo update it later, go to Settings → Change Phone Number.", reply_markup=ReplyKeyboardRemove())
     await asyncio.sleep(0.4)
     await typing_pause(message, "🏛 Step 2 of 3 — Choose your campus")
     await message.answer("Select your home base 👇", reply_markup=campus_inline_keyboard())

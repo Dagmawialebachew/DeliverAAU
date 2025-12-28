@@ -13,6 +13,7 @@ from aiohttp import web
 
 from config import settings
 from app_context import bot, dp, db
+from database.db import seed_vendors
 from utils.scheduler import BotScheduler
 
 # Routers

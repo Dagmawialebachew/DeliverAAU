@@ -1,4 +1,6 @@
 # database/db.py (Postgres/asyncpg migration)
+from collections import Counter
+from decimal import Decimal
 import json
 import os
 import random
@@ -8,7 +10,24 @@ from typing import Optional, Dict, Any, List, Tuple
 import datetime
 from asyncpg.connection import Connection
 from asyncpg.pool import Pool
+    
+from datetime import datetime, timedelta, date
+from typing import Dict, Any, List, Tuple, Optional
+from decimal import Decimal
+import math
 
+# reportlab import for PDF export (install with pip install reportlab)
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import mm
+from reportlab.pdfgen import canvas
+from openpyxl import Workbook
+from openpyxl.styles import Font, Alignment
+from openpyxl import Workbook
+from openpyxl.styles import Font, Alignment, PatternFill, Border, Side, NamedStyle, numbers
+from openpyxl.utils import get_column_letter
+from openpyxl.formatting.rule import CellIsRule
+from openpyxl.chart import BarChart, Reference
+from datetime import datetime
 # --- 1. UNIFIED SCHEMA SQL (Postgres Dialect) ---
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS users (
@@ -70,6 +89,8 @@ CREATE TABLE IF NOT EXISTS vendors (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+
 
 CREATE TABLE IF NOT EXISTS orders (
     id SERIAL PRIMARY KEY,
@@ -195,6 +216,7 @@ CREATE INDEX IF NOT EXISTS idx_vendors_telegram_id ON vendors(telegram_id);
 CREATE INDEX IF NOT EXISTS idx_vendors_name ON vendors(name);
 ALTER TABLE orders ALTER COLUMN user_id TYPE BIGINT;
 ALTER TABLE orders ALTER COLUMN delivery_guy_id TYPE BIGINT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS notes TEXT;
 ALTER TABLE orders ALTER COLUMN vendor_id TYPE BIGINT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
@@ -220,6 +242,7 @@ ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP NULL,
 ADD COLUMN IF NOT EXISTS vendor_confirmed_at TIMESTAMP NULL,
 ADD COLUMN IF NOT EXISTS cancel_reason TEXT NULL;
 
+
 -- Optional: index to speed up expiry checks
 CREATE INDEX IF NOT EXISTS idx_orders_expires ON orders(expires_at);
 CREATE INDEX IF NOT EXISTS idx_orders_vendor_created ON orders(vendor_id, created_at);
@@ -232,10 +255,6 @@ CREATE INDEX IF NOT EXISTS idx_orders_user_id_created ON orders(user_id, created
 CREATE INDEX IF NOT EXISTS idx_orders_dg_id_created ON orders(delivery_guy_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_ratings_vendor_id ON ratings(vendor_id);
 CREATE INDEX IF NOT EXISTS idx_ratings_dg_id ON ratings(delivery_guy_id);
-
-
-
-
 """
 
 class Database:
@@ -437,6 +456,36 @@ class Database:
             return (row["meal_name"], row["cnt"]) if row else ("None", 0)
         
     
+    async def get_user_stats(self, telegram_id: int) -> Optional[Dict[str, Any]]:
+        """
+        Fetch user stats including username, xp, level, and order_count.
+        """
+        async with self._open_connection() as conn:
+            user = await conn.fetchrow(
+                "SELECT id, telegram_id, first_name, phone, campus, xp, level "
+                "FROM users WHERE telegram_id=$1",
+                telegram_id
+            )
+            if not user:
+                return None
+
+            # Count orders for this user
+            order_count = await conn.fetchval(
+                "SELECT COUNT(*) FROM orders WHERE user_id=$1",
+                user["id"]
+            )
+
+            return {
+                "id": user["id"],
+                "telegram_id": user["telegram_id"],
+                "first_name": user["first_name"],
+                "phone": user["phone"],
+                "campus": user["campus"],
+                "xp": user["xp"],
+                "level": user["level"],
+                "order_count": order_count,
+            }
+
     
     async def count_today_orders_for_dg(self, dg_id: int) -> Tuple[int, int]:
         """
@@ -1202,25 +1251,28 @@ class Database:
         payment_status: str,
         receipt_id: Optional[int],
         breakdown_json: str,
+        notes: Optional[str] = None,
         delivery_guy_id: Optional[int] = None,
     ) -> int:
         from datetime import datetime, timedelta, timezone
         now = datetime.utcnow()  # naive UTC
         expires_at = now + timedelta(minutes=45)
         async with self._open_connection() as conn:
+            
             order_id = await conn.fetchval(
                 """
                 INSERT INTO orders
                 (user_id, delivery_guy_id, vendor_id, pickup, dropoff, items_json,
                 food_subtotal, delivery_fee, status, payment_method, payment_status,
-                receipt_id, breakdown_json, created_at, updated_at, expires_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $14, $15)
+                receipt_id, breakdown_json, notes, created_at, updated_at, expires_at)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$15,$16)
                 RETURNING id
                 """,
                 user_id, delivery_guy_id, vendor_id, pickup, dropoff, items_json,
                 food_subtotal, delivery_fee, status, payment_method, payment_status,
-                receipt_id, breakdown_json, now, expires_at,
+                receipt_id, breakdown_json, notes, now, expires_at
             )
+
             return int(order_id) if order_id is not None else 0
 
     from datetime import datetime
@@ -1515,13 +1567,17 @@ class Database:
 
     # --- Vendor, Location, & Other Methods (Adapted) ---
 
+    
     async def list_vendors(self) -> List[Dict[str, Any]]:
-        """Return all vendors ordered by name."""
+        """Return all active vendors ordered by name."""
         async with self._open_connection() as conn:
-            rows = await conn.fetch("SELECT * FROM vendors ORDER BY name ASC")
+            rows = await conn.fetch(
+                "SELECT * FROM vendors WHERE status = 'active' ORDER BY name ASC"
+            )
             return [self._row_to_dict(r) for r in rows]
 
-   
+
+    
     
 
 
@@ -2095,16 +2151,683 @@ class AnalyticsService:
 
 ⚡ *UniBites Delivery — transparent payouts, clear profits 🚀*
             """
+            
+        
+    
+    # ---------- Weekly summary core ----------
+    async def summarize_week(self,
+                            start_date: Optional[date] = None,
+                            end_date: Optional[date] = None) -> Dict[str, Any]:
+        """
+        Summarize the 7-day window [start_date .. end_date] inclusive.
+        Defaults: previous 7 days ending yesterday (i.e. yesterday and the 6 days before).
+        Returns a dict with lots of metrics and a 'vendor_payouts' list with per-vendor details.
+        """
+        # default window: previous 7 days (yesterday inclusive)
+        today = datetime.now().date()
+        if end_date is None:
+            end_date = today - timedelta(days=0)
+        if start_date is None:
+            start_date = end_date - timedelta(days=7)  # 7-day window
+
+        # previous week window for comparisons
+        prev_end = start_date - timedelta(days=0)
+        prev_start = prev_end - timedelta(days=7)
+
+        # normalize to date strings if needed for SQL
+        # We'll use DB-level aggregation (faster) where possible
+        async with self.db._open_connection() as conn:
+            # --- Users ---
+            total_users = int(await conn.fetchval("SELECT COUNT(*) FROM users") or 0)
+            new_users = int(await conn.fetchval(
+                "SELECT COUNT(*) FROM users WHERE created_at::date BETWEEN $1 AND $2",
+                start_date, end_date
+            ) or 0)
+
+            # Weekly Active Users (WAU): users with activity or last_active in the window
+            wau = int(await conn.fetchval(
+    """
+    SELECT COUNT(DISTINCT user_id)
+    FROM orders
+    WHERE created_at::date BETWEEN $1 AND $2
+    """,
+    start_date, end_date
+) or 0)
+            
+            prev_wau = int(await conn.fetchval(
+    """
+    SELECT COUNT(DISTINCT user_id)
+    FROM orders
+    WHERE created_at::date BETWEEN $1 AND $2
+    """,
+    prev_start, prev_end
+    ) or 0)
 
 
+            prev_new_users = int(await conn.fetchval(
+                """
+                SELECT COUNT(*)
+                FROM users
+                WHERE created_at::date BETWEEN $1 AND $2
+                """,
+                prev_start, prev_end
+            ) or 0)
+
+
+
+            # --- Orders & revenue (delivered only for revenue) ---
+            orders_row = await conn.fetchrow(
+                """
+                SELECT
+                    COUNT(*) FILTER (WHERE created_at::date BETWEEN $1 AND $2) AS total_orders,
+                    COUNT(*) FILTER (WHERE status='delivered' AND delivered_at::date BETWEEN $1 AND $2) AS delivered,
+                    COUNT(*) FILTER (WHERE status='cancelled' AND created_at::date BETWEEN $1 AND $2) AS cancelled,
+                    SUM(food_subtotal) FILTER (WHERE status='delivered' AND delivered_at::date BETWEEN $1 AND $2) AS food_revenue,
+                    SUM((breakdown_json::jsonb->>'platform_share')::numeric) FILTER (WHERE status='delivered' AND delivered_at::date BETWEEN $1 AND $2) AS delivery_fees
+                FROM orders
+                """,
+                start_date, end_date
+            )
+
+            orders_total = int(orders_row["total_orders"] or 0)
+            orders_delivered = int(orders_row["delivered"] or 0)
+            orders_cancelled = int(orders_row["cancelled"] or 0)
+            food_rev = Decimal(orders_row["food_revenue"] or 0)
+            delivery_fees = Decimal(orders_row["delivery_fees"] or 0)
+            total_payout = food_rev + delivery_fees
+            reliability_pct = round((orders_delivered / orders_total * 100), 1) if orders_total > 0 else 0.0
+
+            # previous week totals (for WoW)
+            prev_row = await conn.fetchrow(
+                """
+                SELECT
+                    COUNT(*) FILTER (WHERE created_at::date BETWEEN $1 AND $2) AS total_orders,
+                    COUNT(*) FILTER (WHERE status='delivered' AND delivered_at::date BETWEEN $1 AND $2) AS delivered,
+                    SUM(food_subtotal) FILTER (WHERE status='delivered' AND delivered_at::date BETWEEN $1 AND $2) AS food_revenue,
+                    SUM((breakdown_json::jsonb->>'platform_share')::numeric) FILTER (WHERE status='delivered' AND delivered_at::date BETWEEN $1 AND $2) AS delivery_fees
+                FROM orders
+                """,
+                prev_start, prev_end
+            )
+            prev_total_orders = int(prev_row["total_orders"] or 0)
+            prev_delivered = int(prev_row["delivered"] or 0)
+            prev_food_rev = Decimal(prev_row["food_revenue"] or 0)
+            prev_delivery_fees = Decimal(prev_row["delivery_fees"] or 0)
+            prev_total_payout = prev_food_rev + prev_delivery_fees
+
+            # --- Cancelled orders list (basic info) ---
+            cancelled_orders_rows = await conn.fetch(
+                    """
+                    SELECT v.name AS vendor_name, COUNT(*) AS cancelled_count
+                    FROM orders o
+                    JOIN vendors v ON v.id = o.vendor_id
+                    WHERE o.status = 'cancelled'
+                    AND o.created_at::date BETWEEN $1 AND $2
+                    GROUP BY v.name
+                    ORDER BY cancelled_count DESC
+                    LIMIT 5
+                    """,
+                    start_date, end_date
+                )
+            cancelled_orders = [
+                {"vendor_name": r["vendor_name"], "cancelled_count": int(r["cancelled_count"])  }
+                for r in cancelled_orders_rows
+            ]
+
+            # --- Top meal & campus ---    
+            rows = await conn.fetch(
+                """
+                SELECT items_json
+                FROM orders
+                WHERE created_at::date BETWEEN $1 AND $2
+                """,
+                start_date, end_date
+            )
+
+            meal_counter = Counter()
+            for row in rows:
+                items = json.loads(row["items_json"] or "[]")
+                for item in items:
+                    meal_counter[item["name"]] += item.get("qty", 1)
+
+            if meal_counter:
+                top_meal_name, top_meal_count = meal_counter.most_common(1)[0]
+            else:
+                top_meal_name, top_meal_count = "N/A", 0
+
+            top_campus_row = await conn.fetchrow(
+                """
+                SELECT u.campus AS campus_name, COUNT(*) AS cnt
+                FROM orders o
+                JOIN users u ON u.id = o.user_id
+                WHERE o.created_at::date BETWEEN $1 AND $2
+                AND u.campus IS NOT NULL
+                GROUP BY u.campus
+                ORDER BY cnt DESC
+                LIMIT 1
+                """,
+                start_date, end_date
+            )
+
+            top_campus_name = top_campus_row["campus_name"] if top_campus_row else "None"
+            top_campus_orders = int(top_campus_row["cnt"]) if top_campus_row else 0
+            # --- Vendors summary & per-vendor payouts (delivered only) ---
+            vendors_rows = await conn.fetch(
+                """
+                SELECT v.id, v.name,
+                    COUNT(o.id) FILTER (WHERE o.status='delivered' AND o.delivered_at::date BETWEEN $1 AND $2) AS delivered_orders,
+                    SUM(o.food_subtotal) FILTER (WHERE o.status='delivered' AND o.delivered_at::date BETWEEN $1 AND $2) AS gross_food,
+                    SUM((o.breakdown_json::jsonb->>'platform_share')::numeric) FILTER (WHERE o.status='delivered' AND o.delivered_at::date BETWEEN $1 AND $2) AS commission,
+                    SUM((o.breakdown_json::jsonb->>'vendor_share')::numeric) FILTER (WHERE o.status='delivered' AND o.delivered_at::date BETWEEN $1 AND $2) AS vendor_payout,
+                    COUNT(o.id) FILTER (WHERE o.status='cancelled' AND o.created_at::date BETWEEN $1 AND $2) AS cancelled
+                FROM vendors v
+                LEFT JOIN orders o ON o.vendor_id = v.id
+                GROUP BY v.id, v.name
+                ORDER BY vendor_payout DESC
+                LIMIT 50
+                """,
+                start_date, end_date
+            )
+
+            vendor_payouts = []
+            for r in vendors_rows:
+                vendor_payouts.append({
+                    "id": r["id"],
+                    "name": r["name"],
+                    "delivered_orders": int(r["delivered_orders"] or 0),
+                    "gross_food": Decimal(r["gross_food"] or 0),
+                    "commission": Decimal(r["commission"] or 0),
+                    "vendor_payout": Decimal(r["vendor_payout"] or 0),
+                    "cancelled": int(r["cancelled"] or 0),
+                    "reliability": round(
+                        (int(r["delivered_orders"] or 0) / ((int(r["delivered_orders"] or 0) + int(r["cancelled"] or 0)) or 1)) * 100,
+                        1
+                    )
+                })
+
+            # vendor-level aggregated totals
+            vendors_active = int(await conn.fetchval(
+    """
+    SELECT COUNT(DISTINCT o.vendor_id)
+    FROM orders o
+    WHERE o.created_at::date BETWEEN $1 AND $2
+    """,
+    start_date, end_date
+) or 0)
+            avg_vendor_rating = float(await conn.fetchval("SELECT AVG(rating_avg) FROM vendors") or 0.0)
+
+            # --- Delivery guys summary (weekly aggregates) ---
+            dg_row = await conn.fetchrow(
+                """
+                SELECT
+                    COUNT(DISTINCT dg_id) FILTER (WHERE ds.date BETWEEN $1 AND $2) AS active_dg,
+                    SUM(ds.deliveries) FILTER (WHERE ds.date BETWEEN $1 AND $2) AS total_deliveries
+                FROM daily_stats ds
+                """,
+                start_date, end_date
+            )
+            dg_active = int(dg_row["active_dg"] or 0)
+            dg_deliveries = int(dg_row["total_deliveries"] or 0)
+
+            # approximate acceptance rate: compute from daily_stats averages if available
+            acc_row = await conn.fetchrow(
+                """
+                SELECT AVG(ds.acceptance_rate) AS avg_acc
+                FROM daily_stats ds
+                WHERE ds.date BETWEEN $1 AND $2
+                """,
+                start_date, end_date
+            )
+            dg_acceptance_rate = float(acc_row["avg_acc"] or 0.0)
+
+            # --- Top deliverer from leaderboard (reuse existing helper if present) ---
+            leaderboard = await self.db.get_leaderboard(limit=200)
+            top_deliverer_name = leaderboard[0].get("first_name") if leaderboard else "None"
+            top_deliverer_xp = leaderboard[0].get("xp") if leaderboard else 0
+
+            # --- compute WoW deltas for key KPIs ---
+            def pct_change_val(curr: Decimal, prev: Decimal) -> Tuple[str, float]:
+                if prev == 0:
+                    return ("N/A", 0.0)
+                diff = (curr - prev)
+                pct = float((diff / prev) * 100)
+                arrow = "up" if diff > 0 else ("down" if diff < 0 else "flat")
+                return (arrow, round(pct, 1))
+
+            vendor_total = sum(v["vendor_payout"] for v in vendor_payouts)
+            admin_total = delivery_fees  # your system uses delivery_fees as platform/commission here
+            gross_total = vendor_total + admin_total
+
+            prev_vendor_total = prev_total_payout  # best approximation using earlier query
+            prev_admin_total = prev_delivery_fees
+            prev_gross_total = prev_total_payout
+
+            vendor_trend = pct_change_val(Decimal(vendor_total), Decimal(prev_vendor_total))
+            admin_trend = pct_change_val(Decimal(admin_total), Decimal(prev_admin_total))
+            gross_trend = pct_change_val(Decimal(gross_total), Decimal(prev_gross_total))
+
+        # --- Generate automated action recommendations ---
+        recommendations = self._generate_weekly_recommendations({
+            "orders_total": orders_total,
+            "orders_delivered": orders_delivered,
+            "orders_cancelled": orders_cancelled,
+            "cancelled_orders": cancelled_orders,
+            "vendor_payouts": vendor_payouts,
+            "dg_acceptance_rate": dg_acceptance_rate,
+            "vendor_total": float(vendor_total),
+            "vendor_trend_pct": vendor_trend[1] if vendor_trend[0] != "N/A" else None,
+        }, prev_metrics={
+            "orders_total": prev_total_orders,
+            "orders_delivered": prev_delivered,
+            "vendor_total": float(prev_vendor_total)
+        })
+
+        # Compose summary dict
+        return {
+            "start_date": start_date,
+            "end_date": end_date,
+            "total_users": total_users,
+            "wau": wau,
+            "new_users": new_users,
+            "prev_new_users": prev_new_users,
+            "prev_wau": prev_wau,
+            "orders_total": orders_total,
+            "orders_delivered": orders_delivered,
+            "orders_cancelled": orders_cancelled,
+            "food_rev": float(food_rev),
+            "delivery_fees": float(delivery_fees),
+            "total_payout": float(total_payout),
+            "vendors_active": vendors_active,
+            "avg_vendor_rating": avg_vendor_rating,
+            "vendor_payouts": vendor_payouts,
+            "vendor_total": float(vendor_total),
+            "admin_total": float(admin_total),
+            "gross_total": float(gross_total),
+            "vendor_trend": vendor_trend,
+            "admin_trend": admin_trend,
+            "gross_trend": gross_trend,
+            "dg_active": dg_active,
+            "dg_deliveries": dg_deliveries,
+            "dg_acceptance_rate": dg_acceptance_rate,
+            "top_campus_name": top_campus_name,
+            "top_campus_orders": top_campus_orders,
+            "top_meal_name": top_meal_name,
+            "top_meal_count": top_meal_count,
+            "top_deliverer_name": top_deliverer_name,
+            "top_deliverer_xp": top_deliverer_xp,
+            "reliability_pct": reliability_pct,
+            "cancelled_orders": cancelled_orders,
+            "recommendations": recommendations,
+        }
+
+    # ---------- Recommendations (simple rule-based) ----------
+    def _generate_weekly_recommendations(self, metrics: Dict[str, Any], prev_metrics: Dict[str, Any]) -> List[str]:
+        """
+        Return a list of short, actionable recommendations based on weekly metrics.
+        This is intentionally rule-based and explainable.
+        """
+        recs: List[str] = []
+
+        # cancellations
+        canc_rate = (metrics["orders_cancelled"] / metrics["orders_total"] * 100) if metrics["orders_total"] else 0.0
+        if canc_rate >= 10:
+            recs.append(f"High cancellation rate this week ({canc_rate:.1f}%). Investigate top cancelled meals/vendors and contact them.")
+
+        # vendor reliability
+        low_reliability_vendors = [v for v in metrics["vendor_payouts"] if v["reliability"] < 85]
+        if low_reliability_vendors:
+            names = ", ".join(v["name"] for v in low_reliability_vendors[:3])
+            recs.append(f"Vendors with low reliability: {names}. Consider warnings, training, or temporary delisting.")
+
+        # vendor payouts drop
+        prev_vendor_total = prev_metrics.get("vendor_total", 0) or 0
+        if prev_vendor_total and metrics["vendor_total"] < prev_vendor_total * 0.9:
+            recs.append("Vendor payouts down >10% vs previous week — consider promotions or vendor-side issues (stock/outages).")
+
+        # low DG acceptance
+        if metrics["dg_acceptance_rate"] < 75:
+            recs.append(f"DG acceptance low ({metrics['dg_acceptance_rate']:.1f}%). Consider incentives during peaks or recruit more DGs.")
+
+        # repeat offenders (lots of cancels)
+        offenders = sorted(metrics["vendor_payouts"], key=lambda v: v["cancelled"], reverse=True)
+        if offenders and offenders[0]["cancelled"] >= 10:
+            recs.append(f"Top canceller: {offenders[0]['name']} with {offenders[0]['cancelled']} cancels. Investigate immediately.")
+
+        # growth opportunity
+        if metrics["orders_total"] >= 200 and metrics["dg_acceptance_rate"] > 80:
+            recs.append("Good demand this week. Consider a small marketing push to convert new users to repeat customers.")
+
+        if not recs:
+            recs.append("No urgent actions detected — system is stable. Keep monitoring next week.")
+
+        return recs
+
+    # ---------- Weekly text formatter ----------
+    async def summary_week_text(self,
+                                start_date: Optional[date] = None,
+                                end_date: Optional[date] = None) -> str:
+        """
+        Build a Telegram-friendly string summary for the week using summarize_week().
+        """
+        data = await self.summarize_week(start_date=start_date, end_date=end_date)
+        sd = data["start_date"].strftime("%b %d")
+        ed = data["end_date"].strftime("%b %d, %Y")
+
+        # build vendor lines (top 8)
+        vendor_lines = []
+        for v in data["vendor_payouts"][:8]:
+            vendor_lines.append(
+                f"• {v['name']}: Gross {v['gross_food']:.2f} ብር | Net {v['vendor_payout']:.2f} ብር | Cancels {v['cancelled']} | Reliability {v['reliability']}%\n"
+            )
+        vendor_lines_text = "\n".join(vendor_lines) or "• None"
+
+        canceled_preview = []
+
+        for o in data["cancelled_orders"][:6]:
+            items = json.loads(o.get("items_json") or "[]")
+            if items:
+                # Take first item's name for preview
+                meal_name = items[0]["name"]
+            else:
+                meal_name = "N/A"
+            vendor_name = o.get("vendor_name", "Unknown")
+            canceled_preview.append(f"{meal_name}({vendor_name})")
+
+        canceled_preview = ", ".join(canceled_preview) or "None"
+
+        recs_text = "\n\n".join([f"• {r}" for r in data["recommendations"][:6]])
+
+        return f"""
+━━━━━━━━━━━━━━━━━━━━━━
+📊⚡ *Weekly Summary — {sd} → {ed}*
+━━━━━━━━━━━━━━━━━━━━━━
+
+👥 *USERS*
+    • Total users: *{data['total_users']}*
+    • Weekly Active (WAU): *{data['wau']}*
+    • New users this week: *{data['new_users']}*
+
+📦 *ORDERS*
+    • Total orders: *{data['orders_total']}*
+    • Delivered: *{data['orders_delivered']}*
+    • Cancelled: *{data['orders_cancelled']}*
+    • Reliability: *{data['reliability_pct']:.1f}%*
+
+💸 *FINANCIALS*
+    • Vendor payouts (total): *{data['vendor_total']:.2f} ብር*
+    • Admin (commission): *{data['admin_total']:.2f} ብር*
+    • Gross revenue: *{data['gross_total']:.2f} ብር*
+
+🏪 *TOP VENDORS (sample)*
+{vendor_lines_text}  # pre-formatted vendor lines, max 4-5 vendors
+
+🍜 *TOP MEAL*: *{data['top_meal_name']}* ×{data['top_meal_count']}
+📍 *TOP CAMPUS*: *{data['top_campus_name']}* ({data['top_campus_orders']} orders)
+
+🛵 *DELIVERY SQUAD*
+    • Active DGs: *{data['dg_active']}*
+    • Total deliveries: *{data['dg_deliveries']}*
+    • Acceptance rate: *{data['dg_acceptance_rate']:.1f}%*
+
+❌ *CANCELLATIONS (sample)*
+{canceled_preview}  # top cancelled meals/vendors
+
+🧠 *RECOMMENDATIONS*
+{recs_text}  # list of recommendations for admin actions
+
+⚡ *UniBites Delivery — weekly ops snapshot 🚀*
+━━━━━━━━━━━━━━━━━━━━━━
+"""
+
+
+    # ---------- PDF export ----------
+   
+    def export_weekly_pdf(self, summary: Dict[str, Any], path: str) -> None:
+        """
+        Export a polished Excel file of the weekly summary.
+        summary: result of summarize_week()
+        path: filesystem path to write Excel file
+        """
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Weekly Summary"
+
+        # ---------- Styles ----------
+        header_font = Font(bold=True, size=14, color="FFFFFF")
+        section_font = Font(bold=True, size=11)
+        bold_font = Font(bold=True)
+        center = Alignment(horizontal="center", vertical="center")
+        left = Alignment(horizontal="left", vertical="center")
+        thin = Side(border_style="thin", color="000000")
+        border = Border(left=thin, right=thin, top=thin, bottom=thin)
+        blue_fill = PatternFill("solid", fgColor="4F81BD")
+        light_gray = PatternFill("solid", fgColor="F2F2F2")
+
+        # Named style for table headers
+        header_style = NamedStyle(name="table_header")
+        header_style.font = Font(bold=True, color="FFFFFF")
+        header_style.fill = PatternFill("solid", fgColor="2F5597")
+        header_style.alignment = center
+        header_style.border = border
+        if "table_header" not in wb.named_styles:
+            wb.add_named_style(header_style)
+
+        # ---------- Title ----------
+        start = summary.get("start_date")
+        end = summary.get("end_date")
+        start_str = start.strftime("%b %d") if hasattr(start, "strftime") else str(start)
+        end_str = end.strftime("%b %d, %Y") if hasattr(end, "strftime") else str(end)
+        ws.merge_cells("A1:F1")
+        ws["A1"] = f"📊 Weekly Summary • {start_str} → {end_str}"
+        ws["A1"].font = header_font
+        ws["A1"].alignment = center
+        ws["A1"].fill = blue_fill
+        ws.row_dimensions[1].height = 28
+
+        row = 3
+
+        # ---------- USERS ----------
+        ws[f"A{row}"] = "👥 USERS"
+        ws[f"A{row}"].font = section_font
+        row += 1
+        ws[f"A{row}"] = "Total users"
+        ws[f"B{row}"] = summary.get("total_users", 0)
+        ws[f"A{row}"].font = bold_font
+        row += 1
+        ws[f"A{row}"] = "WAU"
+        ws[f"B{row}"] = summary.get("wau", 0)
+        ws[f"A{row}"].font = bold_font
+        row += 1
+        ws[f"A{row}"] = "New users this week"
+        ws[f"B{row}"] = summary.get("new_users", 0)
+        row += 2
+
+        # ---------- ORDERS ----------
+        ws[f"A{row}"] = "📦 ORDERS"
+        ws[f"A{row}"].font = section_font
+        row += 1
+        ws[f"A{row}"] = "Total orders"
+        ws[f"B{row}"] = summary.get("orders_total", 0)
+        ws[f"C{row}"] = "Delivered"
+        ws[f"D{row}"] = summary.get("orders_delivered", 0)
+        ws[f"E{row}"] = "Cancelled"
+        ws[f"F{row}"] = summary.get("orders_cancelled", 0)
+        for col in ("A","C","E"):
+            ws[f"{col}{row}"].font = bold_font
+        row += 1
+        ws[f"A{row}"] = "Reliability (%)"
+        ws[f"B{row}"] = summary.get("reliability_pct", 0.0)
+        ws[f"B{row}"].number_format = '0.00%'
+        row += 2
+
+        # ---------- FINANCIALS ----------
+        ws[f"A{row}"] = "💸 FINANCIALS"
+        ws[f"A{row}"].font = section_font
+        row += 1
+        ws[f"A{row}"] = "Vendor payouts"
+        ws[f"B{row}"] = summary.get("vendor_total", 0.0)
+        ws[f"B{row}"].number_format = '#,##0.00 "birr"'
+        ws[f"C{row}"] = "Admin commission"
+        ws[f"D{row}"] = summary.get("admin_total", 0.0)
+        ws[f"D{row}"].number_format = '#,##0.00 "birr"'
+        ws[f"E{row}"] = "Gross revenue"
+        ws[f"F{row}"] = summary.get("gross_total", 0.0)
+        ws[f"F{row}"].number_format = '#,##0.00 "birr"'
+        for col in ("A","C","E"):
+            ws[f"{col}{row}"].font = bold_font
+        row += 2
+
+        # ---------- TOP VENDORS TABLE ----------
+        ws[f"A{row}"] = "🏪 TOP VENDORS"
+        ws[f"A{row}"].font = section_font
+        row += 1
+        vendor_header = ["Vendor", "Net Payout", "Gross Food", "Cancels"]
+        ws.append(vendor_header)
+        header_row = ws.max_row
+        for col_idx in range(1, len(vendor_header) + 1):
+            cell = ws.cell(row=header_row, column=col_idx)
+            cell.style = "table_header"
+
+        for v in summary.get("vendor_payouts", [])[:20]:
+            ws.append([
+                v.get("name", "Unknown"),
+                v.get("vendor_payout", 0.0),
+                v.get("gross_food", 0.0),
+                v.get("cancelled", 0)
+            ])
+        # format numeric columns
+        start_data_row = header_row + 1
+        end_data_row = ws.max_row
+        for r in range(start_data_row, end_data_row + 1):
+            ws[f"B{r}"].number_format = '#,##0.00 "birr"'
+            ws[f"C{r}"].number_format = '#,##0.00 "birr"'
+            ws[f"D{r}"].number_format = '0'
+
+        # Add a bar chart for top vendors (if data present)
+        if end_data_row >= start_data_row:
+            chart = BarChart()
+            chart.title = "Top Vendor Net Payouts"
+            chart.y_axis.title = "Net Payout (birr)"
+            chart.x_axis.title = "Vendor"
+            data_ref = Reference(ws, min_col=2, min_row=header_row, max_row=end_data_row)
+            cats_ref = Reference(ws, min_col=1, min_row=header_row + 1, max_row=end_data_row)
+            chart.add_data(data_ref, titles_from_data=True)
+            chart.set_categories(cats_ref)
+            chart.height = 8
+            chart.width = 14
+            chart_anchor_row = end_data_row + 2
+            ws.add_chart(chart, f"A{chart_anchor_row}")
+
+        row = ws.max_row + 3
+
+        # ---------- TOP MEAL & CAMPUS ----------
+        ws[f"A{row}"] = "🍜 TOP MEAL"
+        ws[f"A{row}"].font = section_font
+        ws[f"B{row}"] = f"{summary.get('top_meal_name','N/A')} ×{summary.get('top_meal_count',0)}"
+        row += 1
+        ws[f"A{row}"] = "📍 TOP CAMPUS"
+        ws[f"A{row}"].font = bold_font
+        ws[f"B{row}"] = f"{summary.get('top_campus_name','N/A')} ({summary.get('top_campus_orders',0)} orders)"
+        row += 2
+
+        # ---------- DELIVERY SQUAD ----------
+        ws[f"A{row}"] = "🛵 DELIVERY SQUAD"
+        ws[f"A{row}"].font = section_font
+        row += 1
+        ws.append(["Active DGs", "Total Deliveries", "Acceptance Rate"])
+        ds_header_row = ws.max_row
+        for col_idx in range(1, 4):
+            ws.cell(row=ds_header_row, column=col_idx).style = "table_header"
+        ws.append([
+            summary.get("dg_active", 0),
+            summary.get("dg_deliveries", 0),
+            summary.get("dg_acceptance_rate", 0.0)
+        ])
+        # format acceptance rate
+        ws[f"C{ds_header_row + 1}"].number_format = '0.00%'
+
+        row = ws.max_row + 2
+
+        # ---------- CANCELLATIONS ----------
+        ws[f"A{row}"] = "❌ CANCELLATIONS (sample)"
+        ws[f"A{row}"].font = section_font
+        row += 1
+        cancelled_preview = summary.get("cancelled_preview", "N/A")
+        ws[f"A{row}"] = cancelled_preview
+        row += 2
+
+        # ---------- RECOMMENDATIONS ----------
+        ws[f"A{row}"] = "🧠 RECOMMENDATIONS"
+        ws[f"A{row}"].font = section_font
+        row += 1
+        for r in summary.get("recommendations", []):
+            ws[f"A{row}"] = r
+            row += 1
+
+        # ---------- Footer / Prepared on ----------
+        footer_row = ws.max_row + 2
+        ws[f"E{footer_row}"] = f"Prepared on: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}"
+        ws[f"E{footer_row}"].alignment = Alignment(horizontal="right")
+        ws[f"E{footer_row}"].font = Font(italic=True, size=9)
+
+        # ---------- Layout polish ----------
+        # Freeze top rows for easy navigation
+        ws.freeze_panes = "A4"
+
+        # Auto-size columns
+        for col in ws.columns:
+            max_length = 0
+            col_letter = get_column_letter(col[0].column)
+            for cell in col:
+                try:
+                    val = str(cell.value) if cell.value is not None else ""
+                except Exception:
+                    val = ""
+                if len(val) > max_length:
+                    max_length = len(val)
+            adjusted_width = (max_length + 2)
+            ws.column_dimensions[col_letter].width = adjusted_width if adjusted_width < 60 else 60
+
+        # Conditional formatting examples
+        # Highlight reliability below 80% (if cell exists)
+        for r in range(1, ws.max_row + 1):
+            cell = ws.cell(row=r, column=2)
+            if isinstance(cell.value, (int, float)):
+                # apply a rule to the whole column B for rows where reliability might appear
+                pass
+        # Apply conditional formatting to the reliability cell if present
+        # Find reliability cell (search for label)
+        for r in range(1, ws.max_row + 1):
+            if ws.cell(row=r, column=1).value == "Reliability (%)":
+                rel_cell = f"B{r}"
+                ws.conditional_formatting.add(rel_cell,
+                    CellIsRule(operator='lessThan', formula=['0.8'], stopIfTrue=True,
+                            fill=PatternFill("solid", fgColor="FFC7CE")))
+                break
+
+        # Save Excel
+        wb.save(path)
+
+        # returns nothing; file is written to path
+
+    # ---------- Helper: pretty percent ----------
+    @staticmethod
+    def _fmt_pct(v: float) -> str:
+        try:
+            return f"{v:.1f}%"
+        except Exception:
+            return "N/A"
 
 # -------------------- Seed Functions --------------------
 async def seed_vendors(db: Database) -> None:
     vendors = [
         {
-        "telegram_id": 589745233,
+    "telegram_id": 589745233,
             "name": "Abudabi #5kilo",
             "menu": [
+                {"id": 77, "name": "ዳቦ", "price": 15, "category": "Extras"},
+                {"id": 78, "name": "ግማሽ ሊትር ውሃ", "price": 20, "category": "Extras"},
+                {"id": 79, "name": "1 ሊትር ውሃ", "price": 30, "category": "Extras"},
                 {"id": 1, "name": "ሃፍ ሃፍ", "price": 150, "category": "Fasting"},
                 {"id": 2, "name": "ፓስታ በስጎ", "price": 120, "category": "Fasting"},
                 {"id": 3, "name": "ፓስታ በአትክልት", "price": 120, "category": "Fasting"},
@@ -2149,6 +2872,9 @@ async def seed_vendors(db: Database) -> None:
         "telegram_id": 6567214347,
             "name": "Abudabi #6kilo",
             "menu": [
+                {"id": 77, "name": "ዳቦ", "price": 15, "category": "Extras"},
+                {"id": 78, "name": "ግማሽ ሊትር ውሃ", "price": 20, "category": "Extras"},
+                {"id": 79, "name": "1 ሊትር ውሃ", "price": 30, "category": "Extras"},
                 {"id": 1, "name": "ሃፍ ሃፍ", "price": 150, "category": "Fasting"},
                 {"id": 2, "name": "ፓስታ በስጎ", "price": 120, "category": "Fasting"},
                 {"id": 3, "name": "ፓስታ በአትክልት", "price": 120, "category": "Fasting"},
@@ -2194,6 +2920,9 @@ async def seed_vendors(db: Database) -> None:
         "telegram_id": 8487056502,
             "name": "Tena Mgb Bet",
             "menu": [
+                 {"id": 77, "name": "ዳቦ", "price": 15, "category": "Extras"},
+                {"id": 78, "name": "ግማሽ ሊትር ውሃ", "price": 20, "category": "Extras"},
+                {"id": 79, "name": "1 ሊትር ውሃ", "price": 30, "category": "Extras"},
                 {"id": 1, "name": "ፓስታ በስጎ", "price": 120, "category": "Fasting"},
                 {"id": 2, "name": "ፓስታ በአትክልት", "price": 120, "category": "Fasting"},
                 # {"id": 10, "name": "ፓስታ በቴስቲ", "price": 120, "category": "Fasting"},
