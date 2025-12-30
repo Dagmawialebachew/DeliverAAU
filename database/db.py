@@ -2932,7 +2932,7 @@ async def seed_vendors(db: Database) -> None:
                 {"id": 6, "name": "ሙሉ አገልግል", "price": 250, "category": "Fasting"},
                 {"id": 7, "name": "ግማሽ አገልገል", "price": 170, "category": "Fasting"},
                 {"id": 8, "name": "በየዓይነት", "price": 150, "category": "Fasting"},
-                {"id": 9, "name": "ሙሉ ኮርኒስ", "price": 200, "category": "Fasting"},
+                {"id": 9, "name": "ሙሉ ኮርኒስ", "price": 230, "category": "Fasting"},
                 # {"id": 7, "name": "ተጋቢኖ", "price": 150, "category": "Fasting"},
                 # {"id": 13, "name": "ስፔሻል ሽሮ", "price": 120, "category": "Fasting"},
                 {"id": 10, "name": "ቴስቲ ወጥ", "price": 130, "category": "Fasting"},

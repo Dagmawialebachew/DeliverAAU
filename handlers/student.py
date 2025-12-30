@@ -471,17 +471,24 @@ async def cart_toggle_item(cb: CallbackQuery, state: FSMContext):
     current_qty = cart_counts.get(item_id, 0)
     total_items = sum(cart_counts.values())
     MAX_QTY = 2
-    MAX_CART_ITEMS = 3
+    MAX_CART_ITEMS = 4
+
+    # Count only expensive items toward the cap
+    total_food_items = sum(
+        qty for iid, qty in cart_counts.items()
+        if next((m for m in menu if m["id"] == iid), {}).get("price", 0) >= 100
+    )
 
     if current_qty < MAX_QTY:
-        if total_items >= MAX_CART_ITEMS:
-            await cb.answer(f"⚠️ You can only select {MAX_CART_ITEMS} items total.", show_alert=True)
+        if total_food_items >= MAX_CART_ITEMS and item["price"] >= 100:
+            await cb.answer(f"⚠️ You can only select {MAX_CART_ITEMS} main items total.", show_alert=True)
             return
         cart_counts[item_id] = current_qty + 1
         await cb.answer(f"✅ Quantity set to x{cart_counts[item_id]}")
     else:
         cart_counts.pop(item_id, None)
         await cb.answer("❎ Removed from cart")
+
 
     await state.update_data(cart_counts=cart_counts)
 
