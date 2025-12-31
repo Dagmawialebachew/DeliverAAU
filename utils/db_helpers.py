@@ -262,13 +262,16 @@ async def calc_vendor_day_summary(self, vendor_id: int, date_str: Optional[str] 
     async with self._open_connection() as conn:
         # fetch orders for the day (only delivered/cancelled/progressed statuses as needed)
         rows = await conn.fetch(
-            """
-            SELECT id, status, items_json, food_subtotal, delivery_fee, created_at
-            FROM orders
-            WHERE vendor_id = $1 AND DATE(created_at) = $2
-            """,
-            vendor_id, date_to_use
-        )
+    """
+    SELECT id, status, items_json, food_subtotal, delivery_fee, created_at
+    FROM orders
+    WHERE vendor_id = $1
+      AND DATE(created_at) = $2
+      AND status = 'delivered'
+    """,
+    vendor_id, date_to_use
+)
+
 
         # initialize counters
         delivered = 0
