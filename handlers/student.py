@@ -495,7 +495,9 @@ async def cart_toggle_item(cb: CallbackQuery, state: FSMContext):
     page = data.get("menu_page", 1)
     kb = menu_keyboard(menu, cart_counts, page)
     text = render_menu_text(menu, vendor.get("name", "Unknown Spot"), page=page)
-    await cb.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    if cb.message.text != text or cb.message.reply_markup != kb:
+        await cb.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+
 
 
 
@@ -1018,21 +1020,34 @@ async def ask_final_confirmation(message: Message, state: FSMContext):
         return
 
     # Render cart summary from counts
-    # Count total items in cart
+    # Render cart summary
     text, subtotal = render_cart(cart_counts, menu, half_lookup=half_lookup)
 
-# Dynamic delivery fee based on number of items
-    total_items = sum(cart_counts.values())
-    if total_items == 1:
+    # Count only items >= 100 birr (non-Extras) for delivery fee
+    chargeable_items = 0
+    for item_id, count in cart_counts.items():
+        item = next((m for m in menu if m["id"] == item_id), None)
+        if not item:
+            continue
+        # Only count items >= 100 birr
+        if item["price"] >= 100:
+            chargeable_items += count
+
+    # Delivery fee based on chargeable items only
+    if chargeable_items == 0:
+        delivery_fee = 0.0
+    elif chargeable_items == 1:
         delivery_fee = 20.0
-    elif total_items == 2:
+    elif chargeable_items == 2:
         delivery_fee = 35.0
-    elif total_items == 3:
+    elif chargeable_items == 3:
         delivery_fee = 45.0
     else:
-        delivery_fee = 45.0  # or extend logic for 4+ items
+        delivery_fee = 45.0  # extend logic if needed
 
     total = subtotal + delivery_fee
+
+
     dropoff = data.get("dropoff", "N/A")
     campus_text = await db.get_user_campus_by_order(data.get("order_id", 0))
     dropoff = f"{dropoff} • {campus_text}" if campus_text else dropoff
@@ -1319,8 +1334,8 @@ async def final_confirm(cb: CallbackQuery, state: FSMContext):
         f"⚡ Status: Meal request sent — waiting for confirmation…"
     )
             await cb.bot.send_message(settings.ADMIN_DAILY_GROUP_ID, admin_msg, parse_mode="Markdown")
-        except Exception:
-            pass
+        except Exception as e: 
+            logging.exception(f"Failed to send admin notification for order {order_id}")
 
     await state.clear()
 
