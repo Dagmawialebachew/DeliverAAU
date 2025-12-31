@@ -465,46 +465,109 @@ import asyncio
 
 
 
-import asyncio
+# import asyncio
 from database.db import Database
+
+# async def test_schema():
+#     db = Database()
+#     await db.init_pool()
+#     async with db._open_connection() as conn:
+#         # List all tables in public schema
+#         tables = await conn.fetch("""
+#             SELECT table_name
+#             FROM information_schema.tables
+#             WHERE table_schema='public'
+#             ORDER BY table_name
+#         """)
+#         print("Tables:", [t['table_name'] for t in tables])
+
+#         # Show columns + types for orders
+#         orders_cols = await conn.fetch("""
+#             SELECT column_name, data_type
+#             FROM information_schema.columns
+#             WHERE table_name = 'orders'
+#             ORDER BY ordinal_position
+#         """)
+#         print("orders columns:", [(c['column_name'], c['data_type']) for c in orders_cols])
+
+#         # Show columns + types for vendors
+#         vendors_cols = await conn.fetch("""
+#             SELECT column_name, data_type
+#             FROM information_schema.columns
+#             WHERE table_name = 'vendors'
+#             ORDER BY ordinal_position
+#         """)
+#         print("vendors columns:", [(c['column_name'], c['data_type']) for c in vendors_cols])
+
+#         # Optionally: peek at a few rows
+#         sample_orders = await conn.fetch("SELECT * FROM orders LIMIT 5;")
+#         print("Sample orders:", [dict(r) for r in sample_orders])
+
+#         sample_vendors = await conn.fetch("SELECT * FROM vendors LIMIT 5;")
+#         print("Sample vendors:", [dict(r) for r in sample_vendors])
+
+# if __name__ == "__main__":
+#     asyncio.run(test_schema())
+
+
+
+
+
+import asyncio
+
+async def get_order_by_id(conn, order_id: int):
+    row = await conn.fetchrow(
+        """
+        SELECT id, user_id, vendor_id, food_subtotal, delivery_fee, status,
+               items_json, dropoff, created_at, updated_at
+        FROM orders
+        WHERE id = $1
+        """,
+        order_id
+    )
+    return row
+
+async def update_order_delivery_fee(conn, order_id: int, new_fee: float):
+    result = await conn.execute(
+        """
+        UPDATE orders
+        SET delivery_fee = $2,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = $1
+        """,
+        order_id, new_fee
+    )
+    return result
+
+async def update_order_status(conn, order_id: int, new_status: str):
+    result = await conn.execute(
+        """
+        UPDATE orders
+        SET status = $2,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = $1
+        """,
+        order_id, new_status
+    )
+    return result
 
 async def test_schema():
     db = Database()
     await db.init_pool()
     async with db._open_connection() as conn:
-        # List all tables in public schema
-        tables = await conn.fetch("""
-            SELECT table_name
-            FROM information_schema.tables
-            WHERE table_schema='public'
-            ORDER BY table_name
-        """)
-        print("Tables:", [t['table_name'] for t in tables])
+        # Fetch order #78
+        order = await get_order_by_id(conn, 78)
+        print("Before update:", dict(order) if order else "Order not found")
 
-        # Show columns + types for orders
-        orders_cols = await conn.fetch("""
-            SELECT column_name, data_type
-            FROM information_schema.columns
-            WHERE table_name = 'orders'
-            ORDER BY ordinal_position
-        """)
-        print("orders columns:", [(c['column_name'], c['data_type']) for c in orders_cols])
+      
 
-        # Show columns + types for vendors
-        vendors_cols = await conn.fetch("""
-            SELECT column_name, data_type
-            FROM information_schema.columns
-            WHERE table_name = 'vendors'
-            ORDER BY ordinal_position
-        """)
-        print("vendors columns:", [(c['column_name'], c['data_type']) for c in vendors_cols])
+        # Fetch again to confirm
+        order_after = await get_order_by_id(conn, 78)
+        print("After update:", dict(order_after) if order_after else "Order not found")
 
-        # Optionally: peek at a few rows
-        sample_orders = await conn.fetch("SELECT * FROM orders LIMIT 5;")
-        print("Sample orders:", [dict(r) for r in sample_orders])
-
-        sample_vendors = await conn.fetch("SELECT * FROM vendors LIMIT 5;")
-        print("Sample vendors:", [dict(r) for r in sample_vendors])
+        # Update delivery fee
+        res_fee = await update_order_delivery_fee(conn, 78, 20.0)
+        print("Delivery fee update result:", res_fee)
 
 if __name__ == "__main__":
     asyncio.run(test_schema())

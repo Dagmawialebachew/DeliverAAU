@@ -1004,7 +1004,6 @@ async def ask_final_confirmation_entry(message: Message, state: FSMContext):
 
 async def ask_final_confirmation(message: Message, state: FSMContext):
     data = await state.get_data()
-
     menu = data.get("menu", []) or []
     cart_counts: Dict[int,int] = data.get("cart_counts", {})
     half_lookup: Dict[str,List[int]] = data.get("half_lookup", {}) or {}
@@ -1025,12 +1024,24 @@ async def ask_final_confirmation(message: Message, state: FSMContext):
 
     # Count only items >= 100 birr (non-Extras) for delivery fee
     chargeable_items = 0
+
     for item_id, count in cart_counts.items():
-        item = next((m for m in menu if m["id"] == item_id), None)
-        if not item:
+        # Handle half-half combos
+        if isinstance(item_id, str) and item_id.startswith("half:"):
+            # Extract parent id from the key, e.g. "half:2:1:2" → 2
+            try:
+                parent_id = int(item_id.split(":")[1])
+            except Exception:
+                continue
+
+            parent_item = next((m for m in menu if m["id"] == parent_id), None)
+            if parent_item and parent_item["price"] >= 100:
+                chargeable_items += count
             continue
-        # Only count items >= 100 birr
-        if item["price"] >= 100:
+
+        # Handle normal items
+        item = next((m for m in menu if m["id"] == item_id), None)
+        if item and item["price"] >= 100:
             chargeable_items += count
 
     # Delivery fee based on chargeable items only
