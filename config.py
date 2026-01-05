@@ -29,6 +29,7 @@ class Settings:
     {"id": 8, "name": "ምስር", "category": "HalfHalf"},
     {"id": 9, "name": "ሽሮ", "category": "HalfHalf"},
     {"id": 10, "name": "ድንች ወጥ", "category": "HalfHalf"},
+    {"id": 11, "name": "ቲማቲም ለብለብ", "category": "HalfHalf"},
     # add more global half-half items here
 ]
 
@@ -47,6 +48,7 @@ class Settings:
     LOCATION_PING_INTERVAL_ACTIVE: int = int(os.getenv("LOCATION_PING_INTERVAL_ACTIVE", "15"))
     LOCATION_PING_INTERVAL_IDLE: int = int(os.getenv("LOCATION_PING_INTERVAL_IDLE", "90"))
     ADMIN_GROUP_ID: int = int(os.getenv("ADMIN_GROUP_ID", "0"))
+    ADMIN_REFERRAL_GROUP_ID: int = int(os.getenv("ADMIN_REFERRAL_GROUP_ID", "0"))
     ADMIN_SUMMRY_GROUP_ID: int = int(os.getenv("ADMIN_SUMMRY_GROUP_ID", "0"))
     ADMIN_ERROR_GROUP_ID: int = int(os.getenv("ADMIN_ERROR_GROUP_ID", "0"))
     ADMIN_DAILY_GROUP_ID: int = int(os.getenv("ADMIN_DAILY_GROUP_ID", "0")) 

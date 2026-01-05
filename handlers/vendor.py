@@ -1045,7 +1045,7 @@ async def order_mark_ready(cb: CallbackQuery, bot: Bot):
     student_chat_id = await db.get_student_chat_id(order)
     if student_chat_id:
         from handlers.delivery_guy import notify_student
-        await notify_student(bot, student_chat_id, order_id)
+        await notify_student(bot, order, student_chat_id)
 
 
     # Admin log

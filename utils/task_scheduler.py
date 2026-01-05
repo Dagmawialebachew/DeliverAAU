@@ -205,3 +205,188 @@ def build_profit_message(order_id: int, platform_profit: float, total_profit: fl
         f"Sexy hustle, spicy vibes 🌶️💃🏾 \n\nTotal stacked: *{total_profit} birr*"
     ]
     return random.choice(templates)
+
+async def post_referral_updates(bot, new_user_id: int, inviter_id: int | None, new_user_name: str, inviter_name: str):
+    try:
+        async with db._open_connection() as conn:
+            new_user_bites = await conn.fetchval(
+                "SELECT bites FROM leaderboards WHERE user_id=$1", new_user_id
+            ) or 0
+            new_user_rank = await conn.fetchval(
+                """
+                SELECT r FROM (
+                    SELECT user_id, RANK() OVER (ORDER BY bites DESC) AS r
+                    FROM leaderboards
+                ) t WHERE user_id=$1
+                """,
+                new_user_id
+            ) or "—"
+
+            inviter_stats = ""
+            if inviter_id:
+                inviter_bites = await conn.fetchval(
+                    "SELECT bites FROM leaderboards WHERE user_id=$1", inviter_id
+                ) or 0
+                inviter_rank = await conn.fetchval(
+                    """
+                    SELECT r FROM (
+                        SELECT user_id, RANK() OVER (ORDER BY bites DESC) AS r
+                        FROM leaderboards
+                    ) t WHERE user_id=$1
+                    """,
+                    inviter_id
+                ) or "—"
+                inviter_stats = f"\n🍪 Inviter Bites: {inviter_bites} | Rank: #{inviter_rank}"
+
+        message_text = (
+            f"👥 *Referral Event*\n"
+            f"──────────────────────\n"
+            f"🆕 New User: {new_user_name} (id={new_user_id})\n"
+            f"🎯 Invited By: {inviter_name if inviter_id else 'No referral'}\n\n"
+            f"🍪 New User Bites: {new_user_bites} | Rank: #{new_user_rank}"
+            f"{inviter_stats}\n\n"
+            "✅ Referral bonus applied (+1 Bite welcome)\n"
+            "──────────────────────\n"
+            "📡 Logged for admin tracking."
+        )
+
+        if settings.ADMIN_REFERRAL_GROUP_ID:
+            await bot.send_message(
+                settings.ADMIN_REFERRAL_GROUP_ID,
+                message_text,
+                parse_mode="Markdown"
+            )
+    except Exception as e:
+        logging.exception("post_referral_updates failed: %s", e)
+
+
+
+async def notify_admin_spin(
+    bot,
+    user_id: int,
+    telegram_id: int,
+    prize: str,
+    bites: int,
+    rank: int,
+    tg_first_name: str,
+    tg_username: Optional[str] = None
+):
+    """
+    Background task: log prize to DB and notify admin group.
+    """
+    # Persist prize
+    await db.record_spin_prize(user_id, prize)
+
+    # Fetch DB user info (phone, campus)
+    async with db._open_connection() as conn:
+        row = await conn.fetchrow(
+            "SELECT phone, campus FROM users WHERE id=$1",
+            user_id
+        )
+    phone = row["phone"] if row else "—"
+    campus = row["campus"] if row else "—"
+
+    # Build admin message
+    text = (
+        f"🎡 Spin Result\n"
+        f"────────────────────\n"
+        f"📛 Name: {tg_first_name}\n"
+        f"🔗 Username: @{tg_username if tg_username else '—'}\n"
+        f"💬 Telegram ID: {telegram_id}\n"
+        f"📱 Phone: {phone}\n"
+        f"🏫 Campus: {campus}\n"
+        f"🏆 Rank: #{rank}\n"
+        f"🔥 Bites: {bites}\n"
+        f"🎁 Prize: {prize}\n"
+        f"🕒 Time: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
+    )
+
+    # Send to admin group
+    await bot.send_message(settings.ADMIN_REFERRAL_GROUP_ID, text)
+
+
+async def process_order_rewards(order: dict, db, bot, admin_chat_id: int):
+    student_id = order.get("user_id")
+    if not student_id:
+        return
+
+    async with db._open_connection() as conn:
+        # --- Always award +3 bites to the student ---
+        # fetch telegram_id for student
+        student_tg = await conn.fetchval("SELECT telegram_id FROM users WHERE id=$1", student_id)
+        display_name = f"User{student_id}"
+        if student_tg:
+            try:
+                chat = await bot.get_chat(student_tg)
+                first = chat.first_name or ""
+                last = chat.last_name or ""
+                display_name = (first + " " + last).strip() or display_name
+            except Exception:
+                pass
+
+        await conn.execute(
+            """
+            INSERT INTO leaderboards (user_id, display_name, bites, last_updated)
+            VALUES ($1, $2, 3, CURRENT_TIMESTAMP)
+            ON CONFLICT (user_id)
+            DO UPDATE SET bites = leaderboards.bites + 3,
+                          display_name = EXCLUDED.display_name,
+                          last_updated = CURRENT_TIMESTAMP
+            """,
+            student_id, display_name
+        )
+
+        # --- Check if this is their first order ---
+        order_count = await conn.fetchval(
+            "SELECT COUNT(*) FROM orders WHERE user_id=$1",
+            student_id
+        )
+        if order_count == 1:
+            # Find referrer
+            referrer_id = await conn.fetchval(
+                "SELECT referred_by FROM users WHERE id=$1",
+                student_id
+            )
+            if referrer_id:
+                # fetch telegram_id for referrer
+                referrer_tg = await conn.fetchval("SELECT telegram_id FROM users WHERE id=$1", referrer_id)
+                ref_display_name = f"User{referrer_id}"
+                if referrer_tg:
+                    try:
+                        chat = await bot.get_chat(referrer_tg)
+                        first = chat.first_name or ""
+                        last = chat.last_name or ""
+                        ref_display_name = (first + " " + last).strip() or ref_display_name
+                    except Exception:
+                        pass
+
+                await conn.execute(
+                    """
+                    INSERT INTO leaderboards (user_id, display_name, bites, last_updated)
+                    VALUES ($1, $2, 2, CURRENT_TIMESTAMP)
+                    ON CONFLICT (user_id)
+                    DO UPDATE SET bites = leaderboards.bites + 2,
+                                  display_name = EXCLUDED.display_name,
+                                  last_updated = CURRENT_TIMESTAMP
+                    """,
+                    referrer_id, ref_display_name
+                )
+
+                # Notify referrer
+                if referrer_tg:
+                    asyncio.create_task(
+                        bot.send_message(
+                            referrer_tg,
+                            f"🎉 Your friend {order.get('student_name','—')} placed their first order!\n"
+                            f"✨ You earned +2 Bites referral bonus."
+                        )
+                    )
+
+                # Log to admin
+                msg_admin = (
+                    f"👥 Referral Bonus Applied\n"
+                    f"🆕 New User: {order.get('student_name','—')} (id={student_id})\n"
+                    f"🎯 Referrer: {ref_display_name} (id={referrer_id})\n"
+                    f"🍪 Bonus: +2 Bites to referrer"
+                )
+                await bot.send_message(admin_chat_id, msg_admin, parse_mode="Markdown")

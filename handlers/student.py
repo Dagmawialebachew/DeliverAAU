@@ -433,6 +433,7 @@ async def menu_paginate(cb: CallbackQuery, state: FSMContext):
     await cb.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
 
 
+from aiogram.exceptions import TelegramBadRequest
 
 @router.callback_query(OrderStates.menu, F.data.startswith("cart:toggle:"))
 async def cart_toggle_item(cb: CallbackQuery, state: FSMContext):
@@ -440,19 +441,20 @@ async def cart_toggle_item(cb: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     menu = data.get("menu", []) or []
     vendor = data.get("vendor", {}) or {}
-    cart_counts: Dict = data.get("cart_counts", {}) or {}
+    cart_counts: Dict[int, int] = data.get("cart_counts", {}) or {}
 
+    # find item
     item = next((m for m in menu if m["id"] == item_id), None)
     if not item:
-        await cb.answer("Item not found", show_alert=True)
+        await cb.answer("Item not found")
         return
 
     # If this is the half-parent, open half-half flow
     if is_half_parent_by_name(item):
-    # Use the global list instead of vendor menu
+        # Use the global list instead of vendor menu
         half_options = HALF_HALF_GLOBAL
         if len(half_options) < 2:
-            await cb.answer("Not enough items available for half-half.", show_alert=True)
+            await cb.answer("Not enough items available for half-half.")
             return
 
         await state.update_data(
@@ -463,13 +465,18 @@ async def cart_toggle_item(cb: CallbackQuery, state: FSMContext):
 
         text = render_half_half_text(vendor.get("name", "Unknown Spot"), half_options, [])
         kb = half_half_keyboard(half_options, [])
-        await cb.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+        try:
+            await cb.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+        except TelegramBadRequest as e:
+            if "message is not modified" in str(e):
+                await cb.answer("Already showing half-half options.")
+            else:
+                raise
         await state.set_state(OrderStates.half_half)
         return
 
-    # --- existing toggle logic for normal items continues below ---
+    # --- toggle logic for normal items ---
     current_qty = cart_counts.get(item_id, 0)
-    total_items = sum(cart_counts.values())
     MAX_QTY = 2
     MAX_CART_ITEMS = 4
 
@@ -480,8 +487,11 @@ async def cart_toggle_item(cb: CallbackQuery, state: FSMContext):
     )
 
     if current_qty < MAX_QTY:
-        if total_food_items >= MAX_CART_ITEMS and item["price"] >= 100:
-            await cb.answer(f"⚠️ You can only select {MAX_CART_ITEMS} main items total.", show_alert=True)
+        if total_food_items >= MAX_CART_ITEMS and item.get("price", 0) >= 100:
+            sent = cb.message.answer(f"⚠️ You can only select {MAX_CART_ITEMS} main items total.")
+            await asyncio.sleep(3)
+            with contextlib.suppress(Exception):
+                await sent.delete()
             return
         cart_counts[item_id] = current_qty + 1
         await cb.answer(f"✅ Quantity set to x{cart_counts[item_id]}")
@@ -489,15 +499,23 @@ async def cart_toggle_item(cb: CallbackQuery, state: FSMContext):
         cart_counts.pop(item_id, None)
         await cb.answer("❎ Removed from cart")
 
-
+    # Persist updated cart_counts
     await state.update_data(cart_counts=cart_counts)
 
+    # Recompute page, keyboard and text from the current state
     page = data.get("menu_page", 1)
     kb = menu_keyboard(menu, cart_counts, page)
     text = render_menu_text(menu, vendor.get("name", "Unknown Spot"), page=page)
-    if cb.message.text != text or cb.message.reply_markup != kb:
-        await cb.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
 
+    # Try to edit; ignore "message is not modified" errors
+    try:
+        await cb.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    except TelegramBadRequest as e:
+        if "message is not modified" in str(e):
+            # No change — silently ignore or give a subtle feedback
+            await cb.answer("Already up to date ✅")
+        else:
+            raise
 
 
 
@@ -513,7 +531,7 @@ async def half_toggle(cb: CallbackQuery, state: FSMContext):
         selected.remove(pick_id)
     else:
         if len(selected) >= 2:
-            await cb.answer("Pick only two items.", show_alert=True)
+            await cb.answer("Pick only two items.")
         else:
             selected.append(pick_id)
 
@@ -534,7 +552,7 @@ async def half_confirm(cb: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     selected: List[int] = data.get("half_selected_ids", [])
     if len(selected) != 2:
-        await cb.answer("Please select exactly two items.", show_alert=True)
+        await cb.answer("Please select exactly two items.")
         return
 
     parent_id = data.get("half_parent_id")
@@ -576,21 +594,40 @@ async def half_cancel(cb: CallbackQuery, state: FSMContext):
     await half_back(cb, state)
 
 
-
 @router.callback_query(OrderStates.menu, F.data == "cart:view")
 async def cart_view(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
     data = await state.get_data()
     menu = data.get("menu", []) or []
-    cart_counts: Dict = data.get("cart_counts", {}) or {}
+    cart_counts: Dict[int, int] = data.get("cart_counts", {}) or {}
     half_lookup: Dict = data.get("half_lookup", {}) or {}
 
     cart_counts = {k: v for k, v in cart_counts.items() if v > 0}
 
     if not cart_counts:
-        await cb.answer("Your cart is empty.", show_alert=True)
+        sent = await cb.message.answer("Your cart is empty.")
+        await asyncio.sleep(3)
+        with contextlib.suppress(Exception):
+            await sent.delete()
+        
         return
 
+    # --- enforce rule: block if all items are Extras under 100 birr ---
+    items_in_cart = [next((m for m in menu if m["id"] == iid), None) for iid in cart_counts.keys()]
+    # filter out None
+    items_in_cart = [m for m in items_in_cart if m]
+
+
+    if items_in_cart and all(m["category"].lower().startswith("extras") and m["price"] < 100 for m in items_in_cart):
+        sent = await cb.message.answer("⚠️ You must add at least one main item (≥100 birr, not Extras).")
+        # wait a few seconds, then delete
+        await asyncio.sleep(3)
+        with contextlib.suppress(Exception):
+            await sent.delete()
+        return
+
+
+    # proceed normally
     text, subtotal = render_cart(cart_counts, menu, half_lookup=half_lookup)
     await state.update_data(food_subtotal=subtotal, cart_counts=cart_counts)
     await cb.message.edit_text(text, reply_markup=cart_keyboard())
@@ -648,7 +685,7 @@ async def cart_confirm(cb: CallbackQuery, state: FSMContext):
     cart_counts: Dict[int,int] = data.get("cart_counts", {})
 
     if not cart_counts:
-        await cb.answer("Your cart is empty. Please select items first.", show_alert=True)
+        await cb.answer("Your cart is empty. Please select items first.")
         return
 
     # Build cart items list with quantities
@@ -1332,19 +1369,20 @@ async def final_confirm(cb: CallbackQuery, state: FSMContext):
     if settings.ADMIN_DAILY_GROUP_ID:
         try:
             admin_msg = (
-        f"📢 *New Order Placed: #{order_id}*\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"{user_info}\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🏛 Campus: {user_stats.get('campus', 'N/A')}\n"
-        f"🍴 Vendor: {vendor_name}\n"
-        f"📍 Drop-off: {data.get('dropoff', '')}\n"
-        f"{('📝 Notes: ' + data.get('notes', '') + '\n') if data.get('notes') else ''}"
-        f"🛒 Foods:\n{items}\n\n"
-        f"💵 Total: {total_payable:.2f} birr (COD)\n"
-        f"⚡ Status: Meal request sent — waiting for confirmation…"
-    )
-            await cb.bot.send_message(settings.ADMIN_DAILY_GROUP_ID, admin_msg, parse_mode="Markdown")
+                f"📢 <b>New Order Placed: #{order_id}</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"{user_info}\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🏛 Campus: {user_stats.get('campus', 'N/A')}\n"
+                f"🍴 Vendor: {vendor_name}\n"
+                f"📍 Drop-off: {data.get('dropoff', '')}\n"
+                f"{('📝 Notes: ' + data.get('notes', '') + '\n') if data.get('notes') else ''}"
+                f"🛒 Foods:\n{items}\n\n"
+                f"💵 Total: {total_payable:.2f} birr (COD)\n"
+                f"⚡ Status: Meal request sent — waiting for confirmation…"
+            )
+            await cb.bot.send_message(settings.ADMIN_DAILY_GROUP_ID, admin_msg, parse_mode="HTML")
+
         except Exception as e: 
             logging.exception(f"Failed to send admin notification for order {order_id}")
 

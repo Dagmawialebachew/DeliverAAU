@@ -1207,7 +1207,9 @@ async def notify_student(bot, order: Dict[str, Any], status: str) -> None:
 
         student_tg = await _lookup_student_telegram(order)
 
+
         if not student_tg:
+            log.warning("notify_student: is aborted because the system can't find the student's telegram id")
             return
 
         order_id = order.get("id")
@@ -1260,7 +1262,7 @@ async def notify_student(bot, order: Dict[str, Any], status: str) -> None:
             await bot.send_message(student_tg, msg, reply_markup=kb, parse_mode="Markdown")
 
         elif status == "delivered":
-            # Grant XP safely, with logs
+    # Grant XP safely, with logs
             student_id = order.get("user_id")
             log.info("notify_student: delivered | student_id=%s", student_id)
 
@@ -1283,27 +1285,35 @@ async def notify_student(bot, order: Dict[str, Any], status: str) -> None:
                     if row:
                         xp = row["xp"]
                         level = row["level"]
+                        from utils.task_scheduler import process_order_rewards
+                        await process_order_rewards(
+                            order,
+                            db,
+                            bot,
+                            admin_chat_id=settings.ADMIN_REFERRAL_GROUP_ID
+                        )
                     else:
-                        pass
+                        log.warning("notify_student: no row returned for student_id=%s", student_id)
                 else:
-                    pass
+                    log.warning("notify_student: missing student_id in order=%s", order)
             except Exception as e:
-                pass
+                log.exception("notify_student: error while granting XP or processing rewards")
+
 
             badge = get_xp_badge(level) if level is not None else "Rising Star"
 
             # Delivery confirmation message
             msg_html = (
-                f"🎉 <b>Order #{order_id} Delivered!</b>\n"
-                "━━━━━━━━━━━━━━━━━━━━━━\n"
-                "🙏 Thank you for ordering with <b>UniBites Delivery</b> 🚴‍♂️\n"
-                "We’re proud to keep campus life effortless and connected.\n\n"
-                f"🔥 +10 XP earned\n"
-                f"🏆 Level {level if level is not None else '—'} · {badge}\n"
-                f"✨ Total XP: <b>{xp if xp is not None else '—'}</b>\n"
-                "━━━━━━━━━━━━━━━━━━━━━━\n"
-                "⚡ UniBites Delivery — fast meals, real smiles, pure hustle."
-            )
+            f"🎉 <b>Order #{order_id} Delivered!</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "🙏 Thank you for ordering with <b>UniBites Delivery</b> 🚴‍♂️\n"
+            "We’re proud to keep campus life effortless and connected.\n\n"
+            f"🔥 +10 XP earned\n"
+            f"🏆 Level {level if level is not None else '—'} · {badge}\n"
+            f"✨ Total XP: <b>{xp if xp is not None else '—'}</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "⚡ UniBites Delivery — fast meals, real smiles, pure hustle."
+        )
             await bot.send_message(student_tg, msg_html, parse_mode="HTML")
 
             # Rating prompt
@@ -1322,6 +1332,18 @@ async def notify_student(bot, order: Dict[str, Any], status: str) -> None:
                 "🍽 Enjoy your meal!\n\n⭐ Please rate the delivery:",
                 reply_markup=rating_kb
             )
+
+            # 🎄 Genna Specials reward message
+            genna_msg = (
+                "🎄 <b>ገና Specials Bonus!</b>\n"
+                "────────────────────────────\n"
+                "🎁 You’ve earned <b>+3 Bites</b> as part of our festive ገና campaign.\n\n"
+                "📊 Check your progress in the <b>ገና Specials</b> section on the main menu.\n"
+                "Keep ordering and referring — more surprises await! 🎄"
+            )
+            await bot.send_message(student_tg, genna_msg, parse_mode="HTML")
+
+            
 
         else:
             # Unknown status — log and skip

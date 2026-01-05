@@ -27,6 +27,7 @@ from handlers.help import router as help_router
 from handlers.settings import router as settings_router
 from handlers.admin import router as admin_router
 from handlers.rating import router as rating_router
+from handlers.genna_special import router as genna_special_router
 
 # Middlewares
 from middlewares.throttling_middleware import ThrottlingMiddleware
@@ -53,6 +54,7 @@ dp.include_router(help_router)
 dp.include_router(settings_router)
 dp.include_router(admin_router)
 dp.include_router(admin_order_router)
+dp.include_router(genna_special_router)
 
 scheduler = BotScheduler(db=db, bot=bot)
 

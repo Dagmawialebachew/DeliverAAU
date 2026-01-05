@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import asyncio
 import logging
+import types
 from aiogram import Router, F
 from aiogram.filters import CommandStart
 from aiogram.types import (
@@ -19,6 +20,7 @@ from utils.helpers import typing_pause, format_phone_number
 
 # Handoff to vendor dashboard (Amharic UX)
 from handlers import vendor as vendor_handler
+from utils.task_scheduler import post_referral_updates
 
 router = Router()
 # CHANGED: Use Database() that reads DATABASE_URL from environment
@@ -71,6 +73,9 @@ def main_menu() -> ReplyKeyboardMarkup:
                 KeyboardButton(text="📍 Track Order"),
             ],
             [
+                KeyboardButton(text="🎄 ገና Specials 🎄"),  
+                ],
+            [
                 KeyboardButton(text="🧑‍🍳 Need Help"),
                 KeyboardButton(text="⚙️ More Options"),
             ],
@@ -87,6 +92,14 @@ def more_menu() -> ReplyKeyboardMarkup:
     ]
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
+
+
+@router.message(F.text=="⬅️ Back to Main Menu")
+async def back_to_main(message: Message):
+    await message.answer(
+        "⬅️ Back to main menu",
+        reply_markup=main_menu()
+    )
 
 
 @router.message(F.text == "🎁 Redeem Coins")
@@ -196,6 +209,10 @@ async def start(message: Message, state: FSMContext):
 
     # --- VENDOR EXPERIENCE (added manually by admin in vendors table) ---
     vendor = await db.get_vendor_by_telegram(telegram_id)
+    args = message.text.split() 
+    referral_code = args[1] if len(args) > 1 else None
+    if referral_code: 
+        await state.update_data(referral_code=referral_code)
     if vendor:
         await typing_pause(message, "🏪 እንኳን በደህና መጡ — የሱቅዎ ዳሽቦርድ ዝግጁ ነው!")
         await asyncio.sleep(0.4)
@@ -212,7 +229,6 @@ async def start(message: Message, state: FSMContext):
     # --- DELIVERY GUY EXPERIENCE (added manually; delivery_guys.user_id = telegram_id) ---
     user = await db.get_user(telegram_id)
     delivery_guy = await db.get_delivery_guy_by_user_onboard(telegram_id)
-    print('here is a delivery guy', delivery_guy)
     if delivery_guy or (user and (user.get("role") or "").lower() == "delivery_guy"):
         await typing_pause(message, "🚴‍♂️ Welcome back, Campus Star!")
         await asyncio.sleep(0.4)
@@ -292,62 +308,203 @@ async def handle_campus(cb: CallbackQuery, state: FSMContext):
 
     await cb.message.answer("⚧ Step 3 of 4 — Select your gender", reply_markup=gender_inline_keyboard())
     await state.set_state(OnboardingStates.choose_gender)
-
-
+    
+import secrets
+import string
+def generate_referral_code(user_id: int) -> str:
+    # Example: UB + user_id padded + random 3 chars
+    suffix = ''.join(random.choices(string.ascii_uppercase + string.digits, k=3))
+    return f"UB{str(user_id).zfill(4)}{suffix}"
 
 @router.callback_query(OnboardingStates.choose_gender, F.data.startswith("gender:"))
 async def handle_gender(cb: CallbackQuery, state: FSMContext):
-    await cb.answer()
-    gender = cb.data.split(":")[1]
-    data = await state.get_data()
+    # Immediate UX feedback and disable buttons
+    await cb.answer("🔍 Checking referral link… 🎁 Unlocking your surprise bonus!")
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
 
-    # 🎁 Give starter coins
+    data = await state.get_data()
+    gender = cb.data.split(":", 1)[1]
+    telegram_id = cb.from_user.id
     starter_xp = 50
 
-    await db.create_user(
-        telegram_id=cb.from_user.id,
+    # Prevent duplicate registration if user already exists
+    existing = await db.get_user(telegram_id)
+    if existing:
+        await cb.message.answer("⚠️ You’re already registered. Here’s your dashboard:", reply_markup=main_menu())
+        await state.clear()
+        return
+
+    # Resolve inviter (if user arrived via /start <code>)
+    referral_code_from_start = data.get("referral_code")
+    inviter_id = None
+    if referral_code_from_start:
+        async with db._open_connection() as conn:
+            inviter_id = await conn.fetchval(
+                "SELECT id FROM users WHERE referral_code=$1",
+                referral_code_from_start
+            )
+
+    # Create user (store referred_by if available)
+    new_user_id = await db.create_user(
+        telegram_id=telegram_id,
         role="student",
         first_name=cb.from_user.first_name or "",
         phone=data.get("phone", ""),
         campus=data.get("campus", ""),
         gender=gender,
-        xp=starter_xp,   # <-- reward XP on creation
+        xp=starter_xp,
+        referred_by=inviter_id
     )
 
-    await cb.message.answer("✅ Registration complete!")
-    await asyncio.sleep(0.5)
-    await typing_pause(cb.message, "🌱 Finalizing your profile…")
-    await asyncio.sleep(0.7)
+    # Generate and persist this user's referral code (use new_user_id)
+    referral_code = generate_referral_code(new_user_id)
+    async with db._open_connection() as conn:
+        await conn.execute(
+            "UPDATE users SET referral_code=$1 WHERE id=$2",
+            referral_code, new_user_id
+        )
 
+    # Give new user the welcome bite (idempotent via ON CONFLICT)
+    async with db._open_connection() as conn:
+        await conn.execute(
+            """
+            INSERT INTO leaderboards (user_id, display_name, bites, last_updated)
+            VALUES ($1, $2, 1, CURRENT_TIMESTAMP)
+            ON CONFLICT (user_id)
+            DO UPDATE SET bites = leaderboards.bites + 1,
+                          display_name = EXCLUDED.display_name,
+                          last_updated = CURRENT_TIMESTAMP
+            """,
+            new_user_id, (cb.from_user.first_name or f"User{telegram_id}")
+        )
+        await db.sync_spins_for_user(new_user_id)       
+
+        # If there is an inviter, apply their bonus and collect stats
+        inviter_telegram_id = None
+        inviter_stats = None
+        if inviter_id:
+            old_bites = await conn.fetchval(
+                "SELECT bites FROM leaderboards WHERE user_id=$1",
+                inviter_id
+            ) or 0
+
+            await conn.execute(
+                "UPDATE leaderboards SET bites = bites + 1, last_updated = CURRENT_TIMESTAMP WHERE user_id=$1",
+                inviter_id
+            )
+            await db.sync_spins_for_user(inviter_id)
+
+            new_bites = old_bites + 1
+            old_rank = await conn.fetchval(
+                """
+                SELECT r FROM (
+                    SELECT user_id, RANK() OVER (ORDER BY bites DESC) AS r
+                    FROM leaderboards
+                ) t WHERE user_id=$1
+                """,
+                inviter_id
+            ) or "—"
+
+            new_rank = await conn.fetchval(
+                """
+                SELECT r FROM (
+                    SELECT user_id, RANK() OVER (ORDER BY bites DESC) AS r
+                    FROM leaderboards
+                ) t WHERE user_id=$1
+                """,
+                inviter_id
+            ) or "—"
+
+            inviter_telegram_id = await conn.fetchval(
+                "SELECT telegram_id, first_name FROM users WHERE id=$1",
+                inviter_id
+            )
+            # inviter_telegram_id may be a single value depending on fetchval; fetch separately if needed
+            inviter_telegram_id = await conn.fetchval("SELECT telegram_id FROM users WHERE id=$1", inviter_id)
+
+            inviter_stats = {
+                "old_bites": old_bites,
+                "new_bites": new_bites,
+                "old_rank": old_rank,
+                "new_rank": new_rank
+            }
+
+    # Notify inviter and admin in background so onboarding stays snappy
+    try:
+        if inviter_id:
+            # Personal notification (best-effort)
+            async def notify_inviter():
+                try:
+                    if inviter_telegram_id:
+                        sent = await cb.bot.send_message(
+                            inviter_telegram_id,
+                            "👀 New referral detected...\n🔄 Updating your rewards..."
+                        )
+                        await asyncio.sleep(0.6)
+                        headline = random.choice([
+                            "🎉 **BOOM!** {name} just joined UniBites using your link!",
+                            "🚀 **Referral success!** {name} is officially in.",
+                            "🔥 **New UniBiter!** {name} signed up through you."
+                        ]).format(name=cb.from_user.first_name or "a friend")
+
+                        text = (
+                            f"{headline}\n\n"
+                            f"✨ Bites: **{inviter_stats['old_bites']} → {inviter_stats['new_bites']}**\n"
+                            f"🏆 Rank: **#{inviter_stats['old_rank']} → #{inviter_stats['new_rank']}**\n\n"
+                            "Keep sharing — big rewards are close 👊"
+                        )
+                        await sent.edit_text(text, parse_mode="Markdown")
+                except Exception:
+                    # swallow errors so onboarding doesn't fail
+                    logging.exception("Failed to notify inviter")
+
+            asyncio.create_task(notify_inviter())
+
+            # Admin / group notification (background)
+            asyncio.create_task(
+                post_referral_updates(
+                    cb.bot,
+                    new_user_id=new_user_id,
+                    inviter_id=inviter_id,
+                    new_user_name=cb.from_user.first_name or f"User{telegram_id}",
+                    inviter_name=(await db.get_user_by_id(inviter_id)).get("first_name") if inviter_id else "—"
+                )
+            )
+        else:
+            # No inviter: still notify admin about a new signup (background)
+            asyncio.create_task(
+                post_referral_updates(
+                    cb.bot,
+                    new_user_id=new_user_id,
+                    inviter_id=None,
+                    new_user_name=cb.from_user.first_name or f"User{telegram_id}",
+                    inviter_name="—"
+                )
+            )
+    except Exception:
+        logging.exception("Scheduling background notifications failed")
+
+    # --- Continue onboarding flow (short, snappy) ---
+    await cb.message.answer("✅ Registration complete!")
+    await typing_pause(cb.message, "🌱 Finalizing your profile…")
     new_user = {
         "first_name": cb.from_user.first_name,
         "phone": data.get("phone", ""),
         "campus": data.get("campus", ""),
-        "coins": 50,   # <-- reflect reward
+        "coins": 50,
         "xp": starter_xp,
         "level": 1,
         "gender": gender,
+        "referral_code": referral_code
     }
 
-    # 🎉 Tell them about the reward
     await cb.message.answer(
-        f"🎁 Surprise! You’ve been gifted **{starter_xp} XP and 50 Coins** to kickstart your UniBites journey.\n"
-        "Use them later to unlock perks and play around with rewards ✨"
+        f"🎁 Surprise! You’ve been gifted **{starter_xp} XP, 50 Coins, and 1 Bite** "
+        "to kickstart your UniBites journey ✨"
     )
-
     await cb.message.answer(build_profile_card(new_user), parse_mode="Markdown")
-    await asyncio.sleep(0.8)
     await cb.message.answer("Your dashboard is live 👇", reply_markup=main_menu())
     await state.clear()
-
-
-
-# --- FALLBACKS ---
-
-@router.message(OnboardingStates.share_phone)
-@router.message(OnboardingStates.choose_campus)
-async def block_random_input(message: Message):
-    await message.answer(
-        "🙏 Please finish the setup using the buttons below.\n"
-        "We’ll unlock your dashboard once you’re done 🎯"
-    )

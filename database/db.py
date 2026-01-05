@@ -203,6 +203,21 @@ CREATE TABLE IF NOT EXISTS jobs_log (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+
+CREATE TABLE IF NOT EXISTS leaderboards (
+    user_id BIGINT PRIMARY KEY,           -- same as orders.user_id (telegram_id)
+    display_name TEXT NOT NULL,           -- current Telegram name snapshot
+    bites INTEGER DEFAULT 0,              -- points for leaderboard
+    rank INTEGER DEFAULT NULL,            -- cached computed rank (optional)
+    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Helpful indexes
+CREATE INDEX IF NOT EXISTS idx_leaderboards_bites ON leaderboards(bites DESC);
+CREATE INDEX IF NOT EXISTS idx_leaderboards_updated ON leaderboards(last_updated);
+
+
 -- Indexes (Postgres doesn't need IF NOT EXISTS for CREATE INDEX in a transaction block
 -- but this is fine for initial setup)
 CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users(telegram_id);
@@ -255,6 +270,38 @@ CREATE INDEX IF NOT EXISTS idx_orders_user_id_created ON orders(user_id, created
 CREATE INDEX IF NOT EXISTS idx_orders_dg_id_created ON orders(delivery_guy_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_ratings_vendor_id ON ratings(vendor_id);
 CREATE INDEX IF NOT EXISTS idx_ratings_dg_id ON ratings(delivery_guy_id);
+
+-- 1) Users: referral + combo flag
+ALTER TABLE users
+ADD COLUMN IF NOT EXISTS referral_code TEXT UNIQUE,
+ADD COLUMN IF NOT EXISTS referred_by INTEGER NULL,
+ADD COLUMN IF NOT EXISTS genna_combo_unlocked BOOLEAN DEFAULT FALSE;
+
+-- 2) Spin entries: isolated store keyed by BIGINT user_id (aligns with orders.user_id)
+CREATE TABLE IF NOT EXISTS spin_entries (
+    user_id BIGINT PRIMARY KEY,
+    total_entries INTEGER DEFAULT 0,
+    available_spins INTEGER DEFAULT 0,
+    last_spin_date TIMESTAMP NULL
+);
+
+-- 3) Helpful indexes
+CREATE INDEX IF NOT EXISTS idx_orders_user_status ON orders(user_id, status);
+
+-- Recompute spin_entries.available_spins for all users (run nightly)
+UPDATE spin_entries s
+SET available_spins = GREATEST((l.bites / 25)::int - s.total_entries, 0)
+FROM leaderboards l
+WHERE s.user_id = l.user_id;
+
+-- Snapshot weekly leaderboard (optional)
+CREATE TABLE IF NOT EXISTS weekly_snapshots (
+  week_start DATE PRIMARY KEY,
+  snapshot_json JSONB,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+
 """
 
 class Database:
@@ -331,37 +378,252 @@ class Database:
             return self._row_to_dict(row) if row else None
 
     async def create_user(
-        self,
-        telegram_id: int,
-        role: str,
-        first_name: str,
-        phone: str,
-        campus: str,
-        gender: str = None,
-        xp: int = 0,
-    ) -> int:
+    self,
+    telegram_id: int,
+    role: str,
+    first_name: str,
+    phone: str,
+    campus: str,
+    gender: str = None,
+    xp: int = 0,
+    referred_by: int | None = None,   # <-- new
+) -> int:
         async with self._open_connection() as conn:
-            # Use RETURNING id to get the new primary key immediately
             result = await conn.fetchval(
                 """
                 INSERT INTO users
-                (telegram_id, role, first_name, phone, campus, gender, status, xp)
-                VALUES ($1, $2, $3, $4, $5, $6, 'active', $7)
+                (telegram_id, role, first_name, phone, campus, gender, status, xp, referred_by)
+                VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, $8)
                 ON CONFLICT (telegram_id) DO NOTHING
                 RETURNING id
                 """,
-                telegram_id, role, first_name, phone, campus, gender, xp
+                telegram_id, role, first_name, phone, campus, gender, xp, referred_by
             )
-            # If nothing was inserted (due to ON CONFLICT), fetch existing ID
             if result is None:
                 result = await conn.fetchval(
-                    "SELECT id FROM users WHERE telegram_id = $1", telegram_id
+                    "SELECT id FROM users WHERE telegram_id=$1", telegram_id
                 )
-            
-            # The result is already the integer ID or None if the user was somehow deleted
-            return int(result) if result is not None else 0 # Return 0 or raise if insertion/lookup fails
+            return int(result) if result is not None else 0
+
         
+    async def get_user_id_by_telegram(self, telegram_id: int) -> int | None:
+        async with self._open_connection() as conn:
+            return await conn.fetchval(
+                "SELECT id FROM users WHERE telegram_id=$1",
+                telegram_id
+            )
+            
     
+
+    async def get_spin_stats(self, user_id: int) -> dict:
+        async with self._open_connection() as conn:
+            bites = await conn.fetchval(
+                "SELECT bites FROM leaderboards WHERE user_id=$1",
+                user_id
+            ) or 0
+
+        spins_available = bites // 25
+        progress = bites % 25
+
+        return {
+            "bites": bites,
+            "spins_available": spins_available,
+            "progress": progress
+        }
+
+    
+    async def get_user_bites(self, user_id: int) -> int:
+        async with self._open_connection() as conn:
+            return await conn.fetchval(
+                "SELECT bites FROM leaderboards WHERE user_id=$1",
+                user_id
+            ) or 0
+            
+
+    async def get_user_spins_and_bites(self, user_id: int) -> Tuple[int, int]:
+        """
+        Returns (available_spins, bites_total).
+        available_spins is computed as floor(bites_total/25) - total_entries (spins used).
+        """
+        async with self._open_connection() as conn:
+            bites = await conn.fetchval("SELECT bites FROM leaderboards WHERE user_id=$1", user_id) or 0
+            used = await conn.fetchval("SELECT total_entries FROM spin_entries WHERE user_id=$1", user_id) or 0
+            total_spins = bites // 25
+            available_spins = max(0, total_spins - used)
+            progress = bites % 25
+            next_threshold = (total_spins + 1) * 25
+            remaining = next_threshold - bites
+            
+            
+        return available_spins, bites, progress
+
+    async def get_user_rank_and_progress(self, user_id: int) -> Tuple[Optional[int], float]:
+        """
+        Returns (rank, progress_pct) where progress_pct is percent to next spin threshold.
+        """
+        async with self._open_connection() as conn:
+            rank = await conn.fetchval(
+                """
+                SELECT r FROM (
+                    SELECT user_id, RANK() OVER (ORDER BY bites DESC) AS r
+                    FROM leaderboards
+                ) t WHERE user_id=$1
+                """,
+                user_id
+            )
+            bites = await conn.fetchval("SELECT bites FROM leaderboards WHERE user_id=$1", user_id) or 0
+            next_threshold = ((bites // 25) + 1) * 25
+            progress_pct = min(100.0, (bites / next_threshold) * 100) if next_threshold > 0 else 100.0
+            return rank, progress_pct
+
+    async def consume_spin(self, user_id: int) -> bool:
+        """
+        Atomically consume one available spin (increment total_entries, decrement available via logic).
+        Returns True if consumed, False if no spins available.
+        """
+        async with self._open_connection() as conn:
+            async with conn.transaction():
+                # compute available_spins on DB side to avoid race
+                row = await conn.fetchrow(
+                    """
+                    SELECT
+                    (COALESCE(l.bites,0) / 25)::int AS total_spins,
+                    COALESCE(s.total_entries,0) AS used_spins
+                    FROM (SELECT bites FROM leaderboards WHERE user_id=$1) l
+                    LEFT JOIN spin_entries s ON s.user_id=$1
+                    """,
+                    user_id
+                )
+                if not row:
+                    return False
+                total_spins = int(row["total_spins"] or 0)
+                used_spins = int(row["used_spins"] or 0)
+                available = total_spins - used_spins
+                if available <= 0:
+                    return False
+
+                # increment used spins and upsert spin_entries
+                await conn.execute(
+                    """
+                    INSERT INTO spin_entries (user_id, total_entries, available_spins, last_spin_date)
+                    VALUES ($1, 1, GREATEST($2 - 1, 0), CURRENT_TIMESTAMP)
+                    ON CONFLICT (user_id) DO UPDATE
+                    SET total_entries = spin_entries.total_entries + 1,
+                        available_spins = GREATEST((COALESCE((SELECT bites FROM leaderboards WHERE user_id=$1),0) / 25)::int - (spin_entries.total_entries + 1), 0),
+                        last_spin_date = CURRENT_TIMESTAMP
+                    """,
+                    user_id, total_spins
+                )
+        return True
+
+    async def record_spin_prize(self, user_id: int, prize: str) -> None:
+        """
+        Persist prize history and optionally notify admin/log.
+        """
+        async with self._open_connection() as conn:
+            await conn.execute(
+                """
+                INSERT INTO jobs_log (job_name, key, status)
+                VALUES ('spin_prize', $1, $2)
+                """,
+                str(user_id), prize
+            )
+
+    async def sync_spins_for_user(self, user_id: int) -> None:
+        """
+        Recompute available_spins from bites and used spins and persist to spin_entries.
+        Useful to run after bulk bites updates (orders/referrals).
+        """
+        async with self._open_connection() as conn:
+            bites = await conn.fetchval("SELECT bites FROM leaderboards WHERE user_id=$1", user_id) or 0
+            used = await conn.fetchval("SELECT total_entries FROM spin_entries WHERE user_id=$1", user_id) or 0
+            total_spins = bites // 25
+            available = max(0, total_spins - used)
+            await conn.execute(
+                """
+                INSERT INTO spin_entries (user_id, total_entries, available_spins, last_spin_date)
+                VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
+                ON CONFLICT (user_id) DO UPDATE SET available_spins = $3
+                """,
+                user_id, used, available
+            )
+
+
+    async def get_genna_progress(self, user_id: int) -> dict:
+        import datetime
+        async with self._open_connection() as conn:
+            today = datetime.date.today()
+            monday = today - datetime.timedelta(days=today.weekday())
+            sunday = monday + datetime.timedelta(days=6)
+
+            # Bites earned this week
+            bites_this_week = await conn.fetchval(
+                """
+                SELECT SUM(bites)
+                FROM leaderboards
+                WHERE user_id=$1 AND last_updated >= $2
+                """,
+                user_id, monday
+            ) or 0
+
+            # Current rank
+            rank_position = await conn.fetchval(
+                """
+                SELECT r FROM (
+                    SELECT user_id, RANK() OVER (ORDER BY bites DESC) AS r
+                    FROM leaderboards
+                ) t WHERE user_id=$1
+                """,
+                user_id
+            ) or None
+
+            # Highest bites in leaderboard
+            highest_bites = await conn.fetchval(
+                "SELECT MAX(bites) FROM leaderboards"
+            ) or 0
+
+            # If user is #1, no next threshold
+            if bites_this_week >= highest_bites and rank_position == 1:
+                next_threshold = None
+                remaining = None
+                message = "🏆 You are #1 on the leaderboard! Keep defending your spot."
+            else:
+                # Otherwise compute next threshold normally
+                next_threshold = ((bites_this_week // 10) + 1) * 10
+                remaining = max(0, next_threshold - bites_this_week)
+                message = f"🎯 Next rank in: {remaining} Bites"
+
+            days_left = (sunday - today).days
+
+        return {
+            "bites_this_week": bites_this_week,
+            "rank_position": rank_position,
+            "highest_bites": highest_bites,
+            "next_threshold": next_threshold,
+            "remaining": remaining,
+            "days_left": days_left,
+            "message": message
+        }
+        
+    async def get_user_rank_and_progress(self, user_id: int):
+        async with self._open_connection() as conn:
+            rank = await conn.fetchval(
+                """
+                SELECT r FROM (
+                    SELECT user_id, RANK() OVER (ORDER BY bites DESC) AS r
+                    FROM leaderboards
+                ) t WHERE user_id=$1
+                """,
+                user_id
+            ) or None
+            # progress to next threshold
+            bites = await conn.fetchval("SELECT bites FROM leaderboards WHERE user_id=$1", user_id) or 0
+            next_threshold = ((bites // 10) + 1) * 10
+            progress_pct = min(100.0, (bites / next_threshold) * 100)
+        return rank, progress_pct
+
+
+
     async def count_new_users(self, date: str) -> int:
         """Count users who signed up on a given date."""
         async with self._open_connection() as conn:

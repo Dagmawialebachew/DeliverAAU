@@ -861,7 +861,7 @@ async def action_ready(cb: CallbackQuery):
         student_chat_id = await db.get_student_chat_id(order)
         if student_chat_id:
             from handlers.student_track_order import notify_student
-            await notify_student(cb.bot, student_chat_id, order_id)
+            await notify_student(cb.bot, student_chat_id, order)
 
         # 4. Admin log
         vendor = await db.get_vendor(order["vendor_id"])
