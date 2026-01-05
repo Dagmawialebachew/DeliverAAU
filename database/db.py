@@ -312,10 +312,14 @@ class Database:
         self._pool: Optional[Pool] = None
 
     async def init_pool(self):
-        """Initialize the asyncpg pool once at startup."""
-        if self._pool is None:
-            self._pool = await asyncpg.create_pool(self.database_url, min_size=1, max_size=20)
-            
+        if self._pool:
+            await self._pool.close()
+        self._pool = await asyncpg.create_pool(
+            self.database_url,
+            min_size=1,
+            max_size=20,
+            statement_cache_size=0  # 🔥 THIS LINE FIXES IT
+        )
     async def reset_schema(self):
         """Drop all data and recreate schema fresh."""
         async with self._open_connection() as conn:

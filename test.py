@@ -655,6 +655,7 @@ from database.db import Database
 
 
 
+
 # import asyncio
 # import asyncpg
 # import random, string
@@ -673,22 +674,36 @@ from database.db import Database
 #         return 5
 #     return 0
 
-# async def rebuild_leaderboard():
+
+# async def rebuild_leaderboard(bot):
 #     db = Database()
 #     await db.init_pool()
 #     async with db._open_connection() as conn:
-#         # 1. Truncate leaderboard
-#         # await conn.execute("TRUNCATE TABLE leaderboards RESTART IDENTITY;")
-#         # print("✅ Leaderboard table truncated")
+#         # Truncate leaderboard
+#         await conn.execute("TRUNCATE TABLE leaderboards RESTART IDENTITY;")
+#         print("✅ Leaderboard table truncated")
 
-#         # 2. Fetch all users
-#         users = await conn.fetch("SELECT telegram_id, first_name FROM users")
+#         # Fetch first 50 users
+#         users = await conn.fetch(
+#             "SELECT id, telegram_id FROM users ORDER BY id"
+#         )
 
-#         # 3. Loop through users and compute bites
 #         for user in users:
-#             uid = user["telegram_id"]
-#             name = user["first_name"] or f"User{uid}"
+#             uid = user["id"]          # internal PK
+#             tg_id = user["telegram_id"]
 
+#             # --- Fetch display name from Telegram ---
+#             display_name = f"User{tg_id}"
+#             if tg_id:
+#                 try:
+#                     chat = await bot.get_chat(tg_id)
+#                     first = chat.first_name or ""
+#                     last = chat.last_name or ""
+#                     display_name = (first + " " + last).strip() or display_name
+#                 except Exception as e:
+#                     print(f"⚠️ Could not fetch chat for {tg_id}: {e}")
+
+#             # --- Count delivered orders ---
 #             orders_count = await conn.fetchval(
 #                 "SELECT COUNT(*) FROM orders WHERE user_id=$1 AND status='delivered'",
 #                 uid
@@ -700,57 +715,61 @@ from database.db import Database
 #                     """
 #                     INSERT INTO leaderboards (user_id, display_name, bites, last_updated)
 #                     VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
-#                     ON CONFLICT (user_id) DO NOTHING
+#                     ON CONFLICT (user_id) DO UPDATE
+#                     SET display_name = EXCLUDED.display_name,
+#                         bites = EXCLUDED.bites,
+#                         last_updated = CURRENT_TIMESTAMP
 #                     """,
-#                     uid, name, bites
+#                     uid, display_name, bites
 #                 )
-#                 print(f"Inserted {uid} ({name}) with {bites} bites")
+#                 print(f"Inserted {uid} ({display_name}) with {bites} bites")
 
 #         print("🎯 Leaderboard rebuild complete")
 
-# if __name__ == "__main__":
-#     asyncio.run(rebuild_leaderboard())
-
-
-
-
-
-# import asyncio
-# from database.db import Database
-
-# async def check_users_and_leaderboard():
-#     db = Database()
-#     await db.init_pool()
-#     async with db._open_connection() as conn:
-#         # Show first 10 users with referral codes
-#         users = await conn.fetch(
-#             """
-#             SELECT id, telegram_id, referral_code, created_at, updated_at
-#             FROM users
-#             ORDER BY id
-#             LIMIT 10
-#             """
-#         )
-#         print("\n=== Users Table Sample ===")
-#         for u in users:
-#             print(dict(u))
-
-#         # Show first 10 leaderboard entries
-#         leaders = await conn.fetch(
-#             """
-#             SELECT user_id, display_name, bites, rank, last_updated
-#             FROM leaderboards
-#             ORDER BY bites DESC
-#             LIMIT 10
-#             """
-#         )
-#         print("\n=== Leaderboard Sample ===")
-#         for l in leaders:
-#             print(dict(l))
-
 
 # if __name__ == "__main__":
-#     asyncio.run(check_users_and_leaderboard())
+#     from app_context import bot
+#     asyncio.run(rebuild_leaderboard(bot))
+
+
+
+
+import asyncio
+from database.db import Database
+
+async def check_users_and_leaderboard():
+    db = Database()
+    await db.init_pool()
+    async with db._open_connection() as conn:
+        # Show first 10 users with referral codes
+        users = await conn.fetch(
+            """
+            SELECT id, telegram_id, referral_code, created_at, updated_at
+            FROM users
+            ORDER BY id
+            LIMIT 10
+            """
+        )
+        print("\n=== Users Table Sample ===")
+        for u in users:
+            print(dict(u))
+
+        # Show first 10 leaderboard entries
+        leaders = await conn.fetch(
+            """
+            SELECT user_id, display_name, bites, rank, last_updated
+            FROM leaderboards
+            ORDER BY bites DESC
+            LIMIT 10
+            """
+        )
+        print("\n=== Leaderboard Sample ===")
+        for l in leaders:
+            print(dict(l))
+
+
+if __name__ == "__main__":
+    asyncio.run(check_users_and_leaderboard())
 
 
 
@@ -838,23 +857,23 @@ from database.db import Database
 
 
 
-import asyncio
-from database.db import Database  # adjust import path if needed
+# import asyncio
+# from database.db import Database  # adjust import path if needed
 
-async def delete_user_by_telegram_id(telegram_id: int):
-    db = Database()
-    await db.init_pool()
-    async with db._open_connection() as conn:
-        result = await conn.execute(
-            "DELETE FROM users WHERE telegram_id=$1",
-            telegram_id
-        )
-        print(f"✅ Delete executed for telegram_id={telegram_id} | result={result}")
+# async def delete_user_by_telegram_id(telegram_id: int):
+#     db = Database()
+#     await db.init_pool()
+#     async with db._open_connection() as conn:
+#         result = await conn.execute(
+#             "DELETE FROM users WHERE telegram_id=$1",
+#             telegram_id
+#         )
+#         print(f"✅ Delete executed for telegram_id={telegram_id} | result={result}")
 
-if __name__ == "__main__":
-    # Replace with the telegram_id you want to delete
-    tg_id_to_delete = 7701933259
-    asyncio.run(delete_user_by_telegram_id(tg_id_to_delete))
+# if __name__ == "__main__":
+#     # Replace with the telegram_id you want to delete
+#     tg_id_to_delete = 7701933259
+#     asyncio.run(delete_user_by_telegram_id(tg_id_to_delete))
 
 
 
