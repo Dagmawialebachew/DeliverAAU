@@ -499,7 +499,7 @@ async def my_referrals(message: Message):
     user_id = message.from_user.id
 
     async with db._open_connection() as conn:
-        # check if referral_code exists
+        # check if referral_codef exists
         referral_code = await conn.fetchval(
             "SELECT referral_code FROM users WHERE telegram_id=$1",
             user_id
@@ -569,7 +569,7 @@ async def get_referral_stats(db, telegram_id: int) -> Optional[Dict[str, Any]]:
                 WHERE user_id = (SELECT id FROM u)
             ), r AS (
                 SELECT user_id,
-                       RANK() OVER (ORDER BY bites DESC, last_updated ASC) AS rnk
+                       RANK() OVER (ORDER BY bites DESC) AS rnk
                 FROM leaderboards
             )
             SELECT
@@ -736,42 +736,59 @@ async def referral_progress(call: CallbackQuery):
     # If you want a dedicated progress view, you can build a smaller text using the same stats
     await call.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
 
+from aiogram import F
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+import aiogram
 
-@router.message(F.text == "📊 Leaderboard")
-async def leaderboard(message: Message):
-    user_id = await db.get_user_id_by_telegram(message.from_user.id)
-    if not user_id:
-        await message.answer("⚠️ You’re not registered yet.")
-        return
-
-    async with db._open_connection() as conn:
-        # Fetch top 10 users ordered by bites
-        rows = await conn.fetch(
-    """
-    SELECT DISTINCT ON (user_id) user_id, display_name, bites
+# Helper SQL snippets
+TOP_USERS_SQL = """
+SELECT user_id, display_name, bites
+FROM (
+    SELECT
+        user_id,
+        display_name,
+        bites,
+        ROW_NUMBER() OVER (
+            PARTITION BY user_id
+            ORDER BY bites DESC
+        ) AS rn
     FROM leaderboards
-    ORDER BY user_id, bites DESC, last_updated DESC
-    LIMIT 10
-    """
-)
+) sub
+WHERE rn = 1
+ORDER BY bites DESC
+LIMIT $1;
+"""
 
+USER_RANK_SQL = """
+SELECT rank FROM (
+    SELECT user_id,
+           RANK() OVER (ORDER BY bites DESC) AS rank
+    FROM (
+        SELECT user_id, bites,
+               ROW_NUMBER() OVER (
+                   PARTITION BY user_id
+                   ORDER BY bites DESC
+               ) AS rn
+        FROM leaderboards
+    ) t
+    WHERE rn = 1
+) sub
+WHERE user_id = $1;
+"""
 
-        # Fetch current user rank
-        user_rank = await conn.fetchval(
-            """
-            SELECT rank FROM (
-                SELECT user_id,
-                       RANK() OVER (ORDER BY bites DESC, last_updated ASC) AS rank
-                FROM leaderboards
-            ) sub WHERE user_id=$1
-            """,
-            user_id
-        )
-        user_bites = await conn.fetchval(
-            "SELECT bites FROM leaderboards WHERE user_id=$1", user_id
-        ) or 0
+USER_BITES_SQL = """
+SELECT bites FROM (
+    SELECT user_id, bites,
+           ROW_NUMBER() OVER (
+               PARTITION BY user_id
+               ORDER BY bites DESC
+           ) AS rn
+    FROM leaderboards
+) t
+WHERE rn = 1 AND user_id = $1;
+"""
 
-    # Build leaderboard text
+def _format_leaderboard_text(rows, user_rank, user_bites):
     text = "📊 UniBites Weekly Leaderboard\n"
     text += "──────────────────────────────\n"
     text += "🏆 Top Bites Collectors 🏆\n\n"
@@ -782,7 +799,8 @@ async def leaderboard(message: Message):
         medals = ["🥇", "🥈", "🥉"]
         for idx, row in enumerate(rows, start=1):
             medal = medals[idx-1] if idx <= 3 else "🏅"
-            text += f"{medal} {row['display_name']} — {row['bites']} Bites🍪\n"
+            display = row["display_name"] or f"User{row['user_id']}"
+            text += f"{medal} {display} — {row['bites']} Bites🍪\n"
 
     if user_rank:
         text += f"\n🔥 You’re currently #{user_rank} with {user_bites} Bites!\n"
@@ -791,8 +809,28 @@ async def leaderboard(message: Message):
 
     text += "\nKeep ordering & referring to climb higher.\n"
     text += "The next ገና Combo could be yours! 🍽️"
+    return text
 
-    # Add refresh button
+@router.message(F.text == "📊 Leaderboard")
+async def leaderboard(message: Message):
+    # get internal user id (users.id)
+    user_id = await db.get_user_id_by_telegram(message.from_user.id)
+    if not user_id:
+        await message.answer("⚠️ You’re not registered yet.")
+        return
+
+    async with db._open_connection() as conn:
+        # top 10 unique users (best row per user), ordered by bites desc
+        rows = await conn.fetch(TOP_USERS_SQL, 10)
+
+        # user's rank using same "best row per user" logic
+        user_rank = await conn.fetchval(USER_RANK_SQL, user_id)
+
+        # user's bites from their best row
+        user_bites = await conn.fetchval(USER_BITES_SQL, user_id) or 0
+
+    text = _format_leaderboard_text(rows, user_rank, user_bites)
+
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="🔄 Refresh Leaderboard", callback_data="refresh_leaderboard")]
@@ -801,58 +839,19 @@ async def leaderboard(message: Message):
 
     await message.answer(text, reply_markup=keyboard, parse_mode="Markdown")
 
-
 @router.callback_query(F.data == "refresh_leaderboard")
 async def refresh_leaderboard(call: CallbackQuery):
-    # Reuse the same logic as above
     user_id = await db.get_user_id_by_telegram(call.from_user.id)
     if not user_id:
         await call.answer("⚠️ You’re not registered yet.", show_alert=True)
         return
 
     async with db._open_connection() as conn:
-        rows = await conn.fetch(
-    """
-    SELECT DISTINCT ON (user_id) user_id, display_name, bites
-    FROM leaderboards
-    ORDER BY user_id, bites DESC, last_updated DESC
-    LIMIT 10
-    """
-)
+        rows = await conn.fetch(TOP_USERS_SQL, 10)
+        user_rank = await conn.fetchval(USER_RANK_SQL, user_id)
+        user_bites = await conn.fetchval(USER_BITES_SQL, user_id) or 0
 
-        user_rank = await conn.fetchval(
-            """
-            SELECT rank FROM (
-                SELECT user_id,
-                       RANK() OVER (ORDER BY bites DESC, last_updated ASC) AS rank
-                FROM leaderboards
-            ) sub WHERE user_id=$1
-            """,
-            user_id
-        )
-        user_bites = await conn.fetchval(
-            "SELECT bites FROM leaderboards WHERE user_id=$1", user_id
-        ) or 0
-
-    text = "📊 UniBites Weekly Leaderboard\n"
-    text += "──────────────────────────────\n"
-    text += "🏆 Top Bites Collectors 🏆\n\n"
-
-    if not rows:
-        text += "No entries yet. Be the first to climb the board! 🚀\n\n"
-    else:
-        medals = ["🥇", "🥈", "🥉"]
-        for idx, row in enumerate(rows, start=1):
-            medal = medals[idx-1] if idx <= 3 else "🏅"
-            text += f"{medal} {row['display_name']} — {row['bites']} Bites🍪\n"
-
-    if user_rank:
-        text += f"\n🔥 You’re currently #{user_rank} with {user_bites} Bites!\n"
-    else:
-        text += f"\n🔥 You’re not on the board yet. Collect bites to join the race!\n"
-
-    text += "\nKeep ordering & referring to climb higher.\n"
-    text += "The next ገና Combo could be yours! 🍽️"
+    text = _format_leaderboard_text(rows, user_rank, user_bites)
 
     try:
         await call.message.edit_text(text, reply_markup=call.message.reply_markup, parse_mode="Markdown")
@@ -861,7 +860,6 @@ async def refresh_leaderboard(call: CallbackQuery):
             await call.answer("Already up to date ✅", show_alert=True)
         else:
             raise
-
 
 
 @router.message(F.text == "ℹ️ How It Works")
