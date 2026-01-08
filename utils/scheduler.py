@@ -1135,24 +1135,24 @@ class BotScheduler:
         
         
                 # Student meal reminders
-        self.scheduler.add_job(
-            self.send_meal_reminder,
-            CronTrigger(hour=7, minute=30, timezone="Africa/Addis_Ababa"),
-            args=["breakfast"],
-            id="reminder_breakfast"
-        )
+        # self.scheduler.add_job(
+        #     self.send_meal_reminder,
+        #     CronTrigger(hour=7, minute=30, timezone="Africa/Addis_Ababa"),
+        #     args=["breakfast"],
+        #     id="reminder_breakfast"
+        # )
         self.scheduler.add_job(
             self.send_meal_reminder,
             CronTrigger(hour=11, minute=00, timezone="Africa/Addis_Ababa"),
             args=["lunch"],
             id="reminder_lunch"
         )
-        self.scheduler.add_job(
-            self.send_meal_reminder,
-            CronTrigger(hour=18, minute=16, timezone="Africa/Addis_Ababa"),
-            args=["dinner"],
-            id="reminder_dinner"
-        )
+        # self.scheduler.add_job(
+        #     self.send_meal_reminder,
+        #     CronTrigger(hour=18, minute=16, timezone="Africa/Addis_Ababa"),
+        #     args=["dinner"],
+        #     id="reminder_dinner"
+        # )
 
 
         # Weekly vendor summary (Sunday 21:10)

@@ -361,69 +361,78 @@ async def handle_gender(cb: CallbackQuery, state: FSMContext):
 
     # Generate and persist this user's referral code (use new_user_id)
     referral_code = generate_referral_code(new_user_id)
+
     async with db._open_connection() as conn:
+        # Persist referral code
         await conn.execute(
             "UPDATE users SET referral_code=$1 WHERE id=$2",
             referral_code, new_user_id
         )
 
-    # Give new user the welcome bite (idempotent via ON CONFLICT)
-    async with db._open_connection() as conn:
+        # Upsert new user into leaderboards with the welcome bite (idempotent)
         await conn.execute(
             """
             INSERT INTO leaderboards (user_id, display_name, bites, last_updated)
             VALUES ($1, $2, 1, CURRENT_TIMESTAMP)
             ON CONFLICT (user_id)
             DO UPDATE SET bites = leaderboards.bites + 1,
-                          display_name = EXCLUDED.display_name,
-                          last_updated = CURRENT_TIMESTAMP
+                        display_name = EXCLUDED.display_name,
+                        last_updated = CURRENT_TIMESTAMP
             """,
             new_user_id, (cb.from_user.first_name or f"User{telegram_id}")
         )
-        await db.sync_spins_for_user(new_user_id)       
+        await db.sync_spins_for_user(new_user_id)
 
-        # If there is an inviter, apply their bonus and collect stats
+        # Prepare inviter outputs
         inviter_telegram_id = None
         inviter_stats = None
-        if inviter_id:
-            old_bites = await conn.fetchval(
-                "SELECT bites FROM leaderboards WHERE user_id=$1",
-                inviter_id
-            ) or 0
 
+        if inviter_id:
+            # Fetch inviter's old bites and old rank in one query
+            old_row = await conn.fetchrow(
+                """
+                SELECT bites, r FROM (
+                    SELECT user_id, bites, RANK() OVER (ORDER BY bites DESC) AS r
+                    FROM leaderboards
+                ) t WHERE user_id=$1
+                """,
+                inviter_id
+            )
+            old_bites = (old_row["bites"] if old_row and old_row["bites"] is not None else 0)
+            old_rank = (old_row["r"] if old_row and old_row["r"] is not None else "—")
+
+            # Upsert inviter to add the bonus bite (creates row if missing)
             await conn.execute(
-                "UPDATE leaderboards SET bites = bites + 1, last_updated = CURRENT_TIMESTAMP WHERE user_id=$1",
+                """
+                INSERT INTO leaderboards (user_id, bites, last_updated)
+                VALUES ($1, 1, CURRENT_TIMESTAMP)
+                ON CONFLICT (user_id)
+                DO UPDATE SET bites = leaderboards.bites + 1,
+                            last_updated = CURRENT_TIMESTAMP
+                """,
                 inviter_id
             )
             await db.sync_spins_for_user(inviter_id)
 
-            new_bites = old_bites + 1
-            old_rank = await conn.fetchval(
+            # Fetch inviter's new bites and new rank in one query
+            new_row = await conn.fetchrow(
                 """
-                SELECT r FROM (
-                    SELECT user_id, RANK() OVER (ORDER BY bites DESC) AS r
+                SELECT bites, r FROM (
+                    SELECT user_id, bites, RANK() OVER (ORDER BY bites DESC) AS r
                     FROM leaderboards
                 ) t WHERE user_id=$1
                 """,
                 inviter_id
-            ) or "—"
+            )
+            new_bites = (new_row["bites"] if new_row and new_row["bites"] is not None else old_bites + 1)
+            new_rank = (new_row["r"] if new_row and new_row["r"] is not None else "—")
 
-            new_rank = await conn.fetchval(
-                """
-                SELECT r FROM (
-                    SELECT user_id, RANK() OVER (ORDER BY bites DESC) AS r
-                    FROM leaderboards
-                ) t WHERE user_id=$1
-                """,
-                inviter_id
-            ) or "—"
-
-            inviter_telegram_id = await conn.fetchval(
+            # Fetch inviter telegram info once
+            inviter_user = await conn.fetchrow(
                 "SELECT telegram_id, first_name FROM users WHERE id=$1",
                 inviter_id
             )
-            # inviter_telegram_id may be a single value depending on fetchval; fetch separately if needed
-            inviter_telegram_id = await conn.fetchval("SELECT telegram_id FROM users WHERE id=$1", inviter_id)
+            inviter_telegram_id = inviter_user["telegram_id"] if inviter_user else None
 
             inviter_stats = {
                 "old_bites": old_bites,
