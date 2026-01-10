@@ -402,16 +402,21 @@ async def handle_gender(cb: CallbackQuery, state: FSMContext):
             old_rank = (old_row["r"] if old_row and old_row["r"] is not None else "—")
 
             # Upsert inviter to add the bonus bite (creates row if missing)
+            # Use Telegram first_name directly for display_name
+            inviter_display_name = cb.from_user.first_name or f"User{telegram_id}"
+
             await conn.execute(
                 """
-                INSERT INTO leaderboards (user_id, bites, last_updated)
-                VALUES ($1, 1, CURRENT_TIMESTAMP)
+                INSERT INTO leaderboards (user_id, display_name, bites, last_updated)
+                VALUES ($1, $2, 1, CURRENT_TIMESTAMP)
                 ON CONFLICT (user_id)
                 DO UPDATE SET bites = leaderboards.bites + 1,
+                            display_name = EXCLUDED.display_name,
                             last_updated = CURRENT_TIMESTAMP
                 """,
-                inviter_id
+                inviter_id, inviter_display_name
             )
+
             await db.sync_spins_for_user(inviter_id)
 
             # Fetch inviter's new bites and new rank in one query

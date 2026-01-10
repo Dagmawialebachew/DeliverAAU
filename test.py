@@ -742,17 +742,17 @@ async def check_users_and_leaderboard():
     await db.init_pool()
     async with db._open_connection() as conn:
         # Show first 10 users with referral codes
-        users = await conn.fetch(
-            """
-            SELECT id, telegram_id, referral_code, created_at, updated_at
-            FROM users
-            ORDER BY id
-            LIMIT 10
-            """
-        )
-        print("\n=== Users Table Sample ===")
-        for u in users:
-            print(dict(u))
+        # users = await conn.fetch(
+        #     """
+        #     SELECT id, telegram_id, referral_code, created_at, updated_at
+        #     FROM users
+        #     ORDER BY id
+        #     LIMIT 10
+        #     """
+        # )
+        # print("\n=== Users Table Sample ===")
+        # for u in users:
+        #     print(dict(u))
 
         # Show first 10 leaderboard entries
         leaders = await conn.fetch(
@@ -760,7 +760,6 @@ async def check_users_and_leaderboard():
             SELECT user_id, display_name, bites, rank, last_updated
             FROM leaderboards
             ORDER BY bites DESC
-            LIMIT 10
             """
         )
         print("\n=== Leaderboard Sample ===")
@@ -807,28 +806,28 @@ if __name__ == "__main__":
 # import asyncio
 # from database.db import Database
 
-# async def upsert_leaderboard_bites(user_id: int, display_name: str, bites: int = 50):
-#     db = Database()
-#     await db.init_pool()
-#     async with db._open_connection() as conn:
-#         result = await conn.execute(
-#             """
-#             INSERT INTO leaderboards (user_id, display_name, bites, last_updated)
-#             VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
-#             ON CONFLICT (user_id)
-#             DO UPDATE SET bites = $3,
-#                           display_name = EXCLUDED.display_name,
-#                           last_updated = CURRENT_TIMESTAMP
-#             """,
-#             user_id, display_name, bites
-#         )
-#         print(f"Upsert result: {result}")
+async def upsert_leaderboard_bites(user_id: int, display_name: str, bites: int = 50):
+    db = Database()
+    await db.init_pool()
+    async with db._open_connection() as conn:
+        result = await conn.execute(
+            """
+            INSERT INTO leaderboards (user_id, display_name, bites, last_updated)
+            VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
+            ON CONFLICT (user_id)
+            DO UPDATE SET bites = $3,
+                          display_name = EXCLUDED.display_name,
+                          last_updated = CURRENT_TIMESTAMP
+            """,
+            user_id, display_name, bites
+        )
+        print(f"Upsert result: {result}")
 
-# if __name__ == "__main__":
-#     # Replace with the user_id and display_name you want to test
-#     test_user_id = 1
-#     test_display_name = "Dagmaros"
-#     asyncio.run(upsert_leaderboard_bites(test_user_id, test_display_name, 999))
+if __name__ == "__main__":
+    # Replace with the user_id and display_name you want to test
+    test_user_id = 1
+    test_display_name = "Nati💀"
+    asyncio.run(upsert_leaderboard_bites(test_user_id, test_display_name, 17))
 
 
 # import asyncio
