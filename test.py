@@ -827,7 +827,7 @@ if __name__ == "__main__":
     # Replace with the user_id and display_name you want to test
     test_user_id = 1
     test_display_name = "Nati💀"
-    asyncio.run(upsert_leaderboard_bites(test_user_id, test_display_name, 17))
+    asyncio.run(upsert_leaderboard_bites(test_user_id, test_display_name, 18))
 
 
 # import asyncio

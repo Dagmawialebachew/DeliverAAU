@@ -1974,7 +1974,7 @@ async def confirm_broadcast(cb: CallbackQuery, state: FSMContext):
 
     await cb.message.answer(summary)
     from handlers.admin_order import _notify_admin_action
-    await _notify_admin_action(cb.bot, cb.from_user, "Broadcast sent", extra={"sent": sent, "failed": failed})
+    await _notify_admin_action(cb.bot, cb.from_user, f"Broadcast sent to *{sent}* users, failed *{failed}* users")
     await state.clear()
 
 # Edit callback

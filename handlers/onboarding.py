@@ -391,8 +391,8 @@ async def handle_gender(cb: CallbackQuery, state: FSMContext):
             # Fetch inviter's old bites and old rank in one query
             old_row = await conn.fetchrow(
                 """
-                SELECT bites, r FROM (
-                    SELECT user_id, bites, RANK() OVER (ORDER BY bites DESC) AS r
+                SELECT user_id, display_name, bites, r FROM (
+                    SELECT user_id, display_name, bites, RANK() OVER (ORDER BY bites DESC) AS r
                     FROM leaderboards
                 ) t WHERE user_id=$1
                 """,
@@ -401,10 +401,27 @@ async def handle_gender(cb: CallbackQuery, state: FSMContext):
             old_bites = (old_row["bites"] if old_row and old_row["bites"] is not None else 0)
             old_rank = (old_row["r"] if old_row and old_row["r"] is not None else "—")
 
-            # Upsert inviter to add the bonus bite (creates row if missing)
-            # Use Telegram first_name directly for display_name
-            inviter_display_name = cb.from_user.first_name or f"User{telegram_id}"
+            # Resolve inviter telegram_id from users table
+            inviter_telegram_id = await conn.fetchval(
+                "SELECT telegram_id FROM users WHERE id=$1",
+                inviter_id
+            )
 
+            # Resolve inviter display_name:
+            # 1) Prefer existing leaderboard snapshot
+            # 2) Else fetch from Telegram profile
+            inviter_display_name = None
+            if old_row and old_row["display_name"]:
+                inviter_display_name = old_row["display_name"]
+            else:
+                try:
+                    if inviter_telegram_id:
+                        chat = await cb.bot.get_chat(inviter_telegram_id)
+                        inviter_display_name = chat.first_name or chat.full_name or f"User{inviter_telegram_id}"
+                except Exception:
+                    inviter_display_name = f"User{inviter_telegram_id or '—'}"
+
+            # Upsert inviter to add the bonus bite (creates row if missing) with correct display_name
             await conn.execute(
                 """
                 INSERT INTO leaderboards (user_id, display_name, bites, last_updated)
@@ -416,7 +433,6 @@ async def handle_gender(cb: CallbackQuery, state: FSMContext):
                 """,
                 inviter_id, inviter_display_name
             )
-
             await db.sync_spins_for_user(inviter_id)
 
             # Fetch inviter's new bites and new rank in one query
@@ -432,19 +448,13 @@ async def handle_gender(cb: CallbackQuery, state: FSMContext):
             new_bites = (new_row["bites"] if new_row and new_row["bites"] is not None else old_bites + 1)
             new_rank = (new_row["r"] if new_row and new_row["r"] is not None else "—")
 
-            # Fetch inviter telegram info once
-            inviter_user = await conn.fetchrow(
-                "SELECT telegram_id, first_name FROM users WHERE id=$1",
-                inviter_id
-            )
-            inviter_telegram_id = inviter_user["telegram_id"] if inviter_user else None
-
             inviter_stats = {
                 "old_bites": old_bites,
                 "new_bites": new_bites,
                 "old_rank": old_rank,
                 "new_rank": new_rank
             }
+
 
     # Notify inviter and admin in background so onboarding stays snappy
     try:
