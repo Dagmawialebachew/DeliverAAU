@@ -2432,13 +2432,15 @@ class AnalyticsService:
         # default window: previous 7 days (yesterday inclusive)
         today = datetime.now().date()
         if end_date is None:
-            end_date = today - timedelta(days=0)
+            end_date = today
         if start_date is None:
-            start_date = end_date - timedelta(days=7)  # 7-day window
+            start_date = date.min # 7-day window
 
-        # previous week window for comparisons
-        prev_end = start_date - timedelta(days=0)
-        prev_start = prev_end - timedelta(days=7)
+        # # previous week window for comparisons
+        # prev_end = start_date - timedelta(days=0)
+        # prev_start = prev_end - timedelta(days=7)
+        prev_end = start_date 
+        prev_start = date.min
 
         # normalize to date strings if needed for SQL
         # We'll use DB-level aggregation (faster) where possible

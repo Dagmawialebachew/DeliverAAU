@@ -1082,16 +1082,29 @@ async def ask_final_confirmation(message: Message, state: FSMContext):
             chargeable_items += count
 
     # Delivery fee based on chargeable items only
+        # Delivery fee based on chargeable items only
     if chargeable_items == 0:
         delivery_fee = 0.0
-    elif chargeable_items == 1:
-        delivery_fee = 20.0
-    elif chargeable_items == 2:
-        delivery_fee = 35.0
-    elif chargeable_items == 3:
-        delivery_fee = 45.0
     else:
-        delivery_fee = 45.0  # extend logic if needed
+        if dropoff.strip().upper() == "FBE":
+            # Normal fee schedule
+            if chargeable_items == 1:
+                delivery_fee = 20.0
+            elif chargeable_items == 2:
+                delivery_fee = 35.0
+            elif chargeable_items >= 3:
+                delivery_fee = 45.0
+        else:
+            # Higher fee schedule for non-FBE dropoffs
+            if chargeable_items == 1:
+                delivery_fee = 30.0
+            elif chargeable_items == 2:
+                delivery_fee = 45.0
+            elif chargeable_items >= 3:
+                delivery_fee = 60.0
+            else:
+                delivery_fee = 75.0
+  # extend logic if needed
 
     total = subtotal + delivery_fee
 

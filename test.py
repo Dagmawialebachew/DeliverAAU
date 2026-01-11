@@ -513,31 +513,31 @@ from database.db import Database
 
 
 
-# import asyncio
+import asyncio
 
-# async def get_order_by_id(conn, order_id: int):
-#     row = await conn.fetchrow(
-#         """
-#         SELECT id, user_id, vendor_id, food_subtotal, delivery_fee, status,
-#                items_json, dropoff, created_at, updated_at
-#         FROM orders
-#         WHERE id = $1
-#         """,
-#         order_id
-#     )
-#     return row
+async def get_order_by_id(conn, order_id: int):
+    row = await conn.fetchrow(
+        """
+        SELECT id, user_id, vendor_id, food_subtotal, delivery_fee, status,
+               items_json, dropoff, created_at, updated_at
+        FROM orders
+        WHERE id = $1
+        """,
+        order_id
+    )
+    return row
 
-# async def update_order_delivery_fee(conn, order_id: int, new_fee: float):
-#     result = await conn.execute(
-#         """
-#         UPDATE orders
-#         SET delivery_fee = $2,
-#             updated_at = CURRENT_TIMESTAMP
-#         WHERE id = $1
-#         """,
-#         order_id, new_fee
-#     )
-#     return result
+async def update_order_delivery_fee(conn, order_id: int, new_fee: float):
+    result = await conn.execute(
+        """
+        UPDATE orders
+        SET delivery_fee = $2,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = $1
+        """,
+        order_id, new_fee
+    )
+    return result
 
 # async def update_order_status(conn, order_id: int, new_status: str):
 #     result = await conn.execute(
@@ -556,17 +556,17 @@ from database.db import Database
 #     await db.init_pool()
 #     async with db._open_connection() as conn:
 #         # Fetch order #78
-#         order = await get_order_by_id(conn, 78)
+#         order = await get_order_by_id(conn, 186)
 #         print("Before update:", dict(order) if order else "Order not found")
 
       
 
 #         # Fetch again to confirm
-#         order_after = await get_order_by_id(conn, 78)
+#         order_after = await get_order_by_id(conn, 186)
 #         print("After update:", dict(order_after) if order_after else "Order not found")
 
 #         # Update delivery fee
-#         res_fee = await update_order_delivery_fee(conn, 78, 20.0)
+#         res_fee = await update_order_delivery_fee(conn, 186, 30.0)
 #         print("Delivery fee update result:", res_fee)
 
 # if __name__ == "__main__":
@@ -806,28 +806,28 @@ if __name__ == "__main__":
 # import asyncio
 # from database.db import Database
 
-async def upsert_leaderboard_bites(user_id: int, display_name: str, bites: int = 50):
-    db = Database()
-    await db.init_pool()
-    async with db._open_connection() as conn:
-        result = await conn.execute(
-            """
-            INSERT INTO leaderboards (user_id, display_name, bites, last_updated)
-            VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
-            ON CONFLICT (user_id)
-            DO UPDATE SET bites = $3,
-                          display_name = EXCLUDED.display_name,
-                          last_updated = CURRENT_TIMESTAMP
-            """,
-            user_id, display_name, bites
-        )
-        print(f"Upsert result: {result}")
+# async def upsert_leaderboard_bites(user_id: int, display_name: str, bites: int = 50):
+#     db = Database()
+#     await db.init_pool()
+#     async with db._open_connection() as conn:
+#         result = await conn.execute(
+#             """
+#             INSERT INTO leaderboards (user_id, display_name, bites, last_updated)
+#             VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
+#             ON CONFLICT (user_id)
+#             DO UPDATE SET bites = $3,
+#                           display_name = EXCLUDED.display_name,
+#                           last_updated = CURRENT_TIMESTAMP
+#             """,
+#             user_id, display_name, bites
+#         )
+#         print(f"Upsert result: {result}")
 
-if __name__ == "__main__":
-    # Replace with the user_id and display_name you want to test
-    test_user_id = 1
-    test_display_name = "Nati💀"
-    asyncio.run(upsert_leaderboard_bites(test_user_id, test_display_name, 18))
+# if __name__ == "__main__":
+#     # Replace with the user_id and display_name you want to test
+#     test_user_id = 1
+#     test_display_name = "Nati💀"
+#     asyncio.run(upsert_leaderboard_bites(test_user_id, test_display_name, 17))
 
 
 # import asyncio
