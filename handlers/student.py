@@ -4,6 +4,7 @@ from collections import Counter
 import contextlib
 import json
 import logging
+import random
 from typing import List, Dict, Any, Tuple, Optional
 from config import settings
 from aiogram import Router, F
@@ -291,6 +292,7 @@ def render_cart(cart_counts: Dict[Any,int], menu: List[Dict[str,Any]], half_look
 @router.message(F.text == "🛒 Order")
 async def start_order(message: Message, state: FSMContext):
     from datetime import datetime, time, timedelta
+    import asyncio
 
     now = datetime.now()
 
@@ -302,11 +304,7 @@ async def start_order(message: Message, state: FSMContext):
     ]
 
     # Check if current time is inside any window
-    in_window = False
-    for start, end in windows:
-        if start <= now.time() < end:
-            in_window = True
-            break
+    in_window = any(start <= now.time() < end for start, end in windows)
 
     if not in_window:
         # Find the next upcoming window today
@@ -328,6 +326,7 @@ async def start_order(message: Message, state: FSMContext):
         hours, remainder = divmod(int(delta.total_seconds()), 3600)
         minutes = remainder // 60
 
+        # Notify user
         await message.answer(
             "🌙 <b>Ordering is closed now due to final weeks.</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -339,7 +338,39 @@ async def start_order(message: Message, state: FSMContext):
             "• <b>6:00 PM – 9:20 PM</b>",
             parse_mode="HTML"
         )
+
+        # 🔔 Notify admin group in background
+        async def notify_admins():
+            try:
+                admin_chat_id = settings.ADMIN_DAILY_GROUP_ID  # replace with your admin group ID
+                username = f"@{message.from_user.username}" if message.from_user.username else "—"
+
+                playful_headlines = [
+                    "🎭 Sneaky midnight shopper spotted!",
+                    "🕵️ Someone tried to beat the system!",
+                    "🍔 Hungry soul knocking after hours!",
+                    "🚨 Closed-time craving alert!"
+                ]
+                headline = random.choice(playful_headlines)
+
+                await message.bot.send_message(
+                    admin_chat_id,
+                    f"{headline}\n"
+                    f"👤 User: <b>{message.from_user.first_name}</b> "
+                    f"(ID: <code>{message.from_user.id}</code>, Username: {username})\n"
+                    f"🕒 Time: {now.strftime('%Y-%m-%d %H:%M')}\n"
+                    f"📍 Next window: <b>{next_window[0].strftime('%I:%M %p')}</b> "
+                    f"(in {hours}h {minutes}m)",
+                    parse_mode="HTML"
+                )
+            except Exception as e:
+                # swallow errors so user flow isn't broken
+                print("Failed to notify admins:", e)
+
+        # Schedule in background
+        asyncio.create_task(notify_admins())
         return
+
 
 
     # Normal flow
