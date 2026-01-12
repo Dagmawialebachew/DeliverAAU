@@ -290,17 +290,57 @@ def render_cart(cart_counts: Dict[Any,int], menu: List[Dict[str,Any]], half_look
 
 @router.message(F.text == "🛒 Order")
 async def start_order(message: Message, state: FSMContext):
-    from datetime import datetime, time
-    now = datetime.now().time()
-    if now >= time(18, 20) or now < time(4, 00):
+    from datetime import datetime, time, timedelta
+
+    now = datetime.now()
+
+    # Define service windows
+    windows = [
+        (time(8, 0), time(10, 0)),
+        (time(12, 0), time(14, 0)),
+        (time(18, 0), time(21, 20)),
+    ]
+
+    # Check if current time is inside any window
+    in_window = False
+    for start, end in windows:
+        if start <= now.time() < end:
+            in_window = True
+            break
+
+    if not in_window:
+        # Find the next upcoming window today
+        next_window = None
+        for start, end in windows:
+            start_dt = datetime.combine(now.date(), start)
+            if now < start_dt:
+                next_window = (start_dt, end)
+                break
+
+        # If no window left today, use tomorrow’s first window
+        if not next_window:
+            tomorrow = now.date() + timedelta(days=1)
+            start, end = windows[0]
+            next_window = (datetime.combine(tomorrow, start), end)
+
+        # Compute countdown
+        delta = next_window[0] - now
+        hours, remainder = divmod(int(delta.total_seconds()), 3600)
+        minutes = remainder // 60
+
         await message.answer(
-            "🌙 <b>Ordering is closed for the night</b>\n"
+            "🌙 <b>Ordering is closed now due to final weeks.</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "We only accept orders between <b>7:00 AM</b> and <b>9:20 PM</b>.\n"
-            "Please come back during service hours — we’ll be ready with fresh spots!",
+            f"Next service window opens at <b>{next_window[0].strftime('%I:%M %p')}</b>\n"
+            f"⏳ That’s in <b>{hours}h {minutes}m.</b>\n\n"
+            "Service hours are:\n"
+            "• <b>8:00 AM – 12:00 PM</b>\n"
+            "• <b>12:00 PM – 2:00 PM</b>\n"
+            "• <b>6:00 PM – 9:20 PM</b>",
             parse_mode="HTML"
         )
         return
+
 
     # Normal flow
     user = await db.get_user(message.from_user.id)
