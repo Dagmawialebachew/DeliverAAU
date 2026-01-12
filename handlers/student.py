@@ -296,9 +296,9 @@ async def start_order(message: Message, state: FSMContext):
 
     # Define service windows
     windows = [
-        (time(8, 0), time(10, 0)),
-        (time(12, 0), time(14, 0)),
-        (time(18, 0), time(21, 20)),
+        (time(5, 0), time(7, 0)),
+        (time(9, 0), time(11, 0)),
+        (time(15, 0), time(18, 20)),
     ]
 
     # Check if current time is inside any window
