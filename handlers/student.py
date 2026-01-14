@@ -335,8 +335,8 @@ async def start_order(message: Message, state: FSMContext):
             "Service hours are:\n"
             "• <b>8:00 AM – 12:00 PM</b>\n"
             # "• <b>12:00 PM – 2:00 PM</b>\n"
-            "• <b>5:00 PM – 9:20 PM</b>",
-            "🪧Join Our Channel -> Unibites",
+            "• <b>5:00 PM – 9:20 PM</b>"
+            "🪧Join Our Channel -> @Unibites",
             parse_mode="HTML"
         )
 
