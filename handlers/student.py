@@ -300,7 +300,7 @@ async def start_order(message: Message, state: FSMContext):
     windows = [
         (time(5, 0), time(7, 0)),
         # (time(9, 0), time(11, 0)),
-        (time(15, 0), time(18, 20)),
+        (time(14, 0), time(18, 20)),
     ]
 
     # Check if current time is inside any window
@@ -335,7 +335,7 @@ async def start_order(message: Message, state: FSMContext):
             "Service hours are:\n"
             "• <b>8:00 AM – 12:00 PM</b>\n"
             # "• <b>12:00 PM – 2:00 PM</b>\n"
-            "• <b>6:00 PM – 9:20 PM</b>",
+            "• <b>5:00 PM – 9:20 PM</b>",
             "🪧Join Our Channel -> @Unibites"
             parse_mode="HTML"
         )
