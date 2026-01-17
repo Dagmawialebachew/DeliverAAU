@@ -168,7 +168,7 @@ spin_descriptions = {
     "🚚 Free Delivery ×2": "Two orders with delivery completely free.",
     "🚚 Free Delivery ×5": "Five orders with delivery completely free.",
     "🥤 Free Soft Drink": "A refreshing soft drink with your next meal.",
-    "🍿 2 Free Snacks": "Two tasty snacks to enjoy with your order.",
+    "🍿 ×2 Free Snacks": "Two tasty snacks to enjoy with your order.",
     "🎁 100 birr Gift Card": "100 birr credit to spend on UniBites.",
     "😅 Try Again": "No prize this time, but you earn +2 bites for the leaderboard.",
     "🍽️ Free Meal (up to 500 birr)": "Jackpot! A full free meal worth up to 500 birr."
@@ -369,6 +369,47 @@ async def spin_process_inline(call: CallbackQuery):
     )
 
     await msg.edit_text(final_header + final_display, parse_mode="Markdown")
+    # 👉 Save reward to spin_rewards table here
+    import json
+    reward_payload = {
+        "prize": final_prize,
+        "description": spin_descriptions.get(final_prize, ""),
+    }
+    if "×2" in final_prize:
+        reward_payload["count"] = 2
+    elif "×5" in final_prize:
+        reward_payload["count"] = 5
+    elif "Gift Card" in final_prize:
+        reward_payload["amount"] = 100
+    elif "Discount" in final_prize:
+        reward_payload["amount"] = 30
+    elif "Free Meal" in final_prize:
+        reward_payload["max_value"] = 500
+
+    async with db._open_connection() as conn:
+        await conn.execute(
+            """
+            INSERT INTO spin_rewards (user_id, reward)
+            VALUES ($1, $2::jsonb)
+            """,
+            user_id,
+            json.dumps(reward_payload)
+        )
+
+    # continue with admin notification
+    asyncio.create_task(
+        notify_admin_spin(
+            call.bot,
+            user_id,
+            telegram_id,
+            final_prize,
+            bites_total,
+            rank,
+            tg_first_name=call.from_user.first_name,
+            tg_username=call.from_user.username
+        )
+    )
+
     asyncio.create_task( notify_admin_spin( call.bot, user_id, telegram_id, final_prize, bites_total, rank, tg_first_name=call.from_user.first_name, tg_username=call.from_user.username ) )    
     # short celebratory micro-sequence for ultra-rare
     if final_prize == "🍽️ Free Meal (up to 500 birr)":

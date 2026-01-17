@@ -513,31 +513,31 @@ from database.db import Database
 
 
 
-import asyncio
+# import asyncio
 
-async def get_order_by_id(conn, order_id: int):
-    row = await conn.fetchrow(
-        """
-        SELECT id, user_id, vendor_id, food_subtotal, delivery_fee, status,
-               items_json, dropoff, created_at, updated_at
-        FROM orders
-        WHERE id = $1
-        """,
-        order_id
-    )
-    return row
+# async def get_order_by_id(conn, order_id: int):
+#     row = await conn.fetchrow(
+#         """
+#         SELECT id, user_id, vendor_id, food_subtotal, delivery_fee, status,
+#                items_json, dropoff, created_at, updated_at
+#         FROM orders
+#         WHERE id = $1
+#         """,
+#         order_id
+#     )
+#     return row
 
-async def update_order_delivery_fee(conn, order_id: int, new_fee: float):
-    result = await conn.execute(
-        """
-        UPDATE orders
-        SET delivery_fee = $2,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE id = $1
-        """,
-        order_id, new_fee
-    )
-    return result
+# async def update_order_delivery_fee(conn, order_id: int, new_fee: float):
+#     result = await conn.execute(
+#         """
+#         UPDATE orders
+#         SET delivery_fee = $2,
+#             updated_at = CURRENT_TIMESTAMP
+#         WHERE id = $1
+#         """,
+#         order_id, new_fee
+#     )
+#     return result
 
 # async def update_order_status(conn, order_id: int, new_status: str):
 #     result = await conn.execute(
@@ -734,45 +734,6 @@ async def update_order_delivery_fee(conn, order_id: int, new_fee: float):
 
 
 
-import asyncio
-from database.db import Database
-
-async def check_users_and_leaderboard():
-    db = Database()
-    await db.init_pool()
-    async with db._open_connection() as conn:
-        # Show first 10 users with referral codes
-        # users = await conn.fetch(
-        #     """
-        #     SELECT id, telegram_id, referral_code, created_at, updated_at
-        #     FROM users
-        #     ORDER BY id
-        #     LIMIT 10
-        #     """
-        # )
-        # print("\n=== Users Table Sample ===")
-        # for u in users:
-        #     print(dict(u))
-
-        # Show first 10 leaderboard entries
-        leaders = await conn.fetch(
-            """
-            SELECT user_id, display_name, bites, rank, last_updated
-            FROM leaderboards
-            ORDER BY bites DESC
-            """
-        )
-        print("\n=== Leaderboard Sample ===")
-        for l in leaders:
-            print(dict(l))
-
-
-if __name__ == "__main__":
-    asyncio.run(check_users_and_leaderboard())
-
-
-
-
 # import asyncio
 # from database.db import Database
 
@@ -822,12 +783,105 @@ if __name__ == "__main__":
 #             user_id, display_name, bites
 #         )
 #         print(f"Upsert result: {result}")
-
+        
 # if __name__ == "__main__":
+    
 #     # Replace with the user_id and display_name you want to test
 #     test_user_id = 1
 #     test_display_name = "Nati💀"
-#     asyncio.run(upsert_leaderboard_bites(test_user_id, test_display_name, 17))
+#     asyncio.run(upsert_leaderboard_bites(test_user_id, test_display_name, 100))
+    
+    
+
+
+# async def upsert_available_spins(user_id:int, total_entries: int= 50):
+#     db = Database()
+#     await db.init_pool()
+#     async with db._open_connection() as conn:
+#         result = await conn.execute(
+#             """
+#             INSERT INTO spin_entries (user_id, total_entries, last_spin_date)
+#             VALUES ($1, $2, CURRENT_TIMESTAMP)
+#             ON CONFLICT (user_id)
+#             DO UPDATE SET total_entries = $2,
+#                           last_spin_date = CURRENT_TIMESTAMP
+#             """,
+            
+#             user_id, total_entries
+#         )
+#         print(f'UPSERT RESULT SPINS: {result}')
+
+
+# if __name__ == "__main__":
+    
+#     # Replace with the user_id and total_entries you want to test
+#     test_user_id = 1
+#     asyncio.run(upsert_available_spins(test_user_id, 0))
+    
+
+
+
+
+
+import asyncio
+from database.db import Database
+
+async def check_users_and_leaderboard():
+    db = Database()
+    await db.init_pool()
+    async with db._open_connection() as conn:
+        # Show first 10 users with referral codes
+        # users = await conn.fetch(
+        #     """
+        #     SELECT id, telegram_id, referral_code, created_at, updated_at
+        #     FROM users
+        #     ORDER BY id
+        #     LIMIT 10
+        #     """
+        # )
+        # print("\n=== Users Table Sample ===")
+        # for u in users:
+        #     print(dict(u))
+
+        # Show first 10 leaderboard entries
+        leaders = await conn.fetch(
+            """
+            SELECT user_id, display_name, bites, rank, last_updated
+            FROM leaderboards
+            ORDER BY bites DESC
+            """
+        )
+        
+        spinners = await conn.fetch (
+            """
+            SELECT user_id, total_entries, available_spins, last_spin_date
+            FROM spin_entries
+            """
+        )
+        
+        spin_rewards = await conn.fetch (
+            """
+            SELECT user_id, reward, claimed, created_at
+            FROM spin_rewards
+            """
+        )
+        print("\n=== Leaderboard Sample ===")
+        for l in leaders:
+            print(dict(l))
+        print("\n=== Spin Entries Sample ===")
+        for s in spinners:
+            print(dict(s))
+        print("\n === SPin Reward Table ===")
+        for r in spin_rewards:
+            print(dict(r))
+            
+
+
+if __name__ == "__main__":
+    asyncio.run(check_users_and_leaderboard())
+
+
+
 
 
 # import asyncio

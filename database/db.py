@@ -294,6 +294,16 @@ SET available_spins = GREATEST((l.bites / 25)::int - s.total_entries, 0)
 FROM leaderboards l
 WHERE s.user_id = l.user_id;
 
+
+CREATE TABLE IF NOT EXISTS spin_rewards (
+    id SERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    reward JSONB NOT NULL,                -- stores prize info as JSON
+    claimed BOOLEAN DEFAULT FALSE,        -- whether reward has been redeemed
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+
 -- Snapshot weekly leaderboard (optional)
 CREATE TABLE IF NOT EXISTS weekly_snapshots (
   week_start DATE PRIMARY KEY,
