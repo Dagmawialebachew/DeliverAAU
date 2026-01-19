@@ -299,8 +299,8 @@ async def start_order(message: Message, state: FSMContext):
     # Define service windows
     windows = [
         (time(5, 0), time(7, 0)),
-         (time(7, 0), time(12, 00)),
-         (time(14, 0), time(18, 20)),
+         #(time(7, 0), time(12, 00)),
+         #(time(14, 0), time(18, 20)),
     ]
 
     # Check if current time is inside any window
@@ -328,14 +328,14 @@ async def start_order(message: Message, state: FSMContext):
 
         # Notify user
         await message.answer(
-            "🌙 <b>Ordering is closed now due to final weeks.</b>\n"
+            "🌙 <b>Ordering is closed now due to Epiphany Holday.</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n\n"
             f"Next service window opens at <b>{next_window[0].strftime('%I:%M %p')}</b>\n"
             f"⏳ That’s in <b>{hours}h {minutes}m.</b>\n\n"
             "Service hours are:\n"
             "• <b>8:00 AM – 12:00 PM</b>\n"
             # "• <b>12:00 PM – 2:00 PM</b>\n"
-            "• <b>5:00 PM – 9:20 PM</b>"
+            "• <b>6:00 PM – 9:20 PM</b>"
             "\n\n🪧Join Our Channel -> @Unibites",
             parse_mode="HTML"
         )
