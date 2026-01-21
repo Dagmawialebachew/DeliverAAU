@@ -764,59 +764,59 @@ from database.db import Database
 
 
 
-# import asyncio
-# from database.db import Database
+import asyncio
+from database.db import Database
 
-# async def upsert_leaderboard_bites(user_id: int, display_name: str, bites: int = 50):
-#     db = Database()
-#     await db.init_pool()
-#     async with db._open_connection() as conn:
-#         result = await conn.execute(
-#             """
-#             INSERT INTO leaderboards (user_id, display_name, bites, last_updated)
-#             VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
-#             ON CONFLICT (user_id)
-#             DO UPDATE SET bites = $3,
-#                           display_name = EXCLUDED.display_name,
-#                           last_updated = CURRENT_TIMESTAMP
-#             """,
-#             user_id, display_name, bites
-#         )
-#         print(f"Upsert result: {result}")
+async def upsert_leaderboard_bites(user_id: int, display_name: str, bites: int = 50):
+    db = Database()
+    await db.init_pool()
+    async with db._open_connection() as conn:
+        result = await conn.execute(
+            """
+            INSERT INTO leaderboards (user_id, display_name, bites, last_updated)
+            VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
+            ON CONFLICT (user_id)
+            DO UPDATE SET bites = $3,
+                          display_name = EXCLUDED.display_name,
+                          last_updated = CURRENT_TIMESTAMP
+            """,
+            user_id, display_name, bites
+        )
+        print(f"Upsert result: {result}")
         
-# if __name__ == "__main__":
+if __name__ == "__main__":
     
-#     # Replace with the user_id and display_name you want to test
-#     test_user_id = 1
-#     test_display_name = "Nati💀"
-#     asyncio.run(upsert_leaderboard_bites(test_user_id, test_display_name, 100))
+    # Replace with the user_id and display_name you want to test
+    test_user_id = 1
+    test_display_name = "Nati💀"
+    asyncio.run(upsert_leaderboard_bites(test_user_id, test_display_name, 27))
     
     
 
 
-# async def upsert_available_spins(user_id:int, total_entries: int= 50):
-#     db = Database()
-#     await db.init_pool()
-#     async with db._open_connection() as conn:
-#         result = await conn.execute(
-#             """
-#             INSERT INTO spin_entries (user_id, total_entries, last_spin_date)
-#             VALUES ($1, $2, CURRENT_TIMESTAMP)
-#             ON CONFLICT (user_id)
-#             DO UPDATE SET total_entries = $2,
-#                           last_spin_date = CURRENT_TIMESTAMP
-#             """,
+async def upsert_available_spins(user_id:int, total_entries: int= 50):
+    db = Database()
+    await db.init_pool()
+    async with db._open_connection() as conn:
+        result = await conn.execute(
+            """
+            INSERT INTO spin_entries (user_id, total_entries, last_spin_date)
+            VALUES ($1, $2, CURRENT_TIMESTAMP)
+            ON CONFLICT (user_id)
+            DO UPDATE SET total_entries = $2,
+                          last_spin_date = CURRENT_TIMESTAMP
+            """,
             
-#             user_id, total_entries
-#         )
-#         print(f'UPSERT RESULT SPINS: {result}')
+            user_id, total_entries
+        )
+        print(f'UPSERT RESULT SPINS: {result}')
 
 
-# if __name__ == "__main__":
+if __name__ == "__main__":
     
-#     # Replace with the user_id and total_entries you want to test
-#     test_user_id = 1
-#     asyncio.run(upsert_available_spins(test_user_id, 0))
+    # Replace with the user_id and total_entries you want to test
+    test_user_id = 1
+    asyncio.run(upsert_available_spins(test_user_id, 0))
     
 
 
