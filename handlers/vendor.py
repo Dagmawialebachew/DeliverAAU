@@ -394,7 +394,7 @@ def render_order_line(o: dict, include_dg: bool = False) -> str:
     # Filter out drinks
     vendor_items = [
     i for i in items 
-    if not any(word in i["name"].lower() for word in ["drink", "drinks", "sd"])
+    if not any(word in i["name"].lower() for word in ["drink", "drinks", "sd", "energy"])
 ]
 
 

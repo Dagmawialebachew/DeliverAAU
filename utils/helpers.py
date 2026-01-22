@@ -741,9 +741,10 @@ def calculate_commission(items_json: str) -> dict:
         name = item.get("name", "")
 
         subtotal += price * qty
+        print(item)
 
         # 🔹 Special rule for drinks (esp. Energy Drink)
-        if category == "drinks" or "energy" in name.lower():
+        if category.lower() == "drinks" or "energy" in name.lower() or "sd" in name.lower():
             # Platform takes 10 birr per unit, vendor gets nothing
             total_commission += 10 * qty
             # vendor_share += 0
@@ -761,6 +762,7 @@ def calculate_commission(items_json: str) -> dict:
 
     # Vendor share is subtotal minus commission, but drinks excluded
     vendor_share = vendor_share - total_commission if vendor_share > 0 else 0
+    print(vendor_share)
 
     return {
         "platform_share": total_commission,

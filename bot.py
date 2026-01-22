@@ -122,7 +122,7 @@ async def start_polling():
     
         # 2. Reset schema (drop/recreate tables)
     # await db.reset_schema.
-    # await seed_vendors(db)
+    await seed_vendors(db)
 #     await update_menu_item_price(
 #     db=db,
 #     vendor_telegram_id=8487056502,  # Tena Mgb Bet

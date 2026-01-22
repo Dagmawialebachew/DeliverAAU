@@ -308,7 +308,8 @@ async def start_order(message: Message, state: FSMContext):
     windows = [
         (time(5, 0), time(7, 0)),
          (time(7, 0), time(12, 00)),
-         (time(14, 0), time(18, 20)),
+        #  (time(14, 0), time(18, 20)),
+         (time(14, 0), time(21, 20)), #for laptob purpose
     ]
 
     # Check if current time is inside any window
@@ -1429,16 +1430,17 @@ async def final_confirm(cb: CallbackQuery, state: FSMContext):
 
    # Notify vendor
     vendor_chat_id = vendor.get("telegram_id")
-    commission = calculate_commission(json.dumps(breakdown["items"], ensure_ascii=False))
+    vendor_items = [
+    i for i in breakdown["items"]
+    if not any(word in i["name"].lower() for word in ["drink", "drinks", "sd"])
+]
+    commission = calculate_commission(vendor_items, ensure_ascii=False)
     vendor_share = commission.get("vendor_share", subtotal)
 
     if vendor_chat_id:
         # 🔹 Filter out drinks before sending to vendor
         
-        vendor_items = [
-    i for i in breakdown["items"]
-    if not any(word in i["name"].lower() for word in ["drink", "drinks", "sd"])
-]
+     
 
         items = "\n".join(
             f"• {i['name']} x{i['qty']}" if i['qty'] > 1 else f"• {i['name']}"
@@ -1528,7 +1530,7 @@ async def final_confirm(cb: CallbackQuery, state: FSMContext):
         xp = user_stats["xp"]
         level = user_stats["level"]
 
-        if order_count <= 0:
+        if order_count <= 1:
             user_info = (
                 f"👤 Customer: {user_stats['first_name']} (@{username}) ({user_stats.get('phone','N/A')})\n"
                 f"✨ First-time user!"
