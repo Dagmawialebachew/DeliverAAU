@@ -34,10 +34,13 @@ class OrderStates(StatesGroup):
     live_choice = State()
     dropoff_choice = State()
     dropoff_other = State()
-    campus_choice = State()   # <-- add this
+    campus_choice = State()
     notes = State()
     confirm = State()
-    half_half = State()  # new state for ሃፍ ሃፍ flow
+    half_half = State()
+    drinks_prompt = State()   # <-- add this
+    cart_review = State()     # optional: if you want a clean state after drinks
+
 
 
 
@@ -70,10 +73,13 @@ def places_keyboard(vendors: List[Dict[str, Any]]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def menu_keyboard(items: List[Dict[str, Any]], cart_counts: Dict[Any, int], page: int, page_size: int = 8) -> InlineKeyboardMarkup:
-    total_pages = max(1, (len(items) + page_size - 1) // page_size)
+    # 🔹 Filter out drinks before pagination
+    filtered_items = [it for it in items if it.get("category") != "Drinks"]
+
+    total_pages = max(1, (len(filtered_items) + page_size - 1) // page_size)
     page = max(1, min(page, total_pages))
     start = (page - 1) * page_size
-    page_items = items[start:start + page_size]
+    page_items = filtered_items[start:start + page_size]
 
     rows: List[List[InlineKeyboardButton]] = []
     buf: List[InlineKeyboardButton] = []
@@ -218,14 +224,16 @@ def paginate_menu(menu: List[Dict[str, Any]], page: int, page_size: int = 8) -> 
     start = (page - 1) * page_size
     return menu[start:start + page_size], page, total_pages
 
-
 def render_menu_text(menu: List[Dict[str, Any]], vendor_name: str, page: int = 1, page_size: int = 8) -> str:
+    # 🔹 Filter out drinks before pagination
+    filtered_menu = [m for m in menu if m.get("category") != "Drinks"]
+
     # Pagination
-    total = len(menu)
+    total = len(filtered_menu)
     total_pages = max(1, (total + page_size - 1) // page_size)
     page = max(1, min(page, total_pages))
     start = (page - 1) * page_size
-    page_items = menu[start:start + page_size]
+    page_items = filtered_menu[start:start + page_size]
 
     lines = [
         f"🍴 *Today's Menu at {vendor_name}*",
@@ -241,7 +249,6 @@ def render_menu_text(menu: List[Dict[str, Any]], vendor_name: str, page: int = 1
             current_cat = cat
         lines.append(f"{it['id']}️⃣ {it['name']} — *{it['price']} birr*")
 
-
     lines.append("\n🛒 *Tap numbers to add foods*")
     lines.append("───")
     lines.append("Double tap → 2 items, Triple tap → cancel all.")
@@ -250,6 +257,7 @@ def render_menu_text(menu: List[Dict[str, Any]], vendor_name: str, page: int = 1
     lines.append(f"\n📄 Page {page}/{total_pages}")
 
     return "\n".join(lines)
+
 
 def render_cart(cart_counts: Dict[Any,int], menu: List[Dict[str,Any]], half_lookup: Optional[Dict[str,List[int]]] = None) -> Tuple[str,float]:
     half_lookup = half_lookup or {}
@@ -299,8 +307,8 @@ async def start_order(message: Message, state: FSMContext):
     # Define service windows
     windows = [
         (time(5, 0), time(7, 0)),
-         #(time(7, 0), time(12, 00)),
-         #(time(14, 0), time(18, 20)),
+         (time(7, 0), time(12, 00)),
+         (time(14, 0), time(18, 20)),
     ]
 
     # Check if current time is inside any window
@@ -483,6 +491,7 @@ async def choose_place(cb: CallbackQuery, state: FSMContext):
     await state.set_state(OrderStates.menu)
     
     
+@router.callback_query(F.data.startswith("menu:page:"))
 @router.callback_query(OrderStates.menu, F.data.startswith("menu:page:"))
 async def menu_paginate(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
@@ -507,6 +516,7 @@ async def menu_paginate(cb: CallbackQuery, state: FSMContext):
 
 from aiogram.exceptions import TelegramBadRequest
 
+@router.callback_query(F.data.startswith("cart:toggle:"))
 @router.callback_query(OrderStates.menu, F.data.startswith("cart:toggle:"))
 async def cart_toggle_item(cb: CallbackQuery, state: FSMContext):
     item_id = int(cb.data.split(":")[2])
@@ -665,7 +675,7 @@ async def half_cancel(cb: CallbackQuery, state: FSMContext):
     # same as back for now
     await half_back(cb, state)
 
-
+@router.callback_query(F.data == "cart:view")
 @router.callback_query(OrderStates.menu, F.data == "cart:view")
 async def cart_view(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
@@ -681,31 +691,102 @@ async def cart_view(cb: CallbackQuery, state: FSMContext):
         await asyncio.sleep(3)
         with contextlib.suppress(Exception):
             await sent.delete()
-        
         return
 
-    # --- enforce rule: block if all items are Extras under 100 birr ---
+    # enforce rule: block if all items are Extras under 100 birr
     items_in_cart = [next((m for m in menu if m["id"] == iid), None) for iid in cart_counts.keys()]
-    # filter out None
     items_in_cart = [m for m in items_in_cart if m]
-
 
     if items_in_cart and all(m["category"].lower().startswith("extras") and m["price"] < 100 for m in items_in_cart):
         sent = await cb.message.answer("⚠️ You must add at least one main item (≥100 birr, not Extras).")
-        # wait a few seconds, then delete
         await asyncio.sleep(3)
         with contextlib.suppress(Exception):
             await sent.delete()
         return
 
+    # 🔹 NEW: Drinks prompt
+    drinks = [m for m in menu if m.get("category") == "Drinks"]
+    if drinks:
+        kb = drinks_keyboard(drinks)  # custom keyboard with Add + Skip
+        await cb.message.edit_text(
+            "🥤 Would you like to add some drinks?",
+            reply_markup=kb,
+            parse_mode="Markdown"
+        )
+        await state.set_state(OrderStates.drinks_prompt)
+        return
 
-    # proceed normally
+    # proceed normally if no drinks
     text, subtotal = render_cart(cart_counts, menu, half_lookup=half_lookup)
     await state.update_data(food_subtotal=subtotal, cart_counts=cart_counts)
     await cb.message.edit_text(text, reply_markup=cart_keyboard())
 
 
+def drinks_keyboard(drinks: List[Dict[str, Any]]) -> InlineKeyboardMarkup:
+    rows = []
+    buf = []
 
+    for d in drinks:
+        btn = InlineKeyboardButton(
+            text=f"➕ {d['name']} ({d['price']} birr)",
+            callback_data=f"drink:add:{d['id']}"
+        )
+        buf.append(btn)
+
+        # once we have 2 buttons, push them as a row
+        if len(buf) == 2:
+            rows.append(buf)
+            buf = []
+
+    # if odd number of drinks, flush the last one
+    if buf:
+        rows.append(buf)
+
+    # add skip row at the bottom
+    rows.append([
+        InlineKeyboardButton(text="➡️ Skip", callback_data="drink:skip")
+    ])
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+
+@router.callback_query(OrderStates.drinks_prompt, F.data.startswith("drink:add:"))
+async def add_drink(cb: CallbackQuery, state: FSMContext):
+    drink_id = int(cb.data.split(":")[2])
+    data = await state.get_data()
+    cart_counts: Dict[int, int] = data.get("cart_counts", {}) or {}
+    cart_counts[drink_id] = cart_counts.get(drink_id, 0) + 1
+    await state.update_data(cart_counts=cart_counts)
+
+    await cb.answer("🥤 Drink added!")
+    # After adding, re-show drinks list so they can add more or skip
+    menu = data.get("menu", [])
+    drinks = [m for m in menu if m.get("category") == "Drinks"]
+    kb = drinks_keyboard(drinks)
+
+    try:
+        await cb.message.edit_text("🥤 Add more drinks or skip:", reply_markup=kb)
+    except TelegramBadRequest as e:
+        if "message is not modified" in str(e):
+            await cb.answer("Already showing drinks menu ✅")
+        else:
+         raise
+
+@router.callback_query(OrderStates.drinks_prompt, F.data == "drink:skip")
+async def skip_drinks(cb: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    menu = data.get("menu", [])
+    cart_counts: Dict[int, int] = data.get("cart_counts", {}) or {}
+    half_lookup: Dict = data.get("half_lookup", {}) or {}
+
+    text, subtotal = render_cart(cart_counts, menu, half_lookup=half_lookup)
+    await state.update_data(food_subtotal=subtotal, cart_counts=cart_counts)
+    await cb.message.edit_text(text, reply_markup=cart_keyboard())
+    await state.set_state(OrderStates.cart_review)
+
+
+@router.callback_query(OrderStates.cart_review, F.data == "cart:addmore")
 @router.callback_query(OrderStates.menu, F.data == "cart:addmore")
 async def cart_add_more(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
@@ -723,6 +804,7 @@ async def cart_add_more(cb: CallbackQuery, state: FSMContext):
 
     await cb.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
 
+@router.callback_query(OrderStates.cart_review, F.data == "cart:clear")
 @router.callback_query(OrderStates.menu, F.data == "cart:clear")
 async def cart_clear(cb: CallbackQuery, state: FSMContext):
     await cb.answer("Cart cleared")
@@ -741,6 +823,7 @@ async def cart_clear(cb: CallbackQuery, state: FSMContext):
     await cb.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
 
 @router.callback_query(OrderStates.menu, F.data == "order:cancel")
+@router.callback_query(OrderStates.cart_review, F.data == "order:cancel")
 @router.callback_query(OrderStates.confirm, F.data == "order:cancel")
 async def order_cancel(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
@@ -748,7 +831,10 @@ async def order_cancel(cb: CallbackQuery, state: FSMContext):
     except: pass
     await state.clear()
     await cb.message.answer("Order cancelled. Start again from the main menu.", reply_markup=main_menu())
+    
+    
 @router.callback_query(OrderStates.menu, F.data == "cart:confirm")
+@router.callback_query(OrderStates.cart_review, F.data == "cart:confirm")
 async def cart_confirm(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
     data = await state.get_data()
@@ -1169,13 +1255,13 @@ async def ask_final_confirmation(message: Message, state: FSMContext):
         else:
             # Higher fee schedule for non-FBE dropoffs
             if chargeable_items == 1:
-                delivery_fee = 30.0
+                delivery_fee = 20.0
             elif chargeable_items == 2:
-                delivery_fee = 45.0
+                delivery_fee = 35.0
             elif chargeable_items >= 3:
-                delivery_fee = 60.0
+                delivery_fee = 50.0
             else:
-                delivery_fee = 75.0
+                delivery_fee = 65.0
   # extend logic if needed
 
     total = subtotal + delivery_fee
@@ -1341,16 +1427,23 @@ async def final_confirm(cb: CallbackQuery, state: FSMContext):
     )
 
 
-    # Notify vendor
+   # Notify vendor
     vendor_chat_id = vendor.get("telegram_id")
     commission = calculate_commission(json.dumps(breakdown["items"], ensure_ascii=False))
     vendor_share = commission.get("vendor_share", subtotal)
+
     if vendor_chat_id:
-        counts = Counter([i["name"] for i in breakdown["items"]])
+        # 🔹 Filter out drinks before sending to vendor
+        
+        vendor_items = [
+    i for i in breakdown["items"]
+    if not any(word in i["name"].lower() for word in ["drink", "drinks", "sd"])
+]
+
         items = "\n".join(
-    f"• {i['name']} x{i['qty']}" if i['qty'] > 1 else f"• {i['name']}"
-    for i in breakdown["items"]
-) or "—"
+            f"• {i['name']} x{i['qty']}" if i['qty'] > 1 else f"• {i['name']}"
+            for i in vendor_items
+        ) or "—"
 
         campus_text = await db.get_user_campus_by_order(order_id)
 
@@ -1361,6 +1454,7 @@ async def final_confirm(cb: CallbackQuery, state: FSMContext):
             f"📍 ካምፓስ: {campus_text}\n\n"
             f"⚡ እባክዎት ትዕዛዙን ይቀበሉ ወይም ይከለክሉ።"
         )
+
         kb = InlineKeyboardMarkup(
             inline_keyboard=[
                 [
@@ -1369,17 +1463,16 @@ async def final_confirm(cb: CallbackQuery, state: FSMContext):
                 ]
             ]
         )
+
         try:
             await cb.bot.send_message(vendor_chat_id, vendor_text, reply_markup=kb)
         except Exception as e:
-            # Log the error but don't block the rest of the flow
             log.warning(f"Failed to notify vendor {vendor_chat_id} for order {order_id}: {e}")
-            # Optionally notify admin group
             from utils.db_helpers import notify_admin_log
             await notify_admin_log(
                 cb.bot,
                 settings.ADMIN_DAILY_GROUP_ID,
-                f"⚠️ Could not notify vendor {vendor.get('name','Unknown')} (chat_id={vendor_chat_id}) "
+                f"⚠️ Could not notif vendor {vendor.get('name','Unknown')} (chat_id={vendor_chat_id}) "
                 f"about Order #{order_id}. Error: {e}"
             )
 

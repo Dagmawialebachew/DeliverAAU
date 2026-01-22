@@ -724,7 +724,6 @@ def time_ago_am(dt: datetime.datetime) -> str:
 
 
 import json
-
 def calculate_commission(items_json: str) -> dict:
     try:
         items = json.loads(items_json)
@@ -733,26 +732,39 @@ def calculate_commission(items_json: str) -> dict:
 
     total_commission = 0
     subtotal = 0
+    vendor_share = 0
 
     for item in items:
         price = item.get("price", 0)
-        qty = item.get("qty", 1)  # default to 1 if missing
+        qty = item.get("qty", 1)
+        category = item.get("category", "").lower()
+        name = item.get("name", "")
 
         subtotal += price * qty
 
-        # Commission per item logic (apply per unit)
-        for _ in range(qty):
-            if 100 <= price < 200:
-                total_commission += 10
-            elif 200 <= price < 300:
-                total_commission += 15
-            elif price >= 300:
-                total_commission += 20
-            # else: no commission
+        # 🔹 Special rule for drinks (esp. Energy Drink)
+        if category == "drinks" or "energy" in name.lower():
+            # Platform takes 10 birr per unit, vendor gets nothing
+            total_commission += 10 * qty
+            # vendor_share += 0
+        else:
+            # Normal commission logic
+            for _ in range(qty):
+                if 100 <= price < 200:
+                    total_commission += 20
+                elif 200 <= price < 300:
+                    total_commission += 25
+                elif price >= 300:
+                    total_commission += 30
+                # else: no commission
+            vendor_share += price * qty
+
+    # Vendor share is subtotal minus commission, but drinks excluded
+    vendor_share = vendor_share - total_commission if vendor_share > 0 else 0
 
     return {
         "platform_share": total_commission,
-        "vendor_share": subtotal - total_commission,
+        "vendor_share": vendor_share,
         "items": [f"{i.get('name')} x{i.get('qty',1)}" for i in items],
         "subtotal": subtotal
     }

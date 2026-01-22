@@ -391,14 +391,23 @@ def render_order_line(o: dict, include_dg: bool = False) -> str:
     created_line = f"⏱ የታዘዘበት ጊዜ: {time_ago_am(created_at)}" if created_at else "⏱ የታዘዘበት ጊዜ: —"
     
 
-    # Vertical list instead of horizontal
-    commission = calculate_commission(json.dumps(items, ensure_ascii=False))
+    # Filter out drinks
+    vendor_items = [
+    i for i in items 
+    if not any(word in i["name"].lower() for word in ["drink", "drinks", "sd"])
+]
+
+
+    # Commission only on vendor items
+    commission = calculate_commission(json.dumps(vendor_items, ensure_ascii=False))
     vendor_share = commission.get("vendor_share", 0)
 
+    # Render only vendor items
     items_str = "\n".join(
         f"✔️ {i['name']} x{i.get('qty',1)}" if i.get('qty',1) > 1 else f"• {i['name']}"
-        for i in items
+        for i in vendor_items
     ) or "—"
+
 
     parts = [
     f"📦 ትዕዛዝ #{o['id']}\n",
