@@ -1434,7 +1434,7 @@ async def final_confirm(cb: CallbackQuery, state: FSMContext):
     i for i in breakdown["items"]
     if not any(word in i["name"].lower() for word in ["drink", "drinks", "sd"])
 ]
-    commission = calculate_commission(vendor_items, ensure_ascii=False)
+    commission = calculate_commission(vendor_items)
     vendor_share = commission.get("vendor_share", subtotal)
 
     if vendor_chat_id:
