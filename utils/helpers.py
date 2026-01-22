@@ -755,8 +755,10 @@ def calculate_commission(items_json: str) -> dict:
                     total_commission += 20
                 elif 200 <= price < 300:
                     total_commission += 25
-                elif price >= 300:
+                elif 300 <= price < 400:
                     total_commission += 30
+                elif price >= 400:
+                    total_commission += 40
                 # else: no commission
             vendor_share += price * qty
 
