@@ -307,7 +307,7 @@ async def start_order(message: Message, state: FSMContext):
     # Define service windows
     windows = [
         #(time(5, 0), time(7, 0)),
-         #(time(7, 0), time(12, 00)),
+         (time(7, 0), time(12, 00)),
         (time(14, 0), time(18, 20)),
          #(time(14, 0), time(21, 20)), #for laptob purpose
     ]
