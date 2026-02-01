@@ -73,9 +73,6 @@ def main_menu() -> ReplyKeyboardMarkup:
                 KeyboardButton(text="📍 Track Order"),
             ],
             [
-                KeyboardButton(text="🎄 ገና Specials 🎄"),  
-                ],
-            [
                 KeyboardButton(text="🧑‍🍳 Need Help"),
                 KeyboardButton(text="⚙️ More Options"),
             ],
