@@ -10,7 +10,7 @@ from aiogram.enums import ParseMode
 from aiogram.types import BotCommand, BotCommandScopeDefault, BotCommandScopeChat
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
-
+from aiohttp_middlewares import cors_middleware
 from config import settings
 from app_context import bot, dp, db
 from database.db import seed_vendors
@@ -28,6 +28,7 @@ from handlers.settings import router as settings_router
 from handlers.admin import router as admin_router
 from handlers.rating import router as rating_router
 from handlers.genna_special import router as genna_special_router
+from handlers.asbeza_api import get_asbeza_items, asbeza_checkout
 
 # Middlewares
 from middlewares.throttling_middleware import ThrottlingMiddleware
@@ -95,18 +96,19 @@ async def health_check(request):
 
 # --- Webhook app factory ---
 async def create_app() -> web.Application:
-    app = web.Application()
+    app = web.Application(middlewares=[
+    cors_middleware(allow_all=True)
+])
+
+    # attach db to app
+    app["db"] = db
+
+    # health
     app.router.add_get("/health", health_check)
 
-    webhook_handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
-    webhook_handler.register(app, path="/webhook")
-
-    setup_application(app, dp, bot=bot)
-
-    app.on_startup.append(lambda app: asyncio.create_task(on_startup(bot)))
-    app.on_cleanup.append(lambda app: asyncio.create_task(on_shutdown(bot)))
-
-    return app
+    # --- Asbeza API ---
+    app.router.add_get("/asbeza/items", get_asbeza_items)
+    app.router.add_post("/asbeza/checkout", asbeza_checkout)
 
 # --- Polling mode ---
 async def start_polling():

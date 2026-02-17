@@ -10,6 +10,7 @@ from aiogram.types import (
     ReplyKeyboardRemove,
     InlineKeyboardMarkup, InlineKeyboardButton,
     CallbackQuery,
+    WebAppInfo
 )
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
@@ -73,8 +74,10 @@ def main_menu() -> ReplyKeyboardMarkup:
                 KeyboardButton(text="📍 Track Order"),
             ],
             [
-                KeyboardButton(text="🎄 ገና Specials 🎄"),  
-                ],
+                KeyboardButton(
+                            text="🧺 Asbeza 🧺 ",
+                            web_app=WebAppInfo(url="https://unibites-asbeza.vercel.app")
+                        )                ],
             [
                 KeyboardButton(text="🧑‍🍳 Need Help"),
                 KeyboardButton(text="⚙️ More Options"),

@@ -948,3 +948,52 @@ if __name__ == "__main__":
 
 # if __name__ == "__main__":
 #     asyncio.run(show_users())
+
+
+
+
+import asyncio
+import logging
+from aiogram import Bot
+from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
+from config import settings
+
+# --- CONFIGURATION ---
+BOT_TOKEN = settings.BOT_TOKEN  # Replace with your actual bot token
+TARGET_USER_ID = 7464202692
+MESSAGE_TEXT = (
+    "⚠️ *Important Notice regarding your orders*\n\n"
+    "Hello! We have received multiple orders from you at UniBites Support. "
+    "However, we are unable to contact you because your phone number is not working "
+    "and you do not have a public Telegram username.\n\n"
+    "To ensure your orders are delivered, please:\n"
+    "1. Send us a working phone number @unibites_support.\n"
+    "2. Or message our support directly: @unibites_support\n\n"
+    "Please resolve this immediately so we can continue processing your orders."
+)
+
+async def send_warning():
+    bot = Bot(token=BOT_TOKEN)
+    
+    print(f"Attempting to send message to {TARGET_USER_ID}...")
+    
+    try:
+        await bot.send_message(
+            chat_id=TARGET_USER_ID,
+            text=MESSAGE_TEXT,
+            parse_mode="HTML" # Allows for bolding and links
+        )
+        print("✅ Message sent successfully!")
+        
+    except TelegramForbiddenError:
+        print("❌ Error: The user has blocked the bot. You cannot message them.")
+    except TelegramRetryAfter as e:
+        print(f"❌ Error: Being rate limited. Wait {e.retry_after} seconds.")
+    except Exception as e:
+        print(f"❌ An unexpected error occurred: {e}")
+    finally:
+        # Close the session properly
+        await bot.session.close()
+
+if __name__ == "__main__":
+    asyncio.run(send_warning())

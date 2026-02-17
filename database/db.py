@@ -213,6 +213,42 @@ CREATE TABLE IF NOT EXISTS leaderboards (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS asbeza_items (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT,
+    base_price DOUBLE PRECISION NOT NULL,
+    image_url TEXT,
+    active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS asbeza_variants (
+    id SERIAL PRIMARY KEY,
+    item_id INTEGER REFERENCES asbeza_items(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,              -- e.g. "Mint", "Strawberry", "Blue"
+    price DOUBLE PRECISION NOT NULL, -- can override base price
+    stock INTEGER DEFAULT 0
+);
+
+
+CREATE TABLE IF NOT EXISTS asbeza_orders (
+    id SERIAL PRIMARY KEY,
+    user_id BIGINT,
+    total_price DOUBLE PRECISION,
+    upfront_paid DOUBLE PRECISION,
+    status TEXT, -- pending / confirmed / delivered / cancelled
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS asbeza_order_items (
+    id SERIAL PRIMARY KEY,
+    order_id INTEGER REFERENCES asbeza_orders(id) ON DELETE CASCADE,
+    variant_id INTEGER REFERENCES asbeza_variants(id),
+    quantity INTEGER,
+    price DOUBLE PRECISION
+);
+
 -- Helpful indexes
 CREATE INDEX IF NOT EXISTS idx_leaderboards_bites ON leaderboards(bites DESC);
 CREATE INDEX IF NOT EXISTS idx_leaderboards_updated ON leaderboards(last_updated);
