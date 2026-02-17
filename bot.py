@@ -28,7 +28,7 @@ from handlers.settings import router as settings_router
 from handlers.admin import router as admin_router
 from handlers.rating import router as rating_router
 from handlers.genna_special import router as genna_special_router
-from handlers.asbeza_api import get_asbeza_items, asbeza_checkout
+from handlers.asbeza_api import setup_asbeza_routes
 
 # Middlewares
 from middlewares.throttling_middleware import ThrottlingMiddleware
@@ -97,7 +97,6 @@ async def health_check(request):
 # --- Webhook app factory ---
 from aiohttp import web
 from database.db import Database
-from handlers.asbeza_api import setup_asbeza_routes
 
 async def create_app() -> web.Application:
     app = web.Application()
@@ -116,8 +115,16 @@ async def create_app() -> web.Application:
     webhook_handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
     webhook_handler.register(app, path="/webhook")
 
-    # Asbeza API routes
+    # Asbeza API routes (items, checkout, upload_screenshot)
     setup_asbeza_routes(app)
+
+    # Serve uploaded files
+    UPLOAD_DIR = os.environ.get("ASBEZA_UPLOAD_DIR", "./uploads")
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    app["upload_dir"] = UPLOAD_DIR
+    app["upload_max_bytes"] = int(os.environ.get("ASBEZA_UPLOAD_MAX_BYTES", 6 * 1024 * 1024))
+    app["upload_url_prefix"] = os.environ.get("ASBEZA_UPLOAD_URL_PREFIX", "/uploads")
+    app.router.add_static("/uploads", UPLOAD_DIR, show_index=False)
 
     # CORS
     cors = aiohttp_cors.setup(app, defaults={

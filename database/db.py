@@ -249,6 +249,19 @@ CREATE TABLE IF NOT EXISTS asbeza_order_items (
     price DOUBLE PRECISION
 );
 
+-- optional: store payment attempts / history separately (recommended)
+CREATE TABLE IF NOT EXISTS asbeza_order_payments (
+  id SERIAL PRIMARY KEY,
+  order_id INTEGER REFERENCES asbeza_orders(id) ON DELETE CASCADE,
+  user_id BIGINT,
+  amount DOUBLE PRECISION,
+  payment_proof_url TEXT,
+  method TEXT,
+  status TEXT DEFAULT 'pending', -- pending / verified / rejected
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+
 -- Helpful indexes
 CREATE INDEX IF NOT EXISTS idx_leaderboards_bites ON leaderboards(bites DESC);
 CREATE INDEX IF NOT EXISTS idx_leaderboards_updated ON leaderboards(last_updated);
@@ -276,6 +289,13 @@ ALTER TABLE orders ADD COLUMN IF NOT EXISTS ready_at TIMESTAMP NULL;
 
 ALTER TABLE users
 ADD COLUMN IF NOT EXISTS gender TEXT CHECK (gender IN ('male','female'));
+
+
+ALTER TABLE asbeza_orders 
+ADD COLUMN IF NOT EXISTS delivery_fee DOUBLE PRECISION DEFAULT 0,
+ADD COLUMN IF NOT EXISTS payment_proof_url TEXT, 
+ADD COLUMN IF NOT EXISTS created_by_ip TEXT;
+
 
 ALTER TABLE delivery_guys
 ADD COLUMN IF NOT EXISTS gender TEXT CHECK (gender IN ('male','female'));
