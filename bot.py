@@ -11,7 +11,6 @@ from aiogram.types import BotCommand, BotCommandScopeDefault, BotCommandScopeCha
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
 import aiohttp_cors
-from aiohttp_middlewares import cors_middleware
 from config import settings
 from app_context import bot, dp, db
 from database.db import seed_vendors
