@@ -1141,12 +1141,12 @@ class BotScheduler:
         #     args=["breakfast"],
         #     id="reminder_breakfast"
         # )
-        self.scheduler.add_job(
-            self.send_meal_reminder,
-            CronTrigger(hour=11, minute=00, timezone="Africa/Addis_Ababa"),
-            args=["lunch"],
-            id="reminder_lunch"
-        )
+        # self.scheduler.add_job(
+        #     self.send_meal_reminder,
+        #     CronTrigger(hour=11, minute=00, timezone="Africa/Addis_Ababa"),
+        #     args=["lunch"],
+        #     id="reminder_lunch"
+        # )
         # self.scheduler.add_job(
         #     self.send_meal_reminder,
         #     CronTrigger(hour=18, minute=16, timezone="Africa/Addis_Ababa"),

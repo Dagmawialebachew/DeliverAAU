@@ -4,7 +4,6 @@ from aiogram import BaseMiddleware
 from typing import Callable, Dict, Any, Awaitable
 from aiogram.types import TelegramObject
 from config import settings
-from utils.helpers import get_text  # reuse your localization helper
 
 logger = logging.getLogger(__name__)
 
@@ -21,33 +20,29 @@ class ErrorHandlingMiddleware(BaseMiddleware):
             logger.exception("Unhandled exception in handler")
 
             bot = data.get("bot")
-            user = data.get("event_from_user")
-            lang = "en"
+            user = data.get("event_from_user")  # aiogram puts user here
+            is_vendor = False
 
-            # Try to fetch user language from DB
-            app_context = data.get("app_context")
-            if user and app_context:
-                try:
-                    db_user = await app_context.db.get_user(user.id)
-                    if db_user and db_user.get("language"):
-                        lang = db_user["language"]
-                except Exception:
-                    pass
+            # Example: check vendor flag from FSM state or DB
+            state = data.get("state")
+            if state:
+                state_data = await state.get_data()
+                is_vendor = state_data.get("is_vendor", False)
 
             # Graceful user-facing message
-            # if bot and hasattr(event, "message") and event.message:
-            #     if "timeout" in str(e).lower() or "took too long" in str(e).lower():
-            #         await bot.send_message(
-            #             event.message.chat.id,
-            #             get_text("error_timeout", lang)
-            #         )
-            #     else:
-            #         await bot.send_message(
-            #             event.message.chat.id,
-            #             get_text("error_general", lang)
-            #         )
+            if bot and hasattr(event, "message") and event.message:
+                if "timeout" in str(e).lower() or "took too long" in str(e).lower():
+                    if is_vendor:
+                        await bot.send_message(
+                            event.message.chat.id,
+                            "⚠️ ጥያቄዎ በጊዜ ተዘግቷል። እባክዎ ይቆዩ ወይም እንደገና ይሞክሩ።"
+                        )
+                    else:
+                        await bot.send_message(
+                            event.message.chat.id,
+                            "⚠️ Your request took too long. Please wait or try again."
+                        )
 
-            # Notify admins
             if settings.ADMIN_ERROR_GROUP_ID and bot:
                 await bot.send_message(
                     settings.ADMIN_ERROR_GROUP_ID,
@@ -56,3 +51,4 @@ class ErrorHandlingMiddleware(BaseMiddleware):
                 )
 
             return None
+

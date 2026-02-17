@@ -9,6 +9,7 @@ async def get_asbeza_items(request):
         FROM asbeza_items
         WHERE active = TRUE
     """)
+    print('here are rows from db:', rows)
 
     return web.json_response(rows)
 

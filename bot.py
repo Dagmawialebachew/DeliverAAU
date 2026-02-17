@@ -10,6 +10,7 @@ from aiogram.enums import ParseMode
 from aiogram.types import BotCommand, BotCommandScopeDefault, BotCommandScopeChat
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
+import aiohttp_cors
 from aiohttp_middlewares import cors_middleware
 from config import settings
 from app_context import bot, dp, db
@@ -96,20 +97,40 @@ async def health_check(request):
 
 # --- Webhook app factory ---
 async def create_app() -> web.Application:
-    app = web.Application(middlewares=[
-    cors_middleware(allow_all=True)
-])
+    app = web.Application()
 
-    # attach db to app
-    app["db"] = db
-
-    # health
     app.router.add_get("/health", health_check)
 
-    # --- Asbeza API ---
-    app.router.add_get("/asbeza/items", get_asbeza_items)
-    app.router.add_post("/asbeza/checkout", asbeza_checkout)
+    webhook_handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
+    webhook_handler.register(app, path="/webhook")
 
+    # --- ASBEZA API ROUTES ---
+    from handlers.asbeza_api import setup_asbeza_routes
+    setup_asbeza_routes(app)
+
+    # --- CORS SETUP ---
+    cors = aiohttp_cors.setup(app, defaults={
+        "https://unibites-asbeza.vercel.app": aiohttp_cors.ResourceOptions(
+            allow_credentials=True,
+            expose_headers="*",
+            allow_headers="*",
+        ),
+        "*": aiohttp_cors.ResourceOptions(
+            allow_credentials=True,
+            expose_headers="*",
+            allow_headers="*",
+        ),
+    })
+
+    for route in list(app.router.routes()):
+        cors.add(route)
+
+    setup_application(app, dp, bot=bot)
+
+    app.on_startup.append(lambda app: asyncio.create_task(on_startup(bot)))
+    app.on_cleanup.append(lambda app: asyncio.create_task(on_shutdown(bot)))
+
+    return app
 # --- Polling mode ---
 async def start_polling():
     await db.init_pool()

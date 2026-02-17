@@ -764,121 +764,121 @@ from database.db import Database
 
 
 
-import asyncio
-from database.db import Database
+# import asyncio
+# from database.db import Database
 
-async def upsert_leaderboard_bites(user_id: int, display_name: str, bites: int = 50):
-    db = Database()
-    await db.init_pool()
-    async with db._open_connection() as conn:
-        result = await conn.execute(
-            """
-            INSERT INTO leaderboards (user_id, display_name, bites, last_updated)
-            VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
-            ON CONFLICT (user_id)
-            DO UPDATE SET bites = $3,
-                          display_name = EXCLUDED.display_name,
-                          last_updated = CURRENT_TIMESTAMP
-            """,
-            user_id, display_name, bites
-        )
-        print(f"Upsert result: {result}")
+# async def upsert_leaderboard_bites(user_id: int, display_name: str, bites: int = 50):
+#     db = Database()
+#     await db.init_pool()
+#     async with db._open_connection() as conn:
+#         result = await conn.execute(
+#             """
+#             INSERT INTO leaderboards (user_id, display_name, bites, last_updated)
+#             VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
+#             ON CONFLICT (user_id)
+#             DO UPDATE SET bites = $3,
+#                           display_name = EXCLUDED.display_name,
+#                           last_updated = CURRENT_TIMESTAMP
+#             """,
+#             user_id, display_name, bites
+#         )
+#         print(f"Upsert result: {result}")
         
-if __name__ == "__main__":
+# if __name__ == "__main__":
     
-    # Replace with the user_id and display_name you want to test
-    test_user_id = 1
-    test_display_name = "Nati💀"
-    asyncio.run(upsert_leaderboard_bites(test_user_id, test_display_name, 27))
+#     # Replace with the user_id and display_name you want to test
+#     test_user_id = 1
+#     test_display_name = "Nati💀"
+#     asyncio.run(upsert_leaderboard_bites(test_user_id, test_display_name, 27))
     
     
 
 
-async def upsert_available_spins(user_id:int, total_entries: int= 50):
-    db = Database()
-    await db.init_pool()
-    async with db._open_connection() as conn:
-        result = await conn.execute(
-            """
-            INSERT INTO spin_entries (user_id, total_entries, last_spin_date)
-            VALUES ($1, $2, CURRENT_TIMESTAMP)
-            ON CONFLICT (user_id)
-            DO UPDATE SET total_entries = $2,
-                          last_spin_date = CURRENT_TIMESTAMP
-            """,
+# async def upsert_available_spins(user_id:int, total_entries: int= 50):
+#     db = Database()
+#     await db.init_pool()
+#     async with db._open_connection() as conn:
+#         result = await conn.execute(
+#             """
+#             INSERT INTO spin_entries (user_id, total_entries, last_spin_date)
+#             VALUES ($1, $2, CURRENT_TIMESTAMP)
+#             ON CONFLICT (user_id)
+#             DO UPDATE SET total_entries = $2,
+#                           last_spin_date = CURRENT_TIMESTAMP
+#             """,
             
-            user_id, total_entries
-        )
-        print(f'UPSERT RESULT SPINS: {result}')
+#             user_id, total_entries
+#         )
+#         print(f'UPSERT RESULT SPINS: {result}')
 
 
-if __name__ == "__main__":
+# if __name__ == "__main__":
     
-    # Replace with the user_id and total_entries you want to test
-    test_user_id = 1
-    asyncio.run(upsert_available_spins(test_user_id, 0))
+#     # Replace with the user_id and total_entries you want to test
+#     test_user_id = 1
+#     asyncio.run(upsert_available_spins(test_user_id, 0))
     
 
 
 
 
 
-import asyncio
-from database.db import Database
+# import asyncio
+# from database.db import Database
 
-async def check_users_and_leaderboard():
-    db = Database()
-    await db.init_pool()
-    async with db._open_connection() as conn:
-        # Show first 10 users with referral codes
-        # users = await conn.fetch(
-        #     """
-        #     SELECT id, telegram_id, referral_code, created_at, updated_at
-        #     FROM users
-        #     ORDER BY id
-        #     LIMIT 10
-        #     """
-        # )
-        # print("\n=== Users Table Sample ===")
-        # for u in users:
-        #     print(dict(u))
+# async def check_users_and_leaderboard():
+#     db = Database()
+#     await db.init_pool()
+#     async with db._open_connection() as conn:
+#         # Show first 10 users with referral codes
+#         # users = await conn.fetch(
+#         #     """
+#         #     SELECT id, telegram_id, referral_code, created_at, updated_at
+#         #     FROM users
+#         #     ORDER BY id
+#         #     LIMIT 10
+#         #     """
+#         # )
+#         # print("\n=== Users Table Sample ===")
+#         # for u in users:
+#         #     print(dict(u))
 
-        # Show first 10 leaderboard entries
-        leaders = await conn.fetch(
-            """
-            SELECT user_id, display_name, bites, rank, last_updated
-            FROM leaderboards
-            ORDER BY bites DESC
-            """
-        )
+#         # Show first 10 leaderboard entries
+#         leaders = await conn.fetch(
+#             """
+#             SELECT user_id, display_name, bites, rank, last_updated
+#             FROM leaderboards
+#             ORDER BY bites DESC
+#             """
+#         )
         
-        spinners = await conn.fetch (
-            """
-            SELECT user_id, total_entries, available_spins, last_spin_date
-            FROM spin_entries
-            """
-        )
+#         spinners = await conn.fetch (
+#             """
+#             SELECT user_id, total_entries, available_spins, last_spin_date
+#             FROM spin_entries
+#             """
+#         )
         
-        spin_rewards = await conn.fetch (
-            """
-            SELECT user_id, reward, claimed, created_at
-            FROM spin_rewards
-            """
-        )
-        print("\n=== Leaderboard Sample ===")
-        for l in leaders:
-            print(dict(l))
-        print("\n=== Spin Entries Sample ===")
-        for s in spinners:
-            print(dict(s))
-        print("\n === SPin Reward Table ===")
-        for r in spin_rewards:
-            print(dict(r))
+#         spin_rewards = await conn.fetch (
+#             """
+#             SELECT user_id, reward, claimed, created_at
+#             FROM spin_rewards
+#             """
+#         )
+#         print("\n=== Leaderboard Sample ===")
+#         for l in leaders:
+#             print(dict(l))
+#         print("\n=== Spin Entries Sample ===")
+#         for s in spinners:
+#             print(dict(s))
+#         print("\n === SPin Reward Table ===")
+#         for r in spin_rewards:
+#             print(dict(r))
             
 
 
-if __name__ == "__main__":
-    asyncio.run(check_users_and_leaderboard())
+# if __name__ == "__main__":
+#     asyncio.run(check_users_and_leaderboard())
 
 
 
@@ -952,48 +952,107 @@ if __name__ == "__main__":
 
 
 
-import asyncio
-import logging
-from aiogram import Bot
-from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
-from config import settings
+# import asyncio
+# import logging
+# from aiogram import Bot
+# from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
+# from config import settings
 
-# --- CONFIGURATION ---
-BOT_TOKEN = settings.BOT_TOKEN  # Replace with your actual bot token
-TARGET_USER_ID = 7464202692
-MESSAGE_TEXT = (
-    "⚠️ *Important Notice regarding your orders*\n\n"
-    "Hello! We have received multiple orders from you at UniBites Support. "
-    "However, we are unable to contact you because your phone number is not working "
-    "and you do not have a public Telegram username.\n\n"
-    "To ensure your orders are delivered, please:\n"
-    "1. Send us a working phone number @unibites_support.\n"
-    "2. Or message our support directly: @unibites_support\n\n"
-    "Please resolve this immediately so we can continue processing your orders."
-)
+# # --- CONFIGURATION ---
+# BOT_TOKEN = settings.BOT_TOKEN  # Replace with your actual bot token
+# TARGET_USER_ID = 7464202692
+# MESSAGE_TEXT = (
+#     "⚠️ *Important Notice regarding your orders*\n\n"
+#     "Hello! We have received multiple orders from you at UniBites Support. "
+#     "However, we are unable to contact you because your phone number is not working "
+#     "and you do not have a public Telegram username.\n\n"
+#     "To ensure your orders are delivered, please:\n"
+#     "1. Send us a working phone number @unibites_support.\n"
+#     "2. Or message our support directly: @unibites_support\n\n"
+#     "Please resolve this immediately so we can continue processing your orders."
+# )
 
-async def send_warning():
-    bot = Bot(token=BOT_TOKEN)
+# async def send_warning():
+#     bot = Bot(token=BOT_TOKEN)
     
-    print(f"Attempting to send message to {TARGET_USER_ID}...")
+#     print(f"Attempting to send message to {TARGET_USER_ID}...")
     
-    try:
-        await bot.send_message(
-            chat_id=TARGET_USER_ID,
-            text=MESSAGE_TEXT,
-            parse_mode="HTML" # Allows for bolding and links
-        )
-        print("✅ Message sent successfully!")
+#     try:
+#         await bot.send_message(
+#             chat_id=TARGET_USER_ID,
+#             text=MESSAGE_TEXT,
+#             parse_mode="HTML" # Allows for bolding and links
+#         )
+#         print("✅ Message sent successfully!")
         
-    except TelegramForbiddenError:
-        print("❌ Error: The user has blocked the bot. You cannot message them.")
-    except TelegramRetryAfter as e:
-        print(f"❌ Error: Being rate limited. Wait {e.retry_after} seconds.")
-    except Exception as e:
-        print(f"❌ An unexpected error occurred: {e}")
-    finally:
-        # Close the session properly
-        await bot.session.close()
+#     except TelegramForbiddenError:
+#         print("❌ Error: The user has blocked the bot. You cannot message them.")
+#     except TelegramRetryAfter as e:
+#         print(f"❌ Error: Being rate limited. Wait {e.retry_after} seconds.")
+#     except Exception as e:
+#         print(f"❌ An unexpected error occurred: {e}")
+#     finally:
+#         # Close the session properly
+#         await bot.session.close()
+
+# if __name__ == "__main__":
+#     asyncio.run(send_warning())
+
+
+
+
+import asyncio
+from database.db import Database
+
+ITEMS = [
+    ("Colgate Toothpaste", "Fresh mint toothpaste", 120, ["Mint", "Herbal"]),
+    ("CloseUp Toothpaste", "Gel toothpaste", 110, ["Red Hot", "Menthol"]),
+    ("Dove Deodorant", "Roll-on deodorant", 250, ["Fresh", "Cool"]),
+    ("Rexona Deodorant", "Spray deodorant", 220, ["Sport", "Aloe"]),
+    ("Lifebuoy Soap", "Antibacterial soap", 35, ["Lemon", "Total"]),
+    ("Lux Soap", "Beauty soap", 40, ["Rose", "Jasmine"]),
+    ("Vaseline Lotion", "Body lotion", 180, ["Cocoa", "Aloe"]),
+    ("Nivea Lotion", "Moisturizing lotion", 200, ["Soft", "Aloe"]),
+    ("Coca-Cola", "Soft drink 500ml", 25, ["Regular", "Zero"]),
+    ("Pepsi", "Soft drink 500ml", 25, ["Regular", "Diet"]),
+    ("Sprite", "Lemon soda 500ml", 25, ["Regular"]),
+    ("Fanta", "Orange soda 500ml", 25, ["Orange", "Pineapple"]),
+    ("Pringles", "Potato chips", 150, ["Sour Cream", "BBQ"]),
+    ("Lays Chips", "Potato chips", 120, ["Classic", "Cheese"]),
+    ("KitKat", "Chocolate bar", 80, ["Classic", "Dark"]),
+    ("Snickers", "Chocolate bar", 90, ["Classic", "Almond"]),
+    ("Oreo", "Cream biscuits", 100, ["Original", "Chocolate"]),
+    ("Milk", "1L fresh milk", 70, ["Whole", "Skim"]),
+    ("Bread", "Fresh loaf", 50, ["White", "Brown"]),
+    ("Eggs", "Pack of 6", 60, ["Regular"]),
+]
+
+async def insert_items():
+    db = Database()
+    await db.init_pool()
+    async with db._open_connection() as conn:
+        for name, desc, price, variants in ITEMS:
+            # Insert item
+            item_id = await conn.fetchval(
+                """
+                INSERT INTO asbeza_items (name, description, base_price)
+                VALUES ($1, $2, $3)
+                RETURNING id
+                """,
+                name, desc, price
+            )
+            print(f"Inserted item {name} with id {item_id}")
+
+            # Insert variants
+            for v in variants:
+                await conn.execute(
+                    """
+                    INSERT INTO asbeza_variants (item_id, name, price, stock)
+                    VALUES ($1, $2, $3, 100)
+                    """,
+                    item_id, v, price
+                )
+                print(f"  -> Variant {v} added")
 
 if __name__ == "__main__":
-    asyncio.run(send_warning())
+    asyncio.run(insert_items())
