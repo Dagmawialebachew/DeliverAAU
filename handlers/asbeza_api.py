@@ -34,3 +34,9 @@ async def asbeza_checkout(request):
         "status": "ok",
         "upfront": upfront
     })
+
+
+# ADD THIS FUNCTION
+def setup_asbeza_routes(app):
+    app.router.add_get("/api/asbeza/items", get_asbeza_items)
+    app.router.add_post("/api/asbeza/checkout", asbeza_checkout)
