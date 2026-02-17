@@ -95,19 +95,31 @@ async def health_check(request):
     return web.Response(text="OK")
 
 # --- Webhook app factory ---
+from aiohttp import web
+from database.db import Database
+from handlers.asbeza_api import setup_asbeza_routes
+
 async def create_app() -> web.Application:
     app = web.Application()
 
+    # Attach DB
+    db = Database()
+    await db.init_pool()
+    app["db"] = db
+
+    # Health check
+    async def health_check(request):
+        return web.json_response({"status": "ok"})
     app.router.add_get("/health", health_check)
 
+    # Webhook
     webhook_handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
     webhook_handler.register(app, path="/webhook")
 
-    # --- ASBEZA API ROUTES ---
-    from handlers.asbeza_api import setup_asbeza_routes
+    # Asbeza API routes
     setup_asbeza_routes(app)
 
-    # --- CORS SETUP ---
+    # CORS
     cors = aiohttp_cors.setup(app, defaults={
         "https://unibites-asbeza.vercel.app": aiohttp_cors.ResourceOptions(
             allow_credentials=True,
@@ -120,7 +132,6 @@ async def create_app() -> web.Application:
             allow_headers="*",
         ),
     })
-
     for route in list(app.router.routes()):
         cors.add(route)
 
@@ -130,6 +141,7 @@ async def create_app() -> web.Application:
     app.on_cleanup.append(lambda app: asyncio.create_task(on_shutdown(bot)))
 
     return app
+
 # --- Polling mode ---
 async def start_polling():
     await db.init_pool()
