@@ -5,7 +5,7 @@ import os
 import uuid
 import aiofiles
 
-from handlers.settings import settings
+from config import settings
 
 ALLOWED_IMAGE_MIMES = {"image/jpeg", "image/png", "image/webp", "image/jpg"}
 
