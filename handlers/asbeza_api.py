@@ -343,50 +343,127 @@ async def upload_screenshot(request: web.Request) -> web.Response:
 
 
 #Admin Page
-
-import bcrypt
-import jwt
+import os, jwt, bcrypt, json
+from aiohttp import web
+from functools import wraps
 
 SECRET_KEY = os.getenv("ADMIN_SECRET_KEY", "supersecret")
 
+# --- AUTH MIDDLEWARE HELPER ---
+def admin_required(f):
+    @wraps(f)
+    async def decorated(request, *args, **kwargs):
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return web.json_response({"status": "error", "message": "Unauthorized"}, status=401)
+        
+        token = auth_header.split(" ")[1]
+        try:
+            # In a real app, you'd check 'decoded' against your admin list
+            jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+        except:
+            return web.json_response({"status": "error", "message": "Invalid session"}, status=401)
+        return await f(request, *args, **kwargs)
+    return decorated
+
+# --- AUTH ENDPOINTS ---
 async def admin_login(request: web.Request) -> web.Response:
     data = await request.json()
-    username = data.get("username")
-    password = data.get("password")
-
-    if not username or not password:
-        return web.json_response({"status": "error", "message": "Missing credentials"}, status=400)
+    username, password = data.get("username"), data.get("password")
 
     async with request.app["db"]._open_connection() as conn:
         row = await conn.fetchrow("SELECT * FROM admins WHERE username=$1", username)
-        if not row:
-            return web.json_response({"status": "error", "message": "Invalid credentials"}, status=401)
+        if row and bcrypt.checkpw(password.encode(), row["password_hash"].encode()):
+            token = jwt.encode({"username": username}, SECRET_KEY, algorithm="HS256")
+            return web.json_response({"status": "ok", "token": token})
+    
+    return web.json_response({"status": "error", "message": "Access Denied"}, status=401)
 
-        if not bcrypt.checkpw(password.encode(), row["password_hash"].encode()):
-            return web.json_response({"status": "error", "message": "Invalid credentials"}, status=401)
-
-    token = jwt.encode({"username": username}, SECRET_KEY, algorithm="HS256")
-    return web.json_response({"status": "ok", "token": token})
-
-
-
+# --- ORDER MANAGEMENT ---
+@admin_required
 async def list_orders(request: web.Request) -> web.Response:
-    # check JWT token
-    auth_header = request.headers.get("Authorization", "")
-    if not auth_header.startswith("Bearer "):
-        return web.json_response({"status": "error", "message": "Unauthorized"}, status=401)
-
-    token = auth_header.split("Bearer ")[1]
-    try:
-        decoded = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-    except Exception:
-        return web.json_response({"status": "error", "message": "Invalid token"}, status=401)
-
     async with request.app["db"]._open_connection() as conn:
+        # We join with payment proof so we can see the image URL immediately
         rows = await conn.fetch("""
-            SELECT o.id, o.user_id, o.total_price, o.delivery_fee, o.upfront_paid, o.status, o.created_at
+            SELECT o.*, p.payment_proof_url, p.method as payment_method
             FROM asbeza_orders o
+            LEFT JOIN asbeza_order_payments p ON o.id = p.order_id
             ORDER BY o.created_at DESC
         """)
-    orders = [dict(r) for r in rows]
+        # Convert asyncpg records to dicts and handle datetime
+        orders = [dict(r) for r in rows]
+        # Helper to stringify date for JSON
+        for o in orders: o['created_at'] = o['created_at'].isoformat()
     return web.json_response({"status": "ok", "orders": orders})
+
+@admin_required
+async def get_order_details(request: web.Request) -> web.Response:
+    order_id = int(request.match_info['id'])
+    async with request.app["db"]._open_connection() as conn:
+        # Get the specific items and their variant names
+        items = await conn.fetch("""
+            SELECT oi.*, v.name as variant_name, i.name as item_name, i.image_url
+            FROM asbeza_order_items oi
+            JOIN asbeza_variants v ON oi.variant_id = v.id
+            JOIN asbeza_items i ON v.item_id = i.id
+            WHERE oi.order_id = $1
+        """, order_id)
+        
+        return web.json_response({
+            "status": "ok", 
+            "items": [dict(r) for r in items]
+        })
+
+# --- INVENTORY MANAGEMENT (The "Insert Items" Logic) ---
+@admin_required
+async def add_item(request: web.Request) -> web.Response:
+    data = await request.json()
+    name = data.get("name")
+    desc = data.get("description")
+    price = data.get("base_price")
+    img = data.get("image_url")
+    variants = data.get("variants", []) # Expecting list of {name, price, stock}
+
+    async with request.app["db"]._open_connection() as conn:
+        async with conn.transaction():
+            # 1. Insert Item
+            item_id = await conn.fetchval("""
+                INSERT INTO asbeza_items (name, description, base_price, image_url)
+                VALUES ($1, $2, $3, $4) RETURNING id
+            """, name, desc, price, img)
+
+            # 2. Insert Variants
+            for v in variants:
+                await conn.execute("""
+                    INSERT INTO asbeza_variants (item_id, name, price, stock)
+                    VALUES ($1, $2, $3, $4)
+                """, item_id, v['name'], v['price'], v.get('stock', 0))
+
+    return web.json_response({"status": "ok", "message": "Product deployed to system"})
+
+
+@admin_required
+async def get_dashboard_stats(request: web.Request) -> web.Response:
+    async with request.app["db"]._open_connection() as conn:
+        # 1. Revenue trend (last 7 days)
+        trend = await conn.fetch("""
+            SELECT DATE(created_at) as date, SUM(total_price) as total
+            FROM asbeza_orders
+            WHERE created_at > CURRENT_DATE - INTERVAL '7 days'
+            GROUP BY DATE(created_at) ORDER BY DATE(created_at)
+        """)
+        
+        # 2. Top Selling Items
+        top_items = await conn.fetch("""
+            SELECT i.name, COUNT(oi.id) as sales
+            FROM asbeza_order_items oi
+            JOIN asbeza_variants v ON oi.variant_id = v.id
+            JOIN asbeza_items i ON v.item_id = i.id
+            GROUP BY i.name ORDER BY sales DESC LIMIT 5
+        """)
+
+        return web.json_response({
+            "status": "ok",
+            "trend": [dict(r) for r in trend],
+            "top_selling": [dict(r) for r in top_items]
+        })
