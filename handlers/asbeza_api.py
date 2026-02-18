@@ -93,6 +93,8 @@ async def asbeza_checkout(request: web.Request) -> web.Response:
 
     # Optional payment proof URL (frontend may upload and send this)
     payment_proof_url = payload.get("payment_proof_url")  # e.g., "/uploads/abcd.jpg" or full URL
+    payment_proof_base64 = payload.get("payment_proof_base64")
+    
 
     # All DB operations must happen while connection is open
     try:
@@ -167,8 +169,15 @@ async def asbeza_checkout(request: web.Request) -> web.Response:
                     order_id, vid, qty, unit_price
                 )
             
-            payment_proof_url = payload.get("payment_proof_url")
-            if payment_proof_url:
+            if payment_proof_base64:
+                await conn.execute(
+                    """
+                    INSERT INTO asbeza_order_payments (order_id, user_id, amount, payment_proof_url, method, status)
+                    VALUES ($1, $2, $3, $4, $5, 'pending')
+                    """,
+                    order_id, user_id, upfront_paid, payment_proof_base64, "base64"
+                )
+            elif payment_proof_url:
                 await conn.execute(
                     """
                     INSERT INTO asbeza_order_payments (order_id, user_id, amount, payment_proof_url, method, status)
@@ -278,76 +287,44 @@ def setup_asbeza_routes(app: web.Application):
     app.router.add_post("/api/admin/orders/{id}/status", update_order_status)
     app.router.add_post("/api/admin/add_item", add_item) # Added this for your inventory logic
 
+import base64
 
 async def upload_screenshot(request: web.Request) -> web.Response:
     """
     POST /api/asbeza/upload_screenshot
     Accepts multipart/form-data with field 'file'
-    Returns: { "status":"ok", "url": "<public-url>" }
+    Returns: { "status":"ok", "url": "<data-url>" }
     """
-    upload_dir = request.app.get("upload_dir", "./uploads")
     max_bytes = request.app.get("upload_max_bytes", 6 * 1024 * 1024)
-
-    # ensure upload directory exists
-    try:
-        os.makedirs(upload_dir, exist_ok=True)
-    except Exception:
-        request.app.logger.exception("Failed to ensure upload directory exists")
 
     reader = await request.multipart()
     part = await reader.next()
     if part is None or part.name != "file":
         return web.json_response({"status": "error", "message": "file field is required"}, status=400)
 
-    # Basic content-type check (client-provided)
+    # Basic content-type check
     content_type = part.headers.get("Content-Type", "").lower()
     if content_type.split(";")[0] not in ALLOWED_IMAGE_MIMES:
         return web.json_response({"status": "error", "message": "unsupported file type"}, status=400)
 
-    # generate safe filename
-    ext = {
-        "image/jpeg": ".jpg",
-        "image/jpg": ".jpg",
-        "image/png": ".png",
-        "image/webp": ".webp"
-    }.get(content_type.split(";")[0], "")
-
-    filename = f"{uuid.uuid4().hex}{ext}"
-    dest_path = os.path.join(upload_dir, filename)
-
-    # stream write with size limit
+    # Read file into memory with size limit
+    data = b""
     size = 0
-    try:
-        async with aiofiles.open(dest_path, "wb") as f:
-            while True:
-                chunk = await part.read_chunk()  # default chunk size
-                if not chunk:
-                    break
-                size += len(chunk)
-                if size > max_bytes:
-                    # remove partial file
-                    await f.close()
-                    try:
-                        os.remove(dest_path)
-                    except Exception:
-                        pass
-                    return web.json_response({"status": "error", "message": "file too large"}, status=413)
-                await f.write(chunk)
-    except Exception:
-        # cleanup on error
-        try:
-            if os.path.exists(dest_path):
-                os.remove(dest_path)
-        except Exception:
-            pass
-        request.app.logger.exception("upload failed")
-        return web.json_response({"status": "error", "message": "upload failed"}, status=500)
+    while True:
+        chunk = await part.read_chunk()
+        if not chunk:
+            break
+        size += len(chunk)
+        if size > max_bytes:
+            return web.json_response({"status": "error", "message": "file too large"}, status=413)
+        data += chunk
 
-    # Build public URL. If you serve uploads statically under upload_url_prefix:
-    prefix = request.app.get("upload_url_prefix", "/uploads")
-    public_url = f"{prefix.rstrip('/')}/{filename}"
+    # Encode as base64
+    b64 = base64.b64encode(data).decode()
+    data_url = f"data:{content_type};base64,{b64}"
 
-    return web.json_response({"status": "ok", "url": public_url})
+    # Return inline data URL
+    return web.json_response({"status": "ok", "url": data_url})
 
 
 
