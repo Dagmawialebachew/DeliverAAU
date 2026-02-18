@@ -104,6 +104,7 @@ async def create_app() -> web.Application:
     # Attach DB
     db = Database()
     await db.init_pool()
+    app["bot"] = bot
     app["db"] = db
 
     # Health check
