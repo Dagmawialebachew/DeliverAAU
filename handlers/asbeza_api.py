@@ -6,6 +6,7 @@ import os
 import uuid
 import aiofiles
 
+import app
 from config import settings
 
 ALLOWED_IMAGE_MIMES = {"image/jpeg", "image/png", "image/webp", "image/jpg"}
@@ -262,14 +263,20 @@ async def asbeza_checkout(request: web.Request) -> web.Response:
 
 
 def setup_asbeza_routes(app: web.Application):
+    # Public Routes
     app.router.add_get("/api/asbeza/items", get_asbeza_items)
     app.router.add_post("/api/asbeza/checkout", asbeza_checkout)
-    app.router.add_post("/api/asbeza/upload_screenshot", upload_screenshot)  # upload_screenshot defined below
+    app.router.add_post("/api/asbeza/upload_screenshot", upload_screenshot)
+    
+    # Admin Auth
     app.router.add_post("/api/admin/login", admin_login)
-    app.router.add_get("/api/admin/orders", list_orders),
+    
+    # Admin Management (Crucial: matching the IDs used in JS)
+    app.router.add_get("/api/admin/orders", list_orders)
     app.router.add_get("/api/admin/stats", get_dashboard_stats)
-
-
+    app.router.add_get("/api/admin/orders/{id}", get_order_details) 
+    app.router.add_post("/api/admin/orders/{id}/status", update_order_status)
+    app.router.add_post("/api/admin/add_item", add_item) # Added this for your inventory logic
 
 
 async def upload_screenshot(request: web.Request) -> web.Response:
@@ -477,3 +484,25 @@ async def get_dashboard_stats(request: web.Request) -> web.Response:
             "trend": trend_data,
             "top_selling": [dict(r) for r in top_items]
         })
+        
+@admin_required
+async def update_order_status(request: web.Request) -> web.Response:
+    try:
+        order_id = int(request.match_info['id'])
+        data = await request.json()
+        new_status = data.get("status")
+
+        async with request.app["db"]._open_connection() as conn:
+            # Update the order status in the database
+            result = await conn.execute("""
+                UPDATE asbeza_orders 
+                SET status = $1 
+                WHERE id = $2
+            """, new_status, order_id)
+
+            if result == "UPDATE 0":
+                return web.json_response({"status": "error", "message": "Order not found"}, status=404)
+        
+        return web.json_response({"status": "ok", "message": f"Order {order_id} updated to {new_status}"})
+    except Exception as e:
+        return web.json_response({"status": "error", "message": str(e)}, status=500)

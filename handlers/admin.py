@@ -69,19 +69,26 @@ class AdminReplyState(StatesGroup):
 # ==============================================================================
 # 🛠 UI HELPERS (Keyboards & Formatting)
 # ==============================================================================
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, WebAppInfo
+
 def get_main_menu_kb() -> ReplyKeyboardMarkup:
     kb = [
         [KeyboardButton(text="🏪 Vendors"), KeyboardButton(text="🚴 Delivery Guys")],
         [KeyboardButton(text="📦 Orders"), KeyboardButton(text="📈 Analytics")],
-        [KeyboardButton(text="📢 Broadcast")]
-        # [KeyboardButton(text="⚙️ Settings"), KeyboardButton(text="🛡 System Status")],
-        # [KeyboardButton(text="🆘 Support"), KeyboardButton(text="🛑 Emergency Stop")]
+        [KeyboardButton(text="📢 Broadcast")],
+        [
+            KeyboardButton(
+                text="🛠 Admin Page",
+                web_app=WebAppInfo(url="https://deliveraau.onrender.com/admin.html")
+            )
+        ]
     ]
     return ReplyKeyboardMarkup(
         keyboard=kb,
         resize_keyboard=True,
         input_field_placeholder="Choose a module..."
     )
+
     
 
 
