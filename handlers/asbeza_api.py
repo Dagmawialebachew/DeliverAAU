@@ -63,6 +63,9 @@ async def asbeza_checkout(request: web.Request) -> web.Response:
 
     user_id = payload.get("user_id")
     items: List[Dict] = payload.get("items", [])
+    if not user_id:
+      return web.json_response({"status": "error", "message": "user_id is required"}, status=400)
+
 
     if items is None or not isinstance(items, list) or len(items) == 0:
         return web.json_response({"status": "error", "message": "items are required"}, status=400)
