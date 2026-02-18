@@ -129,17 +129,29 @@ async def create_app() -> web.Application:
 
     # CORS
     cors = aiohttp_cors.setup(app, defaults={
+    # Specifically allow your production and local dev environments
         "https://unibites-asbeza.vercel.app": aiohttp_cors.ResourceOptions(
             allow_credentials=True,
             expose_headers="*",
             allow_headers="*",
+            allow_methods="*" # Explicitly allow all methods (GET, POST, etc.)
         ),
+        "http://127.0.0.1:5500": aiohttp_cors.ResourceOptions(
+            allow_credentials=True,
+            expose_headers="*",
+            allow_headers="*",
+            allow_methods="*"
+        ),
+        # Wildcard as fallback
         "*": aiohttp_cors.ResourceOptions(
             allow_credentials=True,
             expose_headers="*",
             allow_headers="*",
+            allow_methods="*"
         ),
     })
+
+    # Apply CORS to all routes
     for route in list(app.router.routes()):
         cors.add(route)
 
