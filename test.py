@@ -1001,58 +1001,66 @@ from database.db import Database
 
 
 
-import asyncio
-from database.db import Database
+# import asyncio
+# from database.db import Database
 
-ITEMS = [
-    ("Colgate Toothpaste", "Fresh mint toothpaste", 120, ["Mint", "Herbal"]),
-    ("CloseUp Toothpaste", "Gel toothpaste", 110, ["Red Hot", "Menthol"]),
-    ("Dove Deodorant", "Roll-on deodorant", 250, ["Fresh", "Cool"]),
-    ("Rexona Deodorant", "Spray deodorant", 220, ["Sport", "Aloe"]),
-    ("Lifebuoy Soap", "Antibacterial soap", 35, ["Lemon", "Total"]),
-    ("Lux Soap", "Beauty soap", 40, ["Rose", "Jasmine"]),
-    ("Vaseline Lotion", "Body lotion", 180, ["Cocoa", "Aloe"]),
-    ("Nivea Lotion", "Moisturizing lotion", 200, ["Soft", "Aloe"]),
-    ("Coca-Cola", "Soft drink 500ml", 25, ["Regular", "Zero"]),
-    ("Pepsi", "Soft drink 500ml", 25, ["Regular", "Diet"]),
-    ("Sprite", "Lemon soda 500ml", 25, ["Regular"]),
-    ("Fanta", "Orange soda 500ml", 25, ["Orange", "Pineapple"]),
-    ("Pringles", "Potato chips", 150, ["Sour Cream", "BBQ"]),
-    ("Lays Chips", "Potato chips", 120, ["Classic", "Cheese"]),
-    ("KitKat", "Chocolate bar", 80, ["Classic", "Dark"]),
-    ("Snickers", "Chocolate bar", 90, ["Classic", "Almond"]),
-    ("Oreo", "Cream biscuits", 100, ["Original", "Chocolate"]),
-    ("Milk", "1L fresh milk", 70, ["Whole", "Skim"]),
-    ("Bread", "Fresh loaf", 50, ["White", "Brown"]),
-    ("Eggs", "Pack of 6", 60, ["Regular"]),
-]
+# ITEMS = [
+#     ("Colgate Toothpaste", "Fresh mint toothpaste", 120, ["Mint", "Herbal"]),
+#     ("CloseUp Toothpaste", "Gel toothpaste", 110, ["Red Hot", "Menthol"]),
+#     ("Dove Deodorant", "Roll-on deodorant", 250, ["Fresh", "Cool"]),
+#     ("Rexona Deodorant", "Spray deodorant", 220, ["Sport", "Aloe"]),
+#     ("Lifebuoy Soap", "Antibacterial soap", 35, ["Lemon", "Total"]),
+#     ("Lux Soap", "Beauty soap", 40, ["Rose", "Jasmine"]),
+#     ("Vaseline Lotion", "Body lotion", 180, ["Cocoa", "Aloe"]),
+#     ("Nivea Lotion", "Moisturizing lotion", 200, ["Soft", "Aloe"]),
+#     ("Coca-Cola", "Soft drink 500ml", 25, ["Regular", "Zero"]),
+#     ("Pepsi", "Soft drink 500ml", 25, ["Regular", "Diet"]),
+#     ("Sprite", "Lemon soda 500ml", 25, ["Regular"]),
+#     ("Fanta", "Orange soda 500ml", 25, ["Orange", "Pineapple"]),
+#     ("Pringles", "Potato chips", 150, ["Sour Cream", "BBQ"]),
+#     ("Lays Chips", "Potato chips", 120, ["Classic", "Cheese"]),
+#     ("KitKat", "Chocolate bar", 80, ["Classic", "Dark"]),
+#     ("Snickers", "Chocolate bar", 90, ["Classic", "Almond"]),
+#     ("Oreo", "Cream biscuits", 100, ["Original", "Chocolate"]),
+#     ("Milk", "1L fresh milk", 70, ["Whole", "Skim"]),
+#     ("Bread", "Fresh loaf", 50, ["White", "Brown"]),
+#     ("Eggs", "Pack of 6", 60, ["Regular"]),
+# ]
 
-async def insert_items():
-    db = Database()
-    await db.init_pool()
-    async with db._open_connection() as conn:
-        for name, desc, price, variants in ITEMS:
-            # Insert item
-            item_id = await conn.fetchval(
-                """
-                INSERT INTO asbeza_items (name, description, base_price)
-                VALUES ($1, $2, $3)
-                RETURNING id
-                """,
-                name, desc, price
-            )
-            print(f"Inserted item {name} with id {item_id}")
+# async def insert_items():
+#     db = Database()
+#     await db.init_pool()
+#     async with db._open_connection() as conn:
+#         for name, desc, price, variants in ITEMS:
+#             # Insert item
+#             item_id = await conn.fetchval(
+#                 """
+#                 INSERT INTO asbeza_items (name, description, base_price)
+#                 VALUES ($1, $2, $3)
+#                 RETURNING id
+#                 """,
+#                 name, desc, price
+#             )
+#             print(f"Inserted item {name} with id {item_id}")
 
-            # Insert variants
-            for v in variants:
-                await conn.execute(
-                    """
-                    INSERT INTO asbeza_variants (item_id, name, price, stock)
-                    VALUES ($1, $2, $3, 100)
-                    """,
-                    item_id, v, price
-                )
-                print(f"  -> Variant {v} added")
+#             # Insert variants
+#             for v in variants:
+#                 await conn.execute(
+#                     """
+#                     INSERT INTO asbeza_variants (item_id, name, price, stock)
+#                     VALUES ($1, $2, $3, 100)
+#                     """,
+#                     item_id, v, price
+#                 )
+#                 print(f"  -> Variant {v} added")
 
-if __name__ == "__main__":
-    asyncio.run(insert_items())
+# if __name__ == "__main__":
+#     asyncio.run(insert_items())
+
+
+
+import bcrypt
+
+password = "supersecret"  # choose your admin password
+hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+print(hashed)
