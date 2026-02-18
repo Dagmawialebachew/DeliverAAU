@@ -265,7 +265,9 @@ def setup_asbeza_routes(app: web.Application):
     app.router.add_post("/api/asbeza/checkout", asbeza_checkout)
     app.router.add_post("/api/asbeza/upload_screenshot", upload_screenshot)  # upload_screenshot defined below
     app.router.add_post("/api/admin/login", admin_login)
-    app.router.add_get("/api/admin/orders", list_orders)
+    app.router.add_get("/api/admin/orders", list_orders),
+    app.router.add_get("/api/admin/stats", get_dashboard_stats)
+
 
 
 
