@@ -270,7 +270,8 @@ async def order_cancel_view(callback: CallbackQuery):
     )
 
     # Then send a fresh message with ReplyKeyboardMarkup
-    await callback.message.answer("⬇️ Back to main menu", reply_markup=main_menu())
+    user_id = callback.message.from_user.id
+    await callback.message.answer("⬇️ Back to main menu", reply_markup=main_menu(user_id))
 
     await callback.answer("Order cancelled successfully ✅")
 
@@ -337,7 +338,8 @@ async def _compute_eta_and_map(last_lat, last_lon, drop_lat, drop_lon):
 async def track_order_list(message: Message):
     user = await db.get_user(message.from_user.id)
     if not user:
-        await message.answer("⚠️ Please /start to register first.", reply_markup=main_menu())
+        user_id = message.from_user.id
+        await message.answer("⚠️ Please /start to register first.", reply_markup=main_menu(user_id))
         return
 
     # Show active orders immediately + attach the new menu keyboard
@@ -358,14 +360,16 @@ def track_menu_keyboard() -> ReplyKeyboardMarkup:
 
 @router.message(F.text == "⬅️ Back")
 async def back_to_main_menu(message: Message):
-    await message.answer("📋 Back to the main menu.", reply_markup=main_menu())
+    user_id = message.from_user.id
+    await message.answer("📋 Back to the main menu.", reply_markup=main_menu(user_id))
 
 
 @router.message(F.text == "✨ Active Orders")
 async def show_active_orders(message: Message):
     user = await db.get_user(message.from_user.id)
     if not user:
-        await message.answer("⚠️ Please /start to register first.", reply_markup=main_menu())
+        user_id = message.from_user.id
+        await message.answer("⚠️ Please /start to register first.", reply_markup=main_menu(user_id))
         return
     await send_orders_page(message, user["id"], 0)
 
@@ -375,7 +379,8 @@ async def show_active_orders(message: Message):
 async def show_past_orders(message: Message):
     user = await db.get_user(message.from_user.id)
     if not user:
-        await message.answer("⚠️ Please /start to register first.", reply_markup=main_menu())
+        user_id = message.from_user.id
+        await message.answer("⚠️ Please /start to register first.", reply_markup=main_menu(user_id))
         return
 
     # Fetch delivered orders instead of active
@@ -556,7 +561,8 @@ async def handle_past_orders_pagination(callback: CallbackQuery):
     user = await db.get_user(callback.from_user.id)
     if not user:
         print(f"[Pagination] No user found for Telegram id={callback.from_user.id}")
-        await callback.message.answer("⚠️ Please /start to register first.", reply_markup=main_menu())
+        user_id = callback.message.from_user.id
+        await callback.message.answer("⚠️ Please /start to register first.", reply_markup=main_menu(user_id))
         return
 
     # Fetch orders and total
@@ -581,7 +587,8 @@ async def handle_past_back(callback: CallbackQuery, state: FSMContext = None):
 
     user = await db.get_user(callback.from_user.id)
     if not user:
-        await callback.message.answer("⚠️ Please /start to register first.", reply_markup=main_menu())
+        user_id = callback.message.from_user.id
+        await callback.message.answer("⚠️ Please /start to register first.", reply_markup=main_menu(user_id))
         return
 
     try:
@@ -721,7 +728,8 @@ async def send_orders_page(message_or_callback, user_id: int, page: int):
             await message_or_callback.answer()
             await message_or_callback.message.edit_text(text, reply_markup=None)
         else:
-            await message_or_callback.answer(text, reply_markup=main_menu())
+            user_id = message_or_callback.message.from_user.id
+            await message_or_callback.answer(text, reply_markup=main_menu(user_id))
         return
 
     # If only one order, open it immediately
@@ -843,7 +851,8 @@ async def handle_past_orders_pagination(callback: CallbackQuery):
 
     user = await db.get_user(callback.from_user.id)
     if not user:
-        await callback.message.answer("⚠️ Please /start to register first.", reply_markup=main_menu())
+        user_id = callback.message.from_user.id
+        await callback.message.answer("⚠️ Please /start to register first.", reply_markup=main_menu(user))
         return
 
     try:
@@ -982,7 +991,8 @@ async def reply_back_to_menu(message: Message):
         pass
 
     try:
-        await message.answer("📋 Back to the main menu.", reply_markup=main_menu())
+        user_id = message.from_user.id
+        await message.answer("📋 Back to the main menu.", reply_markup=main_menu(user_id))
     except Exception:
         pass
 

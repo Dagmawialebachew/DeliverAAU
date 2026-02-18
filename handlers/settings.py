@@ -98,7 +98,8 @@ async def cancel_or_main(message: Message, state: FSMContext):
     if message.text == "❌ Cancel":
         await message.answer("❌ Update cancelled. Back to settings menu.")
     else:
-        await message.answer("🏠 Returning to main menu...", reply_markup=main_menu())
+        user_id = message.from_user.id
+        await message.answer("🏠 Returning to main menu...", reply_markup=main_menu(user_id))
     await state.clear()
 
 # Step 3: Handle phone input

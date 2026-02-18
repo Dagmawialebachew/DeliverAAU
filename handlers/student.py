@@ -831,7 +831,8 @@ async def order_cancel(cb: CallbackQuery, state: FSMContext):
     try: await cb.message.edit_reply_markup(reply_markup=None)
     except: pass
     await state.clear()
-    await cb.message.answer("Order cancelled. Start again from the main menu.", reply_markup=main_menu())
+    user_id = cb.message.from_user.id
+    await cb.message.answer("Order cancelled. Start again from the main menu.", reply_markup=main_menu(user_id))
     
     
 @router.callback_query(OrderStates.menu, F.data == "cart:confirm")
@@ -1205,11 +1206,12 @@ async def ask_final_confirmation(message: Message, state: FSMContext):
     half_lookup: Dict[str,List[int]] = data.get("half_lookup", {}) or {}
     dropoff = data.get("dropoff", "")
     notes = data.get("notes", "")
+    user_id = message.from_user.id
 
     if not cart_counts or not dropoff:
         await message.answer(
             "⚠️ Something went wrong — your cart or drop-off is missing.\nPlease restart your order 🛒.",
-            reply_markup=main_menu()
+            reply_markup=main_menu(user_id)
         )
         await state.clear()
         return
@@ -1298,9 +1300,10 @@ async def ask_final_confirmation(message: Message, state: FSMContext):
 
     # Show summary with inline confirm/cancel
     await message.answer(summary, reply_markup=final_confirm_keyboard(), parse_mode="Markdown")
+    user_id = message.from_user.id
 
     # Also show main menu reply keyboard so user feels anchored
-    await message.answer("📋 Use the menu below while you decide:", reply_markup=main_menu())
+    await message.answer("📋 Use the menu below while you decide:", reply_markup=main_menu(user_id))
 
     # Clean up the typing message
     try:
@@ -1362,10 +1365,11 @@ async def final_confirm(cb: CallbackQuery, state: FSMContext):
 
     # Fetch user info
     user = await db.get_user(cb.from_user.id)
+    user_id = cb.from_user.id
     if not user:
         await cb.message.answer(
             "⚠️ Could not find your account. Please /start to register.",
-            reply_markup=main_menu()
+            reply_markup=main_menu(user_id)
         )
         return
 
@@ -1378,7 +1382,7 @@ async def final_confirm(cb: CallbackQuery, state: FSMContext):
     live_coords = data.get("live_coords")
 
     if not cart_counts:
-        await cb.message.answer("⚠️ Your cart is empty. Please restart your order 🛒.", reply_markup=main_menu())
+        await cb.message.answer("⚠️ Your cart is empty. Please restart your order 🛒.", reply_markup=main_menu(user_id))
         await state.clear()
         return
 
@@ -1519,7 +1523,8 @@ async def final_confirm(cb: CallbackQuery, state: FSMContext):
     await asyncio.sleep(1.5)
     with contextlib.suppress(Exception):
         await status_msg.delete()
-    await cb.message.answer("🔥 +10 XP will be added after delivery!", parse_mode="Markdown", reply_markup=main_menu())
+    user_id = cb.message.from_user.id
+    await cb.message.answer("🔥 +10 XP will be added after delivery!", parse_mode="Markdown", reply_markup=main_menu(user_id))
     user_stats = await db.get_user_stats(cb.from_user.id)
 
     if not user_stats:
@@ -1577,5 +1582,6 @@ async def final_cancel(cb: CallbackQuery, state: FSMContext):
         await cb.message.edit_reply_markup(reply_markup=None)
     except Exception:
         pass
-    await cb.message.answer("❌ Order not placed.\nYou can start a new one from the menu below.", reply_markup=main_menu())
+    user_id = cb.message.from_user.id
+    await cb.message.answer("❌ Order not placed.\nYou can start a new one from the menu below.", reply_markup=main_menu(user_id))
     await state.clear()

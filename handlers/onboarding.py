@@ -65,8 +65,9 @@ def campus_inline_keyboard() -> InlineKeyboardMarkup:
         ]
     )
 
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, WebAppInfo
 
-def main_menu() -> ReplyKeyboardMarkup:
+def main_menu(user_id: int) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [
@@ -75,9 +76,10 @@ def main_menu() -> ReplyKeyboardMarkup:
             ],
             [
                 KeyboardButton(
-                            text="🧺 Asbeza 🧺 ",
-                            web_app=WebAppInfo(url="https://unibites-asbeza.vercel.app")
-                        )                ],
+                    text="🧺 Asbeza 🧺",
+                    web_app=WebAppInfo(url=f"https://unibites-asbeza.vercel.app?user_id={user_id}")
+                )
+            ],
             [
                 KeyboardButton(text="🧑‍🍳 Need Help"),
                 KeyboardButton(text="⚙️ More Options"),
@@ -86,7 +88,6 @@ def main_menu() -> ReplyKeyboardMarkup:
         resize_keyboard=True,
         input_field_placeholder="Choose an option below 👇",
     )
-
 
 def more_menu() -> ReplyKeyboardMarkup:
     buttons = [
@@ -99,9 +100,10 @@ def more_menu() -> ReplyKeyboardMarkup:
 
 @router.message(F.text=="⬅️ Back to Main Menu")
 async def back_to_main(message: Message):
+    user_id = message.from_user.id
     await message.answer(
         "⬅️ Back to main menu",
-        reply_markup=main_menu()
+        reply_markup=main_menu(user_id)
     )
 
 
@@ -199,9 +201,10 @@ async def show_more_menu(message: Message):
 @router.message(F.text == "⬅️ Back")
 async def back_to_main(message: Message):
     user = await db.get_user(message.from_user.id)
+    user_id = message.from_user.id
     if user:
         await message.answer(build_profile_card(user), parse_mode="Markdown")
-    await message.answer("⬅️ Back to your main dashboard 👇", reply_markup=main_menu())
+    await message.answer("⬅️ Back to your main dashboard 👇", reply_markup=main_menu(user_id))
 
 
 # --- ONBOARDING FLOW ---
@@ -264,7 +267,8 @@ async def start(message: Message, state: FSMContext):
             parse_mode="HTML"
         )
         await message.answer(build_profile_card(user), parse_mode="Markdown")
-        await message.answer("Choose your next move:", reply_markup=main_menu())
+        user_id = message.from_user.id
+        await message.answer("Choose your next move:", reply_markup=main_menu(user_id))
         await state.clear()
         return
 
@@ -336,7 +340,8 @@ async def handle_gender(cb: CallbackQuery, state: FSMContext):
     # Prevent duplicate registration if user already exists
     existing = await db.get_user(telegram_id)
     if existing:
-        await cb.message.answer("⚠️ You’re already registered. Here’s your dashboard:", reply_markup=main_menu())
+        user_id = cb.message.from_user.id
+        await cb.message.answer("⚠️ You’re already registered. Here’s your dashboard:", reply_markup=main_menu(user_id))
         await state.clear()
         return
 
@@ -533,5 +538,6 @@ async def handle_gender(cb: CallbackQuery, state: FSMContext):
         "to kickstart your UniBites journey ✨"
     )
     await cb.message.answer(build_profile_card(new_user), parse_mode="Markdown")
-    await cb.message.answer("Your dashboard is live 👇", reply_markup=main_menu())
+    user_id = cb.message.from_user.id
+    await cb.message.answer("Your dashboard is live 👇", reply_markup=main_menu(user_id))
     await state.clear()
