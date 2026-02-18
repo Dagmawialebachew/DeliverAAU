@@ -63,7 +63,7 @@ async def asbeza_checkout(request: web.Request) -> web.Response:
     except Exception:
         return web.json_response({"status": "error", "message": "invalid json"}, status=400)
 
-    user_id = payload.get("user_id")
+    user_id = int(payload.get("user_id"))
     items: List[Dict] = payload.get("items", [])
     if not user_id:
       return web.json_response({"status": "error", "message": "user_id is required"}, status=400)
