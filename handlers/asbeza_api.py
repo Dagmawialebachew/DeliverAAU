@@ -264,6 +264,9 @@ def setup_asbeza_routes(app: web.Application):
     app.router.add_get("/api/asbeza/items", get_asbeza_items)
     app.router.add_post("/api/asbeza/checkout", asbeza_checkout)
     app.router.add_post("/api/asbeza/upload_screenshot", upload_screenshot)  # upload_screenshot defined below
+    app.router.add_post("/api/admin/login", admin_login)
+    app.router.add_get("/api/admin/orders", list_orders)
+
 
 
 async def upload_screenshot(request: web.Request) -> web.Response:
@@ -335,3 +338,55 @@ async def upload_screenshot(request: web.Request) -> web.Response:
     public_url = f"{prefix.rstrip('/')}/{filename}"
 
     return web.json_response({"status": "ok", "url": public_url})
+
+
+
+
+#Admin Page
+
+import bcrypt
+import jwt
+
+SECRET_KEY = os.getenv("ADMIN_SECRET_KEY", "supersecret")
+
+async def admin_login(request: web.Request) -> web.Response:
+    data = await request.json()
+    username = data.get("username")
+    password = data.get("password")
+
+    if not username or not password:
+        return web.json_response({"status": "error", "message": "Missing credentials"}, status=400)
+
+    async with request.app["db"]._open_connection() as conn:
+        row = await conn.fetchrow("SELECT * FROM admins WHERE username=$1", username)
+        if not row:
+            return web.json_response({"status": "error", "message": "Invalid credentials"}, status=401)
+
+        if not bcrypt.checkpw(password.encode(), row["password_hash"].encode()):
+            return web.json_response({"status": "error", "message": "Invalid credentials"}, status=401)
+
+    token = jwt.encode({"username": username}, SECRET_KEY, algorithm="HS256")
+    return web.json_response({"status": "ok", "token": token})
+
+
+
+async def list_orders(request: web.Request) -> web.Response:
+    # check JWT token
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return web.json_response({"status": "error", "message": "Unauthorized"}, status=401)
+
+    token = auth_header.split("Bearer ")[1]
+    try:
+        decoded = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+    except Exception:
+        return web.json_response({"status": "error", "message": "Invalid token"}, status=401)
+
+    async with request.app["db"]._open_connection() as conn:
+        rows = await conn.fetch("""
+            SELECT o.id, o.user_id, o.total_price, o.delivery_fee, o.upfront_paid, o.status, o.created_at
+            FROM asbeza_orders o
+            ORDER BY o.created_at DESC
+        """)
+    orders = [dict(r) for r in rows]
+    return web.json_response({"status": "ok", "orders": orders})

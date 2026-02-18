@@ -2,7 +2,8 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 
-def confirm_order_kb() -> InlineKeyboardMarkup:
+def 
+confirm_order_kb() -> InlineKeyboardMarkup:
     """
     Inline confirmation for student before creating the order.
     """

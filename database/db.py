@@ -262,6 +262,15 @@ CREATE TABLE IF NOT EXISTS asbeza_order_payments (
 );
 
 
+CREATE TABLE admins (
+    id SERIAL PRIMARY KEY,
+    username VARCHAR(50) UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    role VARCHAR(20) DEFAULT 'admin',
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+
 -- Helpful indexes
 CREATE INDEX IF NOT EXISTS idx_leaderboards_bites ON leaderboards(bites DESC);
 CREATE INDEX IF NOT EXISTS idx_leaderboards_updated ON leaderboards(last_updated);
