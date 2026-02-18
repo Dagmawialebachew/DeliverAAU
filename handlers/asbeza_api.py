@@ -1,5 +1,7 @@
 from aiohttp import web
 
+from handlers.settings import settings
+
 async def get_asbeza_items(request):
     db = request.app["db"]
     async with db._open_connection() as conn:
@@ -121,27 +123,50 @@ async def asbeza_checkout(request: web.Request) -> web.Response:
                     return web.json_response({"status": "error", "message": "invalid upfront_paid"}, status=400)
 
             # Insert order
-            order_id = await conn.fetchval(
+        order_id = await conn.fetchval(
+            """
+            INSERT INTO asbeza_orders (user_id, total_price, delivery_fee, upfront_paid, status)
+            VALUES ($1, $2, $3, $4, 'pending')
+            RETURNING id
+            """,
+            user_id, total_price, delivery_fee, upfront_paid
+        )
+
+        # Insert order items
+        for it in validated_items_input:
+            vid = it["variant_id"]
+            qty = it["quantity"]
+            unit_price = price_map[vid]
+            await conn.execute(
                 """
-                INSERT INTO asbeza_orders (user_id, total_price, delivery_fee, upfront_paid, status)
-                VALUES ($1, $2, $3, $4, 'pending')
-                RETURNING id
+                INSERT INTO asbeza_order_items (order_id, variant_id, quantity, price)
+                VALUES ($1, $2, $3, $4)
                 """,
-                user_id, total_price, delivery_fee, upfront_paid
+                order_id, vid, qty, unit_price
             )
 
-            # Insert order items using DB prices (store price per item)
-            for it in validated_items_input:
-                vid = it["variant_id"]
-                qty = it["quantity"]
-                unit_price = price_map[vid]
-                await conn.execute(
-                    """
-                    INSERT INTO asbeza_order_items (order_id, variant_id, quantity, price)
-                    VALUES ($1, $2, $3, $4)
-                    """,
-                    order_id, vid, qty, unit_price
+        # --- Notify admin group here ---
+        if settings.ADMIN_DAILY_GROUP_ID:
+            try:
+                admin_msg = (
+                    f"📢 <b>New Asbeza Order: #{order_id}</b>\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"👤 User ID: {user_id}\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"🛒 Items: {', '.join([f'#{it['variant_id']} ×{it['quantity']}' for it in validated_items_input])}\n"
+                    f"💵 Total: {total_price:.2f} birr\n"
+                    f"🚚 Delivery: {delivery_fee:.2f} birr\n"
+                    f"⚡ Upfront: {upfront_paid:.2f} birr\n\n"
+                    "Check the admin web app for full details."
                 )
+                await request.app["bot"].send_message(
+                    settings.ADMIN_DAILY_GROUP_ID,
+                    admin_msg,
+                    parse_mode="HTML"
+                )
+            except Exception as e:
+                request.app.logger.exception(f"Failed to send admin notification for order {order_id}")
+
 
     except Exception:
         request.app.logger.exception("Checkout DB error")
