@@ -1,3 +1,4 @@
+from datetime import datetime
 from aiohttp import web
 from typing import List, Dict
 import math
@@ -443,7 +444,6 @@ async def add_item(request: web.Request) -> web.Response:
 
     return web.json_response({"status": "ok", "message": "Product deployed to system"})
 
-
 @admin_required
 async def get_dashboard_stats(request: web.Request) -> web.Response:
     async with request.app["db"]._open_connection() as conn:
@@ -454,7 +454,15 @@ async def get_dashboard_stats(request: web.Request) -> web.Response:
             WHERE created_at > CURRENT_DATE - INTERVAL '7 days'
             GROUP BY DATE(created_at) ORDER BY DATE(created_at)
         """)
-        
+
+        # Convert date objects to strings
+        trend_data = []
+        for r in trend:
+            d = dict(r)
+            if isinstance(d["date"], (datetime.date, datetime.datetime)):
+                d["date"] = d["date"].isoformat()
+            trend_data.append(d)
+
         # 2. Top Selling Items
         top_items = await conn.fetch("""
             SELECT i.name, COUNT(oi.id) as sales
@@ -466,6 +474,6 @@ async def get_dashboard_stats(request: web.Request) -> web.Response:
 
         return web.json_response({
             "status": "ok",
-            "trend": [dict(r) for r in trend],
+            "trend": trend_data,
             "top_selling": [dict(r) for r in top_items]
         })
