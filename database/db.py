@@ -270,6 +270,10 @@ CREATE TABLE IF NOT EXISTS admins (
     created_at TIMESTAMP DEFAULT NOW()
 );
 
+ALTER TABLE asbeza_variants
+ADD COLUMN IF NOT EXISTS image_url TEXT;
+
+
 
 -- Helpful indexes
 CREATE INDEX IF NOT EXISTS idx_leaderboards_bites ON leaderboards(bites DESC);

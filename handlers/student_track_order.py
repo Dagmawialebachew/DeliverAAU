@@ -727,8 +727,9 @@ async def send_orders_page(message_or_callback, user_id: int, page: int):
         if isinstance(message_or_callback, CallbackQuery):
             await message_or_callback.answer()
             await message_or_callback.message.edit_text(text, reply_markup=None)
-        else:
-            user_id = message_or_callback.message.from_user.id
+        elif isinstance(message_or_callback, Message):
+            # Here message_or_callback is already a Message
+            user_id = message_or_callback.from_user.id
             await message_or_callback.answer(text, reply_markup=main_menu(user_id))
         return
 

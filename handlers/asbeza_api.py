@@ -15,15 +15,30 @@ ALLOWED_IMAGE_MIMES = {"image/jpeg", "image/png", "image/webp", "image/jpg"}
 async def get_asbeza_items(request: web.Request) -> web.Response:
     """
     GET /api/asbeza/items
-    Returns active items (id, name, description, base_price, image_url)
+    Returns active items with their variants
     """
     db = request.app["db"]
     async with db._open_connection() as conn:
         rows = await conn.fetch(
             """
-            SELECT id, name, description, base_price, image_url
-            FROM asbeza_items
-            WHERE active = TRUE
+            SELECT i.id, i.name, i.description, i.base_price, i.image_url,
+                   COALESCE(
+                     json_agg(
+                       json_build_object(
+                         'id', v.id,
+                         'name', v.name,
+                         'price', v.price,
+                         'stock', v.stock,
+                         'image_url', v.image_url
+                       )
+                     ) FILTER (WHERE v.id IS NOT NULL),
+                     '[]'
+                   ) AS variants
+            FROM asbeza_items i
+            LEFT JOIN asbeza_variants v ON v.item_id = i.id
+            WHERE i.active = TRUE
+            GROUP BY i.id
+            ORDER BY i.id;
             """
         )
     items = [dict(r) for r in rows]
