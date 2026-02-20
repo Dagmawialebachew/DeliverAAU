@@ -310,7 +310,7 @@ def setup_asbeza_routes(app: web.Application):
     app.router.add_delete("/api/admin/items/{id}", delete_item_admin)     # delete item + variants
     app.router.add_put("/api/admin/variants/{id}", update_variant_admin)  # update variant
     app.router.add_delete("/api/admin/variants/{id}", delete_variant_admin) # delete variant
-    app.router.add_delete("/api/asbeza/variants/", create_variant_admin) # delete variant
+    app.router.add_post("/api/asbeza/variants", create_variant_admin) # create variant
 
     # Users
     app.router.add_get("/api/admin/users/{id}", get_user_details)
@@ -888,6 +888,13 @@ async def list_items_admin(request: web.Request) -> web.Response:
     return web.json_response({"status": "ok", "items": [dict(r) for r in rows]})
 
 
+def to_dict(record):
+    d = dict(record)
+    for k, v in d.items():
+        if isinstance(v, (datetime.date, datetime.datetime)):
+            d[k] = v.isoformat()
+    return d
+
 
 @admin_required
 async def get_item_admin(request: web.Request) -> web.Response:
@@ -901,8 +908,8 @@ async def get_item_admin(request: web.Request) -> web.Response:
 
     return web.json_response({
         "status": "ok",
-        "item": dict(item),
-        "variants": [dict(v) for v in variants]
+        "item": to_dict(item),
+        "variants": [to_dict(v) for v in variants]
     })
 
 
