@@ -287,20 +287,35 @@ async def asbeza_checkout(request: web.Request) -> web.Response:
 
 
 def setup_asbeza_routes(app: web.Application):
-    # Public Routes
+    # --- Public Routes ---
     app.router.add_get("/api/asbeza/items", get_asbeza_items)
     app.router.add_post("/api/asbeza/checkout", asbeza_checkout)
     app.router.add_post("/api/asbeza/upload_screenshot", upload_screenshot)
     
-    # Admin Auth
+    # --- Admin Auth ---
     app.router.add_post("/api/admin/login", admin_login)
     
-    # Admin Management (Crucial: matching the IDs used in JS)
-    app.router.add_get("/api/admin/orders", list_orders)
-    app.router.add_get("/api/admin/stats", get_dashboard_stats)
+    # --- Admin Management ---
+    # Orders
+    app.router.add_get("/api/admin/orders", list_orders)  # with filters & pagination
     app.router.add_get("/api/admin/orders/{id}", get_order_details) 
     app.router.add_post("/api/admin/orders/{id}/status", update_order_status)
-    app.router.add_post("/api/admin/add_item", add_item) # Added this for your inventory logic
+    app.router.add_get("/api/admin/latest-orders", latest_orders)
+
+    # Inventory
+    app.router.add_post("/api/admin/add_item", add_item)
+
+    # Users
+    app.router.add_get("/api/admin/users/{id}", get_user_details)
+
+    # --- Analytics Dashboard ---
+    app.router.add_get("/api/admin/dashboard/stats", dashboard_stats)
+    app.router.add_get("/api/admin/dashboard/order-status-breakdown", order_status_breakdown)
+    app.router.add_get("/api/admin/dashboard/payment-method-split", payment_method_split)
+    app.router.add_get("/api/admin/dashboard/fulfillment-speed", fulfillment_speed)
+    app.router.add_get("/api/admin/dashboard/stock-alerts", stock_alerts)
+    app.router.add_get("/api/admin/dashboard/order-heatmap", order_heatmap)
+    app.router.add_get("/api/admin/dashboard/campus-distribution", campus_distribution)
 
 import base64
 
@@ -443,40 +458,7 @@ async def add_item(request: web.Request) -> web.Response:
 
     return web.json_response({"status": "ok", "message": "Product deployed to system"})
 
-@admin_required
-async def get_dashboard_stats(request: web.Request) -> web.Response:
-    async with request.app["db"]._open_connection() as conn:
-        # 1. Revenue trend (last 7 days)
-        trend = await conn.fetch("""
-            SELECT DATE(created_at) as date, SUM(total_price) as total
-            FROM asbeza_orders
-            WHERE created_at > CURRENT_DATE - INTERVAL '7 days'
-            GROUP BY DATE(created_at) ORDER BY DATE(created_at)
-        """)
-
-        # Convert date objects to strings
-        trend_data = []
-        for r in trend:
-            d = dict(r)
-            if isinstance(d["date"], (datetime.date, datetime.datetime)):
-                d["date"] = d["date"].isoformat()
-            trend_data.append(d)
-
-        # 2. Top Selling Items
-        top_items = await conn.fetch("""
-            SELECT i.name, COUNT(oi.id) as sales
-            FROM asbeza_order_items oi
-            JOIN asbeza_variants v ON oi.variant_id = v.id
-            JOIN asbeza_items i ON v.item_id = i.id
-            GROUP BY i.name ORDER BY sales DESC LIMIT 5
-        """)
-
-        return web.json_response({
-            "status": "ok",
-            "trend": trend_data,
-            "top_selling": [dict(r) for r in top_items]
-        })
-        
+      
 @admin_required
 async def update_order_status(request: web.Request) -> web.Response:
     try:
@@ -498,3 +480,366 @@ async def update_order_status(request: web.Request) -> web.Response:
         return web.json_response({"status": "ok", "message": f"Order {order_id} updated to {new_status}"})
     except Exception as e:
         return web.json_response({"status": "error", "message": str(e)}, status=500)
+    
+    
+    
+
+
+
+import datetime
+from aiohttp import web
+
+# -------------------------
+# Helper: safe isoformat
+# -------------------------
+def iso(dt):
+    return dt.isoformat() if isinstance(dt, (datetime.datetime, datetime.date)) else None
+
+# -------------------------
+# 1. Expanded dashboard stats
+# GET /admin/dashboard/stats
+# -------------------------
+@admin_required
+async def dashboard_stats(request: web.Request) -> web.Response:
+    async with request.app["db"]._open_connection() as conn:
+        net_revenue = await conn.fetchval(
+            "SELECT COALESCE(SUM(total_price),0) FROM asbeza_orders WHERE status != 'cancelled'"
+        )
+        pending_count = await conn.fetchval(
+            "SELECT COUNT(*) FROM asbeza_orders WHERE status = 'pending'"
+        )
+        live_items = await conn.fetchval(
+            "SELECT COUNT(*) FROM asbeza_items WHERE active = TRUE"
+        )
+        total_customers = await conn.fetchval(
+            "SELECT COUNT(DISTINCT user_id) FROM asbeza_orders WHERE user_id IS NOT NULL"
+        )
+        repeat_customers = await conn.fetchval("""
+            SELECT COUNT(*) FROM (
+              SELECT user_id FROM asbeza_orders WHERE user_id IS NOT NULL GROUP BY user_id HAVING COUNT(*) > 1
+            ) t
+        """)
+        aov = await conn.fetchval(
+            "SELECT COALESCE(AVG(total_price),0) FROM asbeza_orders WHERE total_price IS NOT NULL"
+        )
+
+        # 7-day revenue trend (last 7 days including today)
+        rows = await conn.fetch("""
+            SELECT DATE(created_at) AS date, COALESCE(SUM(total_price),0) AS total
+            FROM asbeza_orders
+            WHERE created_at >= CURRENT_DATE - INTERVAL '6 days'
+            GROUP BY DATE(created_at)
+            ORDER BY DATE(created_at)
+        """)
+        trend = [{"date": r["date"].isoformat(), "total": float(r["total"])} for r in rows]
+
+        # Top selling items by quantity
+        top = await conn.fetch("""
+            SELECT i.id AS item_id, i.name, COALESCE(SUM(oi.quantity),0) AS qty_sold
+            FROM asbeza_order_items oi
+            JOIN asbeza_variants v ON oi.variant_id = v.id
+            JOIN asbeza_items i ON v.item_id = i.id
+            GROUP BY i.id, i.name
+            ORDER BY qty_sold DESC
+            LIMIT 6
+        """)
+        top_selling = [dict(r) for r in top]
+
+    return web.json_response({
+        "status": "ok",
+        "kpis": {
+            "net_revenue": float(net_revenue or 0),
+            "pending_orders": int(pending_count or 0),
+            "live_items": int(live_items or 0),
+            "total_customers": int(total_customers or 0),
+            "repeat_customers": int(repeat_customers or 0),
+            "repeat_pct": (float(repeat_customers or 0) / max(1, float(total_customers or 1))) * 100,
+            "aov": float(aov or 0)
+        },
+        "trend": trend,
+        "top_selling": top_selling
+    })
+
+
+# -------------------------
+# 2. Order status breakdown (pie)
+# GET /admin/dashboard/order-status-breakdown
+# -------------------------
+@admin_required
+async def order_status_breakdown(request: web.Request) -> web.Response:
+    async with request.app["db"]._open_connection() as conn:
+        rows = await conn.fetch("""
+            SELECT COALESCE(status,'unknown') AS status, COUNT(*) AS count
+            FROM asbeza_orders
+            GROUP BY COALESCE(status,'unknown')
+        """)
+    return web.json_response({"status": "ok", "data": [dict(r) for r in rows]})
+
+
+# -------------------------
+# 3. Payment method split
+# GET /admin/dashboard/payment-method-split
+# -------------------------
+@admin_required
+async def payment_method_split(request: web.Request) -> web.Response:
+    async with request.app["db"]._open_connection() as conn:
+        rows = await conn.fetch("""
+            SELECT COALESCE(method,'unknown') AS method, COUNT(*) AS count, COALESCE(SUM(amount),0) AS total_amount
+            FROM asbeza_order_payments
+            GROUP BY COALESCE(method,'unknown')
+        """)
+    return web.json_response({"status": "ok", "data": [dict(r) for r in rows]})
+
+
+# -------------------------
+# 4. Fulfillment speed
+# GET /admin/dashboard/fulfillment-speed
+# -------------------------
+@admin_required
+async def fulfillment_speed(request: web.Request) -> web.Response:
+    async with request.app["db"]._open_connection() as conn:
+        avg_hours = await conn.fetchval("""
+            SELECT AVG(EXTRACT(EPOCH FROM (delivered_at - created_at)))/3600.0
+            FROM asbeza_orders
+            WHERE delivered_at IS NOT NULL
+        """)
+        # median and p95 (if Postgres supports percentile_cont)
+        median_hours = await conn.fetchval("""
+            SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (delivered_at - created_at))/3600.0)
+            FROM asbeza_orders WHERE delivered_at IS NOT NULL
+        """)
+        p95_hours = await conn.fetchval("""
+            SELECT percentile_cont(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (delivered_at - created_at))/3600.0)
+            FROM asbeza_orders WHERE delivered_at IS NOT NULL
+        """)
+    return web.json_response({
+        "status": "ok",
+        "avg_hours": float(avg_hours or 0),
+        "median_hours": float(median_hours or 0),
+        "p95_hours": float(p95_hours or 0)
+    })
+
+
+# -------------------------
+# 5. Stock alerts
+# GET /admin/dashboard/stock-alerts?threshold=5
+# -------------------------
+@admin_required
+async def stock_alerts(request: web.Request) -> web.Response:
+    threshold = int(request.query.get("threshold", 5))
+    async with request.app["db"]._open_connection() as conn:
+        rows = await conn.fetch("""
+            SELECT v.id, v.item_id, i.name AS item_name, v.name AS variant_name, v.stock
+            FROM asbeza_variants v
+            JOIN asbeza_items i ON v.item_id = i.id
+            WHERE v.stock <= $1
+            ORDER BY v.stock ASC
+            LIMIT 200
+        """, threshold)
+    return web.json_response({"status": "ok", "threshold": threshold, "alerts": [dict(r) for r in rows]})
+
+
+# -------------------------
+# 6. Order heatmap (hourly)
+# GET /admin/dashboard/order-heatmap?days=7
+# -------------------------
+@admin_required
+async def order_heatmap(request: web.Request) -> web.Response:
+    days = int(request.query.get("days", 7))
+    async with request.app["db"]._open_connection() as conn:
+        rows = await conn.fetch(f"""
+            SELECT EXTRACT(HOUR FROM created_at)::int AS hour, COUNT(*) AS orders
+            FROM asbeza_orders
+            WHERE created_at >= CURRENT_DATE - INTERVAL '{days - 1} days'
+            GROUP BY hour
+            ORDER BY hour
+        """)
+    # Build full 0-23 array
+    counts = {r["hour"]: r["orders"] for r in rows}
+    hourly = [{"hour": h, "orders": int(counts.get(h, 0))} for h in range(24)]
+    return web.json_response({"status": "ok", "days": days, "hourly": hourly})
+
+
+# -------------------------
+# 7. Campus distribution
+# GET /admin/dashboard/campus-distribution
+# -------------------------
+@admin_required
+async def campus_distribution(request: web.Request) -> web.Response:
+    async with request.app["db"]._open_connection() as conn:
+        rows = await conn.fetch("""
+            SELECT COALESCE(u.campus,'Unknown') AS campus, COUNT(o.id) AS orders
+            FROM asbeza_orders o
+            LEFT JOIN users u ON o.user_id = u.id
+            GROUP BY COALESCE(u.campus,'Unknown')
+            ORDER BY orders DESC
+        """)
+    return web.json_response({"status": "ok", "data": [dict(r) for r in rows]})
+
+
+# -------------------------
+# 8. Orders list with filters & pagination
+# GET /admin/orders?status=&limit=50&offset=0
+# -------------------------
+@admin_required
+async def list_orders(request: web.Request) -> web.Response:
+    status = request.query.get("status")
+    limit = int(request.query.get("limit", 50))
+    offset = int(request.query.get("offset", 0))
+    async with request.app["db"]._open_connection() as conn:
+        rows = await conn.fetch("""
+            SELECT o.*, p.payment_proof_url, p.method as payment_method
+            FROM asbeza_orders o
+            LEFT JOIN asbeza_order_payments p ON o.id = p.order_id
+            WHERE ($1::text IS NULL OR o.status = $1)
+            ORDER BY o.created_at DESC
+            LIMIT $2 OFFSET $3
+        """, status, limit, offset)
+        orders = [dict(r) for r in rows]
+        for o in orders:
+            if o.get("created_at"): o["created_at"] = o["created_at"].isoformat()
+    # total count for pagination
+    total_count = await conn.fetchval("SELECT COUNT(*) FROM asbeza_orders WHERE ($1::text IS NULL OR status = $1)", status)
+    return web.json_response({"status": "ok", "orders": orders, "total": int(total_count)})
+
+
+# -------------------------
+# 9. Order details expanded
+# GET /admin/orders/{id}
+# -------------------------
+@admin_required
+async def get_order_details(request: web.Request) -> web.Response:
+    order_id = int(request.match_info['id'])
+    async with request.app["db"]._open_connection() as conn:
+        order = await conn.fetchrow("SELECT * FROM asbeza_orders WHERE id=$1", order_id)
+        if not order:
+            return web.json_response({"status": "error", "message": "Order not found"}, status=404)
+
+        items = await conn.fetch("""
+            SELECT oi.*, v.name as variant_name, i.name as item_name, i.image_url
+            FROM asbeza_order_items oi
+            JOIN asbeza_variants v ON oi.variant_id = v.id
+            JOIN asbeza_items i ON v.item_id = i.id
+            WHERE oi.order_id = $1
+        """, order_id)
+
+        payments = await conn.fetch("SELECT * FROM asbeza_order_payments WHERE order_id=$1 ORDER BY created_at DESC", order_id)
+
+        user = None
+        if order['user_id']:
+            user = await conn.fetchrow("""
+                SELECT id, telegram_id, role, first_name, phone, campus, coins, xp, level, status
+                FROM users WHERE id = $1
+            """, order['user_id'])
+
+        od = dict(order)
+        od['created_at'] = od['created_at'].isoformat() if od.get('created_at') else None
+        if od.get('delivered_at'): od['delivered_at'] = od['delivered_at'].isoformat()
+
+    return web.json_response({
+        "status": "ok",
+        "order": od,
+        "items": [dict(r) for r in items],
+        "payments": [dict(r) for r in payments],
+        "user": dict(user) if user else None
+    })
+
+
+# -------------------------
+# 10. Update order status (set delivered_at when delivered)
+# POST /admin/orders/{id}/status
+# -------------------------
+@admin_required
+async def update_order_status(request: web.Request) -> web.Response:
+    try:
+        order_id = int(request.match_info['id'])
+        data = await request.json()
+        new_status = data.get("status")
+        if not new_status:
+            return web.json_response({"status": "error", "message": "Missing status"}, status=400)
+
+        async with request.app["db"]._open_connection() as conn:
+            if new_status == 'delivered':
+                result = await conn.execute("""
+                    UPDATE asbeza_orders SET status = $1, delivered_at = NOW() WHERE id = $2
+                """, new_status, order_id)
+            else:
+                result = await conn.execute("""
+                    UPDATE asbeza_orders SET status = $1 WHERE id = $2
+                """, new_status, order_id)
+
+            if result == "UPDATE 0":
+                return web.json_response({"status": "error", "message": "Order not found"}, status=404)
+
+        return web.json_response({"status": "ok", "message": f"Order {order_id} updated to {new_status}"})
+    except Exception as e:
+        return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+
+# -------------------------
+# 11. User details
+# GET /admin/users/{id}
+# -------------------------
+@admin_required
+async def get_user_details(request: web.Request) -> web.Response:
+    user_id = int(request.match_info['id'])
+    async with request.app["db"]._open_connection() as conn:
+        user = await conn.fetchrow("""
+            SELECT id, telegram_id, role, first_name, phone, campus, coins, xp, level, status
+            FROM users WHERE id = $1
+        """, user_id)
+        if not user:
+            return web.json_response({"status": "error", "message": "User not found"}, status=404)
+
+        summary = await conn.fetchrow("""
+            SELECT COUNT(*) AS total_orders, COALESCE(SUM(total_price),0) AS lifetime_value
+            FROM asbeza_orders WHERE user_id = $1
+        """, user_id)
+
+        recent_orders = await conn.fetch("""
+            SELECT id, total_price, status, created_at
+            FROM asbeza_orders WHERE user_id = $1
+            ORDER BY created_at DESC LIMIT 10
+        """, user_id)
+
+        favorites = await conn.fetch("""
+            SELECT i.id, i.name, COALESCE(SUM(oi.quantity),0) AS qty
+            FROM asbeza_order_items oi
+            JOIN asbeza_orders o ON oi.order_id = o.id
+            JOIN asbeza_variants v ON oi.variant_id = v.id
+            JOIN asbeza_items i ON v.item_id = i.id
+            WHERE o.user_id = $1
+            GROUP BY i.id, i.name
+            ORDER BY qty DESC LIMIT 5
+        """, user_id)
+
+    return web.json_response({
+        "status": "ok",
+        "user": dict(user),
+        "summary": {"total_orders": int(summary["total_orders"]), "lifetime_value": float(summary["lifetime_value"])},
+        "recent_orders": [{**dict(r), "created_at": r["created_at"].isoformat()} for r in recent_orders],
+        "favorites": [dict(r) for r in favorites]
+    })
+
+
+# -------------------------
+# 12. Latest orders feed
+# GET /admin/latest-orders?limit=5
+# -------------------------
+@admin_required
+async def latest_orders(request: web.Request) -> web.Response:
+    limit = int(request.query.get("limit", 5))
+    async with request.app["db"]._open_connection() as conn:
+        rows = await conn.fetch("""
+            SELECT o.id, o.user_id, o.total_price, o.status, o.created_at, p.method as payment_method
+            FROM asbeza_orders o
+            LEFT JOIN asbeza_order_payments p ON o.id = p.order_id
+            ORDER BY o.created_at DESC
+            LIMIT $1
+        """, limit)
+        data = []
+        for r in rows:
+            d = dict(r)
+            d["created_at"] = d["created_at"].isoformat() if d.get("created_at") else None
+            data.append(d)
+    return web.json_response({"status": "ok", "orders": data})

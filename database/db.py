@@ -308,6 +308,18 @@ ALTER TABLE asbeza_orders
 ADD COLUMN IF NOT EXISTS delivery_fee DOUBLE PRECISION DEFAULT 0,
 ADD COLUMN IF NOT EXISTS payment_proof_url TEXT, 
 ADD COLUMN IF NOT EXISTS created_by_ip TEXT;
+-- Add delivered_at to measure fulfillment speed
+ALTER TABLE asbeza_orders
+ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMP;
+
+-- Add indexes for analytics queries
+CREATE INDEX IF NOT EXISTS idx_orders_created_at ON asbeza_orders (created_at);
+CREATE INDEX IF NOT EXISTS idx_orders_status ON asbeza_orders (status);
+CREATE INDEX IF NOT EXISTS idx_orders_user_id ON asbeza_orders (user_id);
+CREATE INDEX IF NOT EXISTS idx_order_items_variant_id ON asbeza_order_items (variant_id);
+CREATE INDEX IF NOT EXISTS idx_variants_stock ON asbeza_variants (stock);
+CREATE INDEX IF NOT EXISTS idx_payments_order_id ON asbeza_order_payments (order_id);
+
 
 
 ALTER TABLE delivery_guys
