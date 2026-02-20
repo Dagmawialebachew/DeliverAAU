@@ -733,6 +733,7 @@ async def update_order_status(request: web.Request) -> web.Response:
             return web.json_response({"status": "error", "message": "Missing status"}, status=400)
 
         async with request.app["db"]._open_connection() as conn:
+            # Update order status
             if new_status == 'delivered':
                 result = await conn.execute("""
                     UPDATE asbeza_orders SET status = $1, delivered_at = NOW() WHERE id = $2
@@ -744,6 +745,25 @@ async def update_order_status(request: web.Request) -> web.Response:
 
             if result == "UPDATE 0":
                 return web.json_response({"status": "error", "message": "Order not found"}, status=404)
+
+            # Get user telegram_id
+            order = await conn.fetchrow("SELECT user_id FROM asbeza_orders WHERE id=$1", order_id)
+            telegram_id = order['user_id']
+
+        # ✅ Polished status messages
+        status_messages = {
+            "pending":    f"⏳ Your Asbeza order #{order_id} has been placed and is waiting to be processed.",
+            "processing": f"⚙️ Your Asbeza order #{order_id} is accepted and being prepared.",
+            "shipped":    f"🚚 Your Asbeza order #{order_id} is on the way!",
+            "completed":  f"✅ Your Asbeza order #{order_id} has been successfully completed. Thank you!",
+            "cancelled":  f"❌ Your Asbeza order #{order_id} has been cancelled.",
+            "delivered":  f"📦 Your Asbeza order #{order_id} has been delivered. Enjoy!"
+        }
+        message = status_messages.get(new_status, f"ℹ️ Your Asbeza order status is now: {new_status}")
+
+        # Send bot message (assuming you have a bot client available as request.app['bot'])
+        bot = request.app['bot']
+        await bot.send_message(chat_id=telegram_id, text=message)
 
         return web.json_response({"status": "ok", "message": f"Order {order_id} updated to {new_status}"})
     except Exception as e:
