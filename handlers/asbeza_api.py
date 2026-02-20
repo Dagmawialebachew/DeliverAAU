@@ -629,11 +629,15 @@ async def list_orders(request: web.Request) -> web.Response:
     offset = int(request.query.get("offset", 0))
 
     async with request.app["db"]._open_connection() as conn:
-        # Fetch orders
         rows = await conn.fetch("""
-            SELECT o.*, p.payment_proof_url, p.method as payment_method
+            SELECT o.*, 
+                   p.payment_proof_url, 
+                   p.method as payment_method,
+                   u.first_name, 
+                   u.campus
             FROM asbeza_orders o
             LEFT JOIN asbeza_order_payments p ON o.id = p.order_id
+            LEFT JOIN users u ON o.user_id = u.telegram_id
             WHERE ($1::text IS NULL OR o.status = $1)
             ORDER BY o.created_at DESC
             LIMIT $2 OFFSET $3
@@ -644,7 +648,6 @@ async def list_orders(request: web.Request) -> web.Response:
             if o.get("created_at"):
                 o["created_at"] = o["created_at"].isoformat()
 
-        # ✅ total_count must be inside the same connection context
         total_count = await conn.fetchval(
             "SELECT COUNT(*) FROM asbeza_orders WHERE ($1::text IS NULL OR status = $1)",
             status
