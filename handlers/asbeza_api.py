@@ -684,7 +684,7 @@ async def get_order_details(request: web.Request) -> web.Response:
         if order['user_id']:
             # orders.user_id is a Telegram ID → match against users.telegram_id
             user = await conn.fetchrow("""
-                SELECT telegram_id, role, first_name, phone, campus, coins, xp, level, status, created_at
+                SELECT telegram_id, first_name, phone, campus
                 FROM users WHERE telegram_id = $1
             """, order['user_id'])
 
@@ -702,24 +702,11 @@ async def get_order_details(request: web.Request) -> web.Response:
 
         # Add summary stats
         total_qty = sum(i['quantity'] for i in items_out)
-        total_items = len(items_out)
-        order_out['total_items'] = total_items
+        order_out['total_items'] = len(items_out)
         order_out['total_quantity'] = total_qty
         order_out['delivery_fee'] = order.get('delivery_fee', 0)
 
-        # Enhance user info
-        user_out = None
-        if user:
-            user_out = to_dict(user)
-            # Friendly created_at
-            if user_out.get('created_at'):
-                created = datetime.datetime.fromisoformat(user_out['created_at'])
-                now = datetime.datetime.utcnow()
-                diff_days = (now - created).days
-                friendly = created.strftime("%a, %b %d, %Y")
-                user_out['created_friendly'] = f"{friendly} ({diff_days} days ago)"
-            # Full name placeholder (Telegram API integration needed)
-            user_out['full_name'] = user_out.get('first_name')  # fallback
+        user_out = to_dict(user) if user else None
 
         return web.json_response({
             "status":"ok",
