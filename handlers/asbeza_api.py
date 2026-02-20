@@ -396,41 +396,6 @@ async def admin_login(request: web.Request) -> web.Response:
     
     return web.json_response({"status": "error", "message": "Access Denied"}, status=401)
 
-# --- ORDER MANAGEMENT ---
-@admin_required
-async def list_orders(request: web.Request) -> web.Response:
-    async with request.app["db"]._open_connection() as conn:
-        # We join with payment proof so we can see the image URL immediately
-        rows = await conn.fetch("""
-            SELECT o.*, p.payment_proof_url, p.method as payment_method
-            FROM asbeza_orders o
-            LEFT JOIN asbeza_order_payments p ON o.id = p.order_id
-            ORDER BY o.created_at DESC
-        """)
-        # Convert asyncpg records to dicts and handle datetime
-        orders = [dict(r) for r in rows]
-        # Helper to stringify date for JSON
-        for o in orders: o['created_at'] = o['created_at'].isoformat()
-    return web.json_response({"status": "ok", "orders": orders})
-
-@admin_required
-async def get_order_details(request: web.Request) -> web.Response:
-    order_id = int(request.match_info['id'])
-    async with request.app["db"]._open_connection() as conn:
-        # Get the specific items and their variant names
-        items = await conn.fetch("""
-            SELECT oi.*, v.name as variant_name, i.name as item_name, i.image_url
-            FROM asbeza_order_items oi
-            JOIN asbeza_variants v ON oi.variant_id = v.id
-            JOIN asbeza_items i ON v.item_id = i.id
-            WHERE oi.order_id = $1
-        """, order_id)
-        
-        return web.json_response({
-            "status": "ok", 
-            "items": [dict(r) for r in items]
-        })
-
 # --- INVENTORY MANAGEMENT (The "Insert Items" Logic) ---
 @admin_required
 async def add_item(request: web.Request) -> web.Response:
@@ -458,34 +423,7 @@ async def add_item(request: web.Request) -> web.Response:
 
     return web.json_response({"status": "ok", "message": "Product deployed to system"})
 
-      
-@admin_required
-async def update_order_status(request: web.Request) -> web.Response:
-    try:
-        order_id = int(request.match_info['id'])
-        data = await request.json()
-        new_status = data.get("status")
-
-        async with request.app["db"]._open_connection() as conn:
-            # Update the order status in the database
-            result = await conn.execute("""
-                UPDATE asbeza_orders 
-                SET status = $1 
-                WHERE id = $2
-            """, new_status, order_id)
-
-            if result == "UPDATE 0":
-                return web.json_response({"status": "error", "message": "Order not found"}, status=404)
-        
-        return web.json_response({"status": "ok", "message": f"Order {order_id} updated to {new_status}"})
-    except Exception as e:
-        return web.json_response({"status": "error", "message": str(e)}, status=500)
     
-    
-    
-
-
-
 import datetime
 from aiohttp import web
 
