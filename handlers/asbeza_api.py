@@ -663,7 +663,7 @@ async def get_order_details(request: web.Request) -> web.Response:
     async with request.app["db"]._open_connection() as conn:
         order = await conn.fetchrow("SELECT * FROM asbeza_orders WHERE id=$1", order_id)
         if not order:
-            return web.json_response({"status": "error", "message": "Order not found"}, status=404)
+            return web.json_response({"status":"error","message":"Order not found"}, status=404)
 
         items = await conn.fetch("""
             SELECT oi.*, v.name as variant_name, i.name as item_name, i.image_url
@@ -673,26 +673,33 @@ async def get_order_details(request: web.Request) -> web.Response:
             WHERE oi.order_id = $1
         """, order_id)
 
-        payments = await conn.fetch("SELECT * FROM asbeza_order_payments WHERE order_id=$1 ORDER BY created_at DESC", order_id)
+        payments = await conn.fetch("""
+            SELECT * FROM asbeza_order_payments WHERE order_id=$1 ORDER BY created_at DESC
+        """, order_id)
 
         user = None
         if order['user_id']:
+            # ✅ Match orders.user_id (telegram_id) against users.telegram_id
             user = await conn.fetchrow("""
                 SELECT id, telegram_id, role, first_name, phone, campus, coins, xp, level, status
-                FROM users WHERE id = $1
+                FROM users WHERE telegram_id = $1
             """, order['user_id'])
 
-        od = dict(order)
-        od['created_at'] = od['created_at'].isoformat() if od.get('created_at') else None
-        if od.get('delivered_at'): od['delivered_at'] = od['delivered_at'].isoformat()
+        # Convert datetimes to ISO strings
+        def to_dict(record):
+            d = dict(record)
+            for k, v in d.items():
+                if isinstance(v, (datetime.date, datetime.datetime)):
+                    d[k] = v.isoformat()
+            return d
 
-    return web.json_response({
-        "status": "ok",
-        "order": od,
-        "items": [dict(r) for r in items],
-        "payments": [dict(r) for r in payments],
-        "user": dict(user) if user else None
-    })
+        return web.json_response({
+            "status":"ok",
+            "order": to_dict(order),
+            "items": [to_dict(r) for r in items],
+            "payments": [to_dict(r) for r in payments],
+            "user": to_dict(user) if user else None
+        })
 
 
 # -------------------------
