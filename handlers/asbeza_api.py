@@ -734,6 +734,7 @@ async def get_order_details(request: web.Request) -> web.Response:
 # 10. Update order status (set delivered_at when delivered)
 # POST /admin/orders/{id}/status
 # -------------------------
+import logging
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 
 @admin_required
@@ -747,10 +748,13 @@ async def update_order_status(request: web.Request) -> web.Response:
         data = await request.json()
         new_status = data.get("status")
         if not new_status:
+            logging.warning(f"Order {order_id}: Missing status in request payload")
             return web.json_response({"status": "error", "message": "Missing status"}, status=400)
 
+        logging.info(f"Order {order_id}: Updating status to '{new_status}'")
+
         async with request.app["db"]._open_connection() as conn:
-            # Update order status (set delivered_at when delivered)
+            # Update order status
             if new_status == "delivered":
                 result = await conn.execute(
                     "UPDATE asbeza_orders SET status = $1, delivered_at = NOW() WHERE id = $2",
@@ -762,27 +766,33 @@ async def update_order_status(request: web.Request) -> web.Response:
                     new_status, order_id
                 )
 
+            logging.debug(f"Order {order_id}: DB update result = {result}")
+
             if result == "UPDATE 0":
+                logging.error(f"Order {order_id}: Not found in DB")
                 return web.json_response({"status": "error", "message": "Order not found"}, status=404)
 
-            # Fetch order row to get the Telegram ID (orders.user_id stores Telegram ID)
+            # Fetch Telegram ID
             order_row = await conn.fetchrow("SELECT user_id FROM asbeza_orders WHERE id = $1", order_id)
             if not order_row:
+                logging.error(f"Order {order_id}: Row missing after update")
                 return web.json_response({"status": "error", "message": "Order not found after update"}, status=404)
 
-            telegram_id = order_row["user_id"]
+            telegram_id = int(order_row["user_id"])
+            logging.info(f"Order {order_id}: Found telegram_id = {telegram_id}")
 
-        # Polished, unambiguous grocery messages
+        # Status messages
         status_messages = {
             "pending":    f"🛒 Your Asbeza order #{order_id} has been placed and is waiting to be processed.",
             "processing": f"📦 Your Asbeza order #{order_id} is accepted and being prepared.",
             "shipped":    f"🚚 Your Asbeza order #{order_id} is on the way to you.",
             "completed":  f"✅ Your Asbeza order #{order_id} has been successfully completed. Thank you for shopping with us!",
             "cancelled":  f"❌ Your Asbeza order #{order_id} has been cancelled.",
-            "delivered":  f"🏠 Your Asbeza order #{order_id} has been delivered. Enjoy your items!"}
+            "delivered":  f"🏠 Your Asbeza order #{order_id} has been delivered. Enjoy your items!"
+        }
         message_text = status_messages.get(new_status, f"ℹ️ Your Asbeza order #{order_id} status is now: {new_status}")
 
-        # Build inline keyboard with web app tracking button (include user_id and order_id)
+        # Inline keyboard
         def build_tracking_keyboard(user_id: int, order_id: int) -> InlineKeyboardMarkup:
             url = f"https://unibites-asbeza.vercel.app?user_id={user_id}&order_id={order_id}"
             kb = InlineKeyboardMarkup().add(
@@ -795,18 +805,19 @@ async def update_order_status(request: web.Request) -> web.Response:
 
         keyboard = build_tracking_keyboard(telegram_id, order_id)
 
-        # Send bot message if bot client is available
+        # Send bot message
         bot = request.app.get("bot")
         if bot:
             try:
+                logging.info(f"Order {order_id}: Sending Telegram message to {telegram_id}")
                 await bot.send_message(chat_id=telegram_id, text=message_text, reply_markup=keyboard)
+                logging.info(f"Order {order_id}: Telegram message sent successfully")
             except Exception as e:
-                import logging
-                logging.exception(f"Failed to send Telegram message to {telegram_id}")
-
+                logging.exception(f"Order {order_id}: Failed to send Telegram message to {telegram_id}")
 
         return web.json_response({"status": "ok", "message": f"Order {order_id} updated to {new_status}"})
     except Exception as e:
+        logging.exception(f"Order {order_id if 'order_id' in locals() else 'unknown'}: Unexpected error")
         return web.json_response({"status": "error", "message": str(e)}, status=500)
 
 # -------------------------
