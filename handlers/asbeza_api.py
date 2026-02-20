@@ -303,7 +303,13 @@ def setup_asbeza_routes(app: web.Application):
     app.router.add_get("/api/admin/latest-orders", latest_orders)
 
     # Inventory
-    app.router.add_post("/api/admin/add_item", add_item)
+    app.router.add_get("/api/admin/items", list_items_admin)              # list items with variant counts
+    app.router.add_get("/api/admin/items/{id}", get_item_admin)           # get item + variants
+    app.router.add_post("/api/admin/items", add_item)                     # add new item
+    app.router.add_put("/api/admin/items/{id}", update_item_admin)        # update item
+    app.router.add_delete("/api/admin/items/{id}", delete_item_admin)     # delete item + variants
+    app.router.add_put("/api/admin/variants/{id}", update_variant_admin)  # update variant
+    app.router.add_delete("/api/admin/variants/{id}", delete_variant_admin) # delete variant
 
     # Users
     app.router.add_get("/api/admin/users/{id}", get_user_details)
@@ -723,8 +729,14 @@ async def get_order_details(request: web.Request) -> web.Response:
 # 10. Update order status (set delivered_at when delivered)
 # POST /admin/orders/{id}/status
 # -------------------------
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
+
 @admin_required
 async def update_order_status(request: web.Request) -> web.Response:
+    """
+    Update an order's status and notify the user via bot with an inline
+    Track button that opens the web app with user_id and order_id.
+    """
     try:
         order_id = int(request.match_info['id'])
         data = await request.json()
@@ -733,42 +745,63 @@ async def update_order_status(request: web.Request) -> web.Response:
             return web.json_response({"status": "error", "message": "Missing status"}, status=400)
 
         async with request.app["db"]._open_connection() as conn:
-            # Update order status
-            if new_status == 'delivered':
-                result = await conn.execute("""
-                    UPDATE asbeza_orders SET status = $1, delivered_at = NOW() WHERE id = $2
-                """, new_status, order_id)
+            # Update order status (set delivered_at when delivered)
+            if new_status == "delivered":
+                result = await conn.execute(
+                    "UPDATE asbeza_orders SET status = $1, delivered_at = NOW() WHERE id = $2",
+                    new_status, order_id
+                )
             else:
-                result = await conn.execute("""
-                    UPDATE asbeza_orders SET status = $1 WHERE id = $2
-                """, new_status, order_id)
+                result = await conn.execute(
+                    "UPDATE asbeza_orders SET status = $1 WHERE id = $2",
+                    new_status, order_id
+                )
 
             if result == "UPDATE 0":
                 return web.json_response({"status": "error", "message": "Order not found"}, status=404)
 
-            # Get user telegram_id
-            order = await conn.fetchrow("SELECT user_id FROM asbeza_orders WHERE id=$1", order_id)
-            telegram_id = order['user_id']
+            # Fetch order row to get the Telegram ID (orders.user_id stores Telegram ID)
+            order_row = await conn.fetchrow("SELECT user_id FROM asbeza_orders WHERE id = $1", order_id)
+            if not order_row:
+                return web.json_response({"status": "error", "message": "Order not found after update"}, status=404)
 
-        # ✅ Polished status messages
+            telegram_id = order_row["user_id"]
+
+        # Polished, unambiguous grocery messages
         status_messages = {
-            "pending":    f"⏳ Your Asbeza order #{order_id} has been placed and is waiting to be processed.",
-            "processing": f"⚙️ Your Asbeza order #{order_id} is accepted and being prepared.",
-            "shipped":    f"🚚 Your Asbeza order #{order_id} is on the way!",
-            "completed":  f"✅ Your Asbeza order #{order_id} has been successfully completed. Thank you!",
+            "pending":    f"🛒 Your Asbeza order #{order_id} has been placed and is waiting to be processed.",
+            "processing": f"📦 Your Asbeza order #{order_id} is accepted and being prepared.",
+            "shipped":    f"🚚 Your Asbeza order #{order_id} is on the way to you.",
+            "completed":  f"✅ Your Asbeza order #{order_id} has been successfully completed. Thank you for shopping with us!",
             "cancelled":  f"❌ Your Asbeza order #{order_id} has been cancelled.",
-            "delivered":  f"📦 Your Asbeza order #{order_id} has been delivered. Enjoy!"
-        }
-        message = status_messages.get(new_status, f"ℹ️ Your Asbeza order status is now: {new_status}")
+            "delivered":  f"🏠 Your Asbeza order #{order_id} has been delivered. Enjoy your items!"}
+        message_text = status_messages.get(new_status, f"ℹ️ Your Asbeza order #{order_id} status is now: {new_status}")
 
-        # Send bot message (assuming you have a bot client available as request.app['bot'])
-        bot = request.app['bot']
-        await bot.send_message(chat_id=telegram_id, text=message)
+        # Build inline keyboard with web app tracking button (include user_id and order_id)
+        def build_tracking_keyboard(user_id: int, order_id: int) -> InlineKeyboardMarkup:
+            url = f"https://unibites-asbeza.vercel.app?user_id={user_id}&order_id={order_id}"
+            kb = InlineKeyboardMarkup().add(
+                InlineKeyboardButton(
+                    text="🧺 Track My Order 🧺",
+                    web_app=WebAppInfo(url=url)
+                )
+            )
+            return kb
+
+        keyboard = build_tracking_keyboard(telegram_id, order_id)
+
+        # Send bot message if bot client is available
+        bot = request.app.get("bot")
+        if bot:
+            try:
+                await bot.send_message(chat_id=telegram_id, text=message_text, reply_markup=keyboard)
+            except Exception:
+                # Do not fail the whole request if bot sending fails; return success for DB update
+                pass
 
         return web.json_response({"status": "ok", "message": f"Order {order_id} updated to {new_status}"})
     except Exception as e:
         return web.json_response({"status": "error", "message": str(e)}, status=500)
-
 
 # -------------------------
 # 11. User details
@@ -837,3 +870,79 @@ async def latest_orders(request: web.Request) -> web.Response:
             d["created_at"] = d["created_at"].isoformat() if d.get("created_at") else None
             data.append(d)
     return web.json_response({"status": "ok", "orders": data})
+
+
+
+@admin_required
+async def list_items_admin(request: web.Request) -> web.Response:
+    async with request.app["db"]._open_connection() as conn:
+        rows = await conn.fetch("""
+            SELECT i.id, i.name, i.base_price, i.image_url,
+                   COUNT(v.id) AS variant_count
+            FROM asbeza_items i
+            LEFT JOIN asbeza_variants v ON v.item_id = i.id
+            GROUP BY i.id, i.name, i.base_price, i.image_url
+            ORDER BY i.created_at DESC
+        """)
+    return web.json_response({"status": "ok", "items": [dict(r) for r in rows]})
+
+
+
+@admin_required
+async def get_item_admin(request: web.Request) -> web.Response:
+    item_id = int(request.match_info['id'])
+    async with request.app["db"]._open_connection() as conn:
+        item = await conn.fetchrow("SELECT * FROM asbeza_items WHERE id=$1", item_id)
+        if not item:
+            return web.json_response({"status":"error","message":"Item not found"}, status=404)
+
+        variants = await conn.fetch("SELECT * FROM asbeza_variants WHERE item_id=$1", item_id)
+
+    return web.json_response({
+        "status": "ok",
+        "item": dict(item),
+        "variants": [dict(v) for v in variants]
+    })
+
+
+@admin_required
+async def update_item_admin(request: web.Request) -> web.Response:
+    item_id = int(request.match_info['id'])
+    data = await request.json()
+    async with request.app["db"]._open_connection() as conn:
+        await conn.execute("""
+            UPDATE asbeza_items
+            SET name=$1, base_price=$2, image_url=$3
+            WHERE id=$4
+        """, data.get("name"), data.get("base_price"), data.get("image_url"), item_id)
+    return web.json_response({"status":"ok","message":f"Item {item_id} updated"})
+
+
+@admin_required
+async def delete_item_admin(request: web.Request) -> web.Response:
+    item_id = int(request.match_info['id'])
+    async with request.app["db"]._open_connection() as conn:
+        await conn.execute("DELETE FROM asbeza_items WHERE id=$1", item_id)
+        await conn.execute("DELETE FROM asbeza_variants WHERE item_id=$1", item_id)
+    return web.json_response({"status":"ok","message":f"Item {item_id} deleted"})
+
+
+@admin_required
+async def update_variant_admin(request: web.Request) -> web.Response:
+    variant_id = int(request.match_info['id'])
+    data = await request.json()
+    async with request.app["db"]._open_connection() as conn:
+        await conn.execute("""
+            UPDATE asbeza_variants
+            SET name=$1, price=$2
+            WHERE id=$3
+        """, data.get("name"), data.get("price"), variant_id)
+    return web.json_response({"status":"ok","message":f"Variant {variant_id} updated"})
+
+
+@admin_required
+async def delete_variant_admin(request: web.Request) -> web.Response:
+    variant_id = int(request.match_info['id'])
+    async with request.app["db"]._open_connection() as conn:
+        await conn.execute("DELETE FROM asbeza_variants WHERE id=$1", variant_id)
+    return web.json_response({"status":"ok","message":f"Variant {variant_id} deleted"})
