@@ -313,7 +313,9 @@ def setup_asbeza_routes(app: web.Application):
     app.router.add_post("/api/asbeza/variants", create_variant_admin) # create variant
 
     # Users
+    app.router.add_get("/api/admin/users", list_users)
     app.router.add_get("/api/admin/users/{id}", get_user_details)
+
 
     # --- Analytics Dashboard ---
     app.router.add_get("/api/admin/dashboard/stats", dashboard_stats)
@@ -323,6 +325,8 @@ def setup_asbeza_routes(app: web.Application):
     app.router.add_get("/api/admin/dashboard/stock-alerts", stock_alerts)
     app.router.add_get("/api/admin/dashboard/order-heatmap", order_heatmap)
     app.router.add_get("/api/admin/dashboard/campus-distribution", campus_distribution)
+    
+    #
 
 import base64
 
@@ -939,13 +943,26 @@ async def delete_item_admin(request: web.Request) -> web.Response:
 async def update_variant_admin(request: web.Request) -> web.Response:
     variant_id = int(request.match_info['id'])
     data = await request.json()
+
     async with request.app["db"]._open_connection() as conn:
         await conn.execute("""
             UPDATE asbeza_variants
-            SET name=$1, price=$2
-            WHERE id=$3
-        """, data.get("name"), data.get("price"), variant_id)
-    return web.json_response({"status":"ok","message":f"Variant {variant_id} updated"})
+            SET name = $1,
+                price = $2,
+                stock = COALESCE($3, stock),
+                image_url = COALESCE($4, image_url)
+            WHERE id = $5
+        """,
+        data.get("name"),
+        data.get("price"),
+        data.get("stock"),       # optional stock update
+        data.get("image_url"),   # new image_url field
+        variant_id)
+
+    return web.json_response({
+        "status": "ok",
+        "message": f"Variant {variant_id} updated"
+    })
 
 
 @admin_required
@@ -962,11 +979,90 @@ async def create_variant_admin(request: web.Request) -> web.Response:
     item_id = data.get("item_id")
     name = data.get("name", "New Variant")
     price = data.get("price", 0)
+    stock = data.get("stock", 0)
+    image_url = data.get("image_url")
+
+    if not item_id:
+        return web.json_response({"status": "error", "message": "Missing item_id"}, status=400)
 
     async with request.app["db"]._open_connection() as conn:
         await conn.execute("""
-            INSERT INTO asbeza_variants (item_id, name, price)
-            VALUES ($1, $2, $3)
-        """, item_id, name, price)
-        
-    return web.json_response({"status": "ok", "message": "Variant created"})
+            INSERT INTO asbeza_variants (item_id, name, price, stock, image_url)
+            VALUES ($1, $2, $3, $4, $5)
+        """, item_id, name, price, stock, image_url)
+
+    return web.json_response({
+        "status": "ok",
+        "message": f"Variant '{name}' created for item {item_id}"
+    })
+
+
+
+
+@admin_required
+async def list_users(request: web.Request) -> web.Response:
+    async with request.app["db"]._open_connection() as conn:
+        rows = await conn.fetch("""
+            SELECT telegram_id AS id, first_name, phone, campus, level, coins
+            FROM users
+            ORDER BY created_at DESC
+        """)
+    # Convert datetimes if needed
+    users = [dict(r) for r in rows]
+    return web.json_response({"status": "ok", "users": users})
+
+
+
+@admin_required
+async def get_user_details(request: web.Request) -> web.Response:
+    user_id = int(request.match_info['id'])
+    async with request.app["db"]._open_connection() as conn:
+        user = await conn.fetchrow("""
+            SELECT telegram_id AS id, first_name, phone, campus, level, coins
+            FROM users WHERE telegram_id = $1
+        """, user_id)
+        if not user:
+            return web.json_response({"status":"error","message":"User not found"}, status=404)
+
+        # Orders summary
+        orders = await conn.fetch("""
+            SELECT id, total_price, created_at
+            FROM asbeza_orders
+            WHERE user_id = $1
+            ORDER BY created_at DESC
+            LIMIT 10
+        """, user_id)
+
+        total_orders = len(orders)
+        lifetime_value = sum(o['total_price'] for o in orders)
+
+        # Favorites (aggregate items ordered most)
+        favorites = await conn.fetch("""
+            SELECT i.name, SUM(oi.quantity) AS qty
+            FROM asbeza_order_items oi
+            JOIN asbeza_variants v ON oi.variant_id = v.id
+            JOIN asbeza_items i ON v.item_id = i.id
+            JOIN asbeza_orders o ON oi.order_id = o.id
+            WHERE o.user_id = $1
+            GROUP BY i.name
+            ORDER BY qty DESC
+            LIMIT 5
+        """, user_id)
+
+    def to_dict(record):
+        d = dict(record)
+        for k, v in d.items():
+            if isinstance(v, (datetime.date, datetime.datetime)):
+                d[k] = v.isoformat()
+        return d
+
+    return web.json_response({
+        "status": "ok",
+        "user": dict(user),
+        "summary": {
+            "total_orders": total_orders,
+            "lifetime_value": lifetime_value
+        },
+        "favorites": [dict(f) for f in favorites],
+        "recent_orders": [to_dict(o) for o in orders]
+    })
