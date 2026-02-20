@@ -624,7 +624,9 @@ async def list_orders(request: web.Request) -> web.Response:
     status = request.query.get("status")
     limit = int(request.query.get("limit", 50))
     offset = int(request.query.get("offset", 0))
+
     async with request.app["db"]._open_connection() as conn:
+        # Fetch orders
         rows = await conn.fetch("""
             SELECT o.*, p.payment_proof_url, p.method as payment_method
             FROM asbeza_orders o
@@ -633,13 +635,23 @@ async def list_orders(request: web.Request) -> web.Response:
             ORDER BY o.created_at DESC
             LIMIT $2 OFFSET $3
         """, status, limit, offset)
+
         orders = [dict(r) for r in rows]
         for o in orders:
-            if o.get("created_at"): o["created_at"] = o["created_at"].isoformat()
-    # total count for pagination
-    total_count = await conn.fetchval("SELECT COUNT(*) FROM asbeza_orders WHERE ($1::text IS NULL OR status = $1)", status)
-    return web.json_response({"status": "ok", "orders": orders, "total": int(total_count)})
+            if o.get("created_at"):
+                o["created_at"] = o["created_at"].isoformat()
 
+        # ✅ total_count must be inside the same connection context
+        total_count = await conn.fetchval(
+            "SELECT COUNT(*) FROM asbeza_orders WHERE ($1::text IS NULL OR status = $1)",
+            status
+        )
+
+    return web.json_response({
+        "status": "ok",
+        "orders": orders,
+        "total": int(total_count or 0)
+    })
 
 # -------------------------
 # 9. Order details expanded
