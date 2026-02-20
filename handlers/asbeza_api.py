@@ -606,13 +606,16 @@ async def order_heatmap(request: web.Request) -> web.Response:
 async def campus_distribution(request: web.Request) -> web.Response:
     async with request.app["db"]._open_connection() as conn:
         rows = await conn.fetch("""
-            SELECT COALESCE(u.campus,'Unknown') AS campus, COUNT(o.id) AS orders
+            SELECT COALESCE(u.campus, 'Unknown') AS campus, COUNT(o.id) AS orders
             FROM asbeza_orders o
-            LEFT JOIN users u ON o.user_id = u.id
-            GROUP BY COALESCE(u.campus,'Unknown')
+            LEFT JOIN users u ON o.user_id = u.telegram_id
+            GROUP BY COALESCE(u.campus, 'Unknown')
             ORDER BY orders DESC
         """)
-    return web.json_response({"status": "ok", "data": [dict(r) for r in rows]})
+    return web.json_response({
+        "status": "ok",
+        "data": [dict(r) for r in rows]
+    })
 
 
 # -------------------------
@@ -679,13 +682,13 @@ async def get_order_details(request: web.Request) -> web.Response:
 
         user = None
         if order['user_id']:
-            # ✅ Match orders.user_id (telegram_id) against users.telegram_id
+            # orders.user_id is a Telegram ID → match against users.telegram_id
             user = await conn.fetchrow("""
-                SELECT id, telegram_id, role, first_name, phone, campus, coins, xp, level, status
+                SELECT telegram_id, role, first_name, phone, campus, coins, xp, level, status, created_at
                 FROM users WHERE telegram_id = $1
             """, order['user_id'])
 
-        # Convert datetimes to ISO strings
+        # Helper to convert datetimes
         def to_dict(record):
             d = dict(record)
             for k, v in d.items():
@@ -693,14 +696,37 @@ async def get_order_details(request: web.Request) -> web.Response:
                     d[k] = v.isoformat()
             return d
 
+        order_out = to_dict(order)
+        items_out = [to_dict(r) for r in items]
+        payments_out = [to_dict(r) for r in payments]
+
+        # Add summary stats
+        total_qty = sum(i['quantity'] for i in items_out)
+        total_items = len(items_out)
+        order_out['total_items'] = total_items
+        order_out['total_quantity'] = total_qty
+
+        # Enhance user info
+        user_out = None
+        if user:
+            user_out = to_dict(user)
+            # Friendly created_at
+            if user_out.get('created_at'):
+                created = datetime.datetime.fromisoformat(user_out['created_at'])
+                now = datetime.datetime.utcnow()
+                diff_days = (now - created).days
+                friendly = created.strftime("%a, %b %d, %Y")
+                user_out['created_friendly'] = f"{friendly} ({diff_days} days ago)"
+            # Full name placeholder (Telegram API integration needed)
+            user_out['full_name'] = user_out.get('first_name')  # fallback
+
         return web.json_response({
             "status":"ok",
-            "order": to_dict(order),
-            "items": [to_dict(r) for r in items],
-            "payments": [to_dict(r) for r in payments],
-            "user": to_dict(user) if user else None
+            "order": order_out,
+            "items": items_out,
+            "payments": payments_out,
+            "user": user_out
         })
-
 
 # -------------------------
 # 10. Update order status (set delivered_at when delivered)
