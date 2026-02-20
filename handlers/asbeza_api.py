@@ -793,15 +793,20 @@ async def update_order_status(request: web.Request) -> web.Response:
         message_text = status_messages.get(new_status, f"ℹ️ Your Asbeza order #{order_id} status is now: {new_status}")
 
         # Inline keyboard
+        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
+
         def build_tracking_keyboard(user_id: int, order_id: int) -> InlineKeyboardMarkup:
             url = f"https://unibites-asbeza.vercel.app?user_id={user_id}&order_id={order_id}"
-            kb = InlineKeyboardMarkup().add(
-                InlineKeyboardButton(
-                    text="🧺 Track My Order 🧺",
-                    web_app=WebAppInfo(url=url)
-                )
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(
+                        text="🧺 Track My Order 🧺",
+                        web_app=WebAppInfo(url=url)
+                    )]
+                ]
             )
-            return kb
+            return keyboard
+
 
         keyboard = build_tracking_keyboard(telegram_id, order_id)
 
