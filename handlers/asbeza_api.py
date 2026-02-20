@@ -705,6 +705,7 @@ async def get_order_details(request: web.Request) -> web.Response:
         total_items = len(items_out)
         order_out['total_items'] = total_items
         order_out['total_quantity'] = total_qty
+        order_out['delivery_fee'] = order.get('delivery_fee', 0)
 
         # Enhance user info
         user_out = None
