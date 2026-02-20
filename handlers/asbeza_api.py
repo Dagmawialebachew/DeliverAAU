@@ -800,9 +800,10 @@ async def update_order_status(request: web.Request) -> web.Response:
         if bot:
             try:
                 await bot.send_message(chat_id=telegram_id, text=message_text, reply_markup=keyboard)
-            except Exception:
-                # Do not fail the whole request if bot sending fails; return success for DB update
-                pass
+            except Exception as e:
+                import logging
+                logging.exception(f"Failed to send Telegram message to {telegram_id}")
+
 
         return web.json_response({"status": "ok", "message": f"Order {order_id} updated to {new_status}"})
     except Exception as e:
