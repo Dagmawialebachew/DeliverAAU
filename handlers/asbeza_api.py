@@ -310,6 +310,7 @@ def setup_asbeza_routes(app: web.Application):
     app.router.add_delete("/api/admin/items/{id}", delete_item_admin)     # delete item + variants
     app.router.add_put("/api/admin/variants/{id}", update_variant_admin)  # update variant
     app.router.add_delete("/api/admin/variants/{id}", delete_variant_admin) # delete variant
+    app.router.add_delete("/api/asbeza/variants/", create_variant_admin) # delete variant
 
     # Users
     app.router.add_get("/api/admin/users/{id}", get_user_details)
@@ -946,3 +947,19 @@ async def delete_variant_admin(request: web.Request) -> web.Response:
     async with request.app["db"]._open_connection() as conn:
         await conn.execute("DELETE FROM asbeza_variants WHERE id=$1", variant_id)
     return web.json_response({"status":"ok","message":f"Variant {variant_id} deleted"})
+
+
+@admin_required
+async def create_variant_admin(request: web.Request) -> web.Response:
+    data = await request.json()
+    item_id = data.get("item_id")
+    name = data.get("name", "New Variant")
+    price = data.get("price", 0)
+
+    async with request.app["db"]._open_connection() as conn:
+        await conn.execute("""
+            INSERT INTO asbeza_variants (item_id, name, price)
+            VALUES ($1, $2, $3)
+        """, item_id, name, price)
+        
+    return web.json_response({"status": "ok", "message": "Variant created"})
