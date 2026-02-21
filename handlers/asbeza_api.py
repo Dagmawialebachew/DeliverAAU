@@ -830,46 +830,45 @@ async def update_order_status(request: web.Request) -> web.Response:
 # 11. User details
 # GET /admin/users/{id}
 # -------------------------
-@admin_required
-async def get_user_details(request: web.Request) -> web.Response:
-    user_id = int(request.match_info['id'])
-    async with request.app["db"]._open_connection() as conn:
-        user = await conn.fetchrow("""
-            SELECT id, telegram_id, role, first_name, phone, campus, coins, xp, level, status
-            FROM users WHERE id = $1
-        """, user_id)
-        if not user:
-            return web.json_response({"status": "error", "message": "User not found"}, status=404)
+# async def get_user_details(request: web.Request) -> web.Response:
+#     user_id = int(request.match_info['id'])
+#     async with request.app["db"]._open_connection() as conn:
+#         user = await conn.fetchrow("""
+#             SELECT id, telegram_id, role, first_name, phone, campus, coins, xp, level, status
+#             FROM users WHERE id = $1
+#         """, user_id)
+#         if not user:
+#             return web.json_response({"status": "error", "message": "User not found"}, status=404)
 
-        summary = await conn.fetchrow("""
-            SELECT COUNT(*) AS total_orders, COALESCE(SUM(total_price),0) AS lifetime_value
-            FROM asbeza_orders WHERE user_id = $1
-        """, user_id)
+#         summary = await conn.fetchrow("""
+#             SELECT COUNT(*) AS total_orders, COALESCE(SUM(total_price),0) AS lifetime_value
+#             FROM asbeza_orders WHERE user_id = $1
+#         """, user_id)
 
-        recent_orders = await conn.fetch("""
-            SELECT id, total_price, status, created_at
-            FROM asbeza_orders WHERE user_id = $1
-            ORDER BY created_at DESC LIMIT 10
-        """, user_id)
+#         recent_orders = await conn.fetch("""
+#             SELECT id, total_price, status, created_at
+#             FROM asbeza_orders WHERE user_id = $1
+#             ORDER BY created_at DESC LIMIT 10
+#         """, user_id)
 
-        favorites = await conn.fetch("""
-            SELECT i.id, i.name, COALESCE(SUM(oi.quantity),0) AS qty
-            FROM asbeza_order_items oi
-            JOIN asbeza_orders o ON oi.order_id = o.id
-            JOIN asbeza_variants v ON oi.variant_id = v.id
-            JOIN asbeza_items i ON v.item_id = i.id
-            WHERE o.user_id = $1
-            GROUP BY i.id, i.name
-            ORDER BY qty DESC LIMIT 5
-        """, user_id)
+#         favorites = await conn.fetch("""
+#             SELECT i.id, i.name, COALESCE(SUM(oi.quantity),0) AS qty
+#             FROM asbeza_order_items oi
+#             JOIN asbeza_orders o ON oi.order_id = o.id
+#             JOIN asbeza_variants v ON oi.variant_id = v.id
+#             JOIN asbeza_items i ON v.item_id = i.id
+#             WHERE o.user_id = $1
+#             GROUP BY i.id, i.name
+#             ORDER BY qty DESC LIMIT 5
+#         """, user_id)
 
-    return web.json_response({
-        "status": "ok",
-        "user": dict(user),
-        "summary": {"total_orders": int(summary["total_orders"]), "lifetime_value": float(summary["lifetime_value"])},
-        "recent_orders": [{**dict(r), "created_at": r["created_at"].isoformat()} for r in recent_orders],
-        "favorites": [dict(r) for r in favorites]
-    })
+#     return web.json_response({
+#         "status": "ok",
+#         "user": dict(user),
+#         "summary": {"total_orders": int(summary["total_orders"]), "lifetime_value": float(summary["lifetime_value"])},
+#         "recent_orders": [{**dict(r), "created_at": r["created_at"].isoformat()} for r in recent_orders],
+#         "favorites": [dict(r) for r in favorites]
+#     })
 
 
 # -------------------------
@@ -1031,7 +1030,6 @@ async def list_users(request: web.Request) -> web.Response:
 
 
 
-@admin_required
 async def get_user_details(request: web.Request) -> web.Response:
     user_id = int(request.match_info['id'])
     async with request.app["db"]._open_connection() as conn:
