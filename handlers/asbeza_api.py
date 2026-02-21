@@ -301,6 +301,7 @@ def setup_asbeza_routes(app: web.Application):
     app.router.add_get("/api/admin/orders/{id}", get_order_details) 
     app.router.add_post("/api/admin/orders/{id}/status", update_order_status)
     app.router.add_get("/api/admin/latest-orders", latest_orders)
+    app.router.add_get("/api/asbeza/orders", get_user_orders)
 
     # Inventory
     app.router.add_get("/api/admin/items", list_items_admin)              # list items with variant counts
@@ -1083,3 +1084,38 @@ async def get_user_details(request: web.Request) -> web.Response:
         "favorites": [dict(f) for f in favorites],
         "recent_orders": [to_dict(o) for o in orders]
     })
+
+
+async def get_user_orders(request: web.Request) -> web.Response:
+    """
+    GET /api/asbeza/orders?user_id=12345
+    Returns all orders for a specific user with their current status
+    """
+    user_id_str = request.query.get("user_id")
+    if not user_id_str:
+        return web.json_response({"status": "error", "message": "user_id required"}, status=400)
+    
+    user_id = int(user_id_str)
+    db = request.app["db"]
+    
+    async with db._open_connection() as conn:
+        rows = await conn.fetch("""
+            SELECT id, status, total_price, upfront_paid, created_at, 
+                   (SELECT COUNT(*) FROM asbeza_order_items WHERE order_id = asbeza_orders.id) as item_count
+            FROM asbeza_orders 
+            WHERE user_id = $1 
+            ORDER BY created_at DESC 
+            LIMIT 10
+        """, user_id)
+        
+        orders = []
+        for r in rows:
+            d = dict(r)
+            d['created_at'] = d['created_at'].isoformat()
+            # Map DB status to friendly UI labels/icons
+            orders.append(d)
+            
+    return web.json_response({"status": "ok", "orders": orders})
+
+# Add this to setup_asbeza_routes:
+# app.router.add_get("/api/asbeza/orders", get_user_orders)
