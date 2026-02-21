@@ -1085,12 +1085,7 @@ async def get_user_details(request: web.Request) -> web.Response:
         "recent_orders": [to_dict(o) for o in orders]
     })
 
-
 async def get_user_orders(request: web.Request) -> web.Response:
-    """
-    GET /api/asbeza/orders?user_id=12345
-    Returns all orders for a specific user with their current status
-    """
     user_id_str = request.query.get("user_id")
     if not user_id_str:
         return web.json_response({"status": "error", "message": "user_id required"}, status=400)
@@ -1099,23 +1094,34 @@ async def get_user_orders(request: web.Request) -> web.Response:
     db = request.app["db"]
     
     async with db._open_connection() as conn:
+        # We join with asbeza_order_payments to get the image_url (payment_proof_url)
         rows = await conn.fetch("""
-            SELECT id, status, total_price, upfront_paid, created_at, 
-                   (SELECT COUNT(*) FROM asbeza_order_items WHERE order_id = asbeza_orders.id) as item_count
-            FROM asbeza_orders 
-            WHERE user_id = $1 
-            ORDER BY created_at DESC 
-            LIMIT 10
+            SELECT 
+                o.id, 
+                o.status, 
+                o.total_price, 
+                o.upfront_paid, 
+                o.delivery_fee,
+                o.created_at,
+                (SELECT COUNT(*) FROM asbeza_order_items WHERE order_id = o.id) as item_count,
+                p.payment_proof_url as image_url
+            FROM asbeza_orders o
+            LEFT JOIN (
+                SELECT DISTINCT ON (order_id) order_id, payment_proof_url 
+                FROM asbeza_order_payments 
+                ORDER BY order_id, created_at DESC
+            ) p ON o.id = p.order_id
+            WHERE o.user_id = $1 
+            ORDER BY o.created_at DESC 
+            LIMIT 15
         """, user_id)
         
         orders = []
         for r in rows:
             d = dict(r)
             d['created_at'] = d['created_at'].isoformat()
-            # Map DB status to friendly UI labels/icons
+            # Ensure image_url is at least an empty string if null
+            d['image_url'] = d['image_url'] or ""
             orders.append(d)
             
     return web.json_response({"status": "ok", "orders": orders})
-
-# Add this to setup_asbeza_routes:
-# app.router.add_get("/api/asbeza/orders", get_user_orders)
