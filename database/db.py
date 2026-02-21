@@ -279,6 +279,15 @@ ADD COLUMN IF NOT EXISTS image_url TEXT;
 CREATE INDEX IF NOT EXISTS idx_leaderboards_bites ON leaderboards(bites DESC);
 CREATE INDEX IF NOT EXISTS idx_leaderboards_updated ON leaderboards(last_updated);
 
+-- This helps the DB find a user's orders instantly
+CREATE INDEX IF NOT EXISTS idx_asbeza_orders_user_id ON asbeza_orders(user_id);
+
+-- This helps the DB count items instantly
+CREATE INDEX IF NOT EXISTS idx_asbeza_order_items_order_id ON asbeza_order_items(order_id);
+
+-- This helps the DB find payments instantly
+CREATE INDEX IF NOT EXISTS idx_asbeza_order_payments_order_id ON asbeza_order_payments(order_id);
+
 
 -- Indexes (Postgres doesn't need IF NOT EXISTS for CREATE INDEX in a transaction block
 -- but this is fine for initial setup)

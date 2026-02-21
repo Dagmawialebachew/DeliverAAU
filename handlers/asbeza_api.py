@@ -1094,7 +1094,7 @@ async def get_user_orders(request: web.Request) -> web.Response:
     db = request.app["db"]
     
     async with db._open_connection() as conn:
-        # We join with asbeza_order_payments to get the image_url (payment_proof_url)
+        # Optimization: Use LEFT JOIN and GROUP BY instead of subqueries
         rows = await conn.fetch("""
             SELECT 
                 o.id, 
@@ -1103,25 +1103,24 @@ async def get_user_orders(request: web.Request) -> web.Response:
                 o.upfront_paid, 
                 o.delivery_fee,
                 o.created_at,
-                (SELECT COUNT(*) FROM asbeza_order_items WHERE order_id = o.id) as item_count,
-                p.payment_proof_url as image_url
+                COUNT(oi.id) as item_count,
+                MAX(p.payment_proof_url) as image_url
             FROM asbeza_orders o
-            LEFT JOIN (
-                SELECT DISTINCT ON (order_id) order_id, payment_proof_url 
-                FROM asbeza_order_payments 
-                ORDER BY order_id, created_at DESC
-            ) p ON o.id = p.order_id
+            LEFT JOIN asbeza_order_items oi ON oi.order_id = o.id
+            LEFT JOIN asbeza_order_payments p ON p.order_id = o.id
             WHERE o.user_id = $1 
+            GROUP BY o.id, p.order_id -- Grouping prevents duplicate counting
             ORDER BY o.created_at DESC 
             LIMIT 15
         """, user_id)
         
-        orders = []
-        for r in rows:
-            d = dict(r)
-            d['created_at'] = d['created_at'].isoformat()
-            # Ensure image_url is at least an empty string if null
-            d['image_url'] = d['image_url'] or ""
-            orders.append(d)
+        # Fast processing using list comprehension
+        orders = [
+            {
+                **dict(r), 
+                "created_at": r['created_at'].isoformat(),
+                "image_url": r['image_url'] or ""
+            } for r in rows
+        ]
             
     return web.json_response({"status": "ok", "orders": orders})
