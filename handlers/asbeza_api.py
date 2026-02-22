@@ -907,14 +907,21 @@ async def get_item_admin(request: web.Request) -> web.Response:
 async def update_item_admin(request: web.Request) -> web.Response:
     item_id = int(request.match_info['id'])
     data = await request.json()
+    
     async with request.app["db"]._open_connection() as conn:
+        # Added category to the UPDATE statement
         await conn.execute("""
             UPDATE asbeza_items
-            SET name=$1, base_price=$2, image_url=$3
-            WHERE id=$4
-        """, data.get("name"), data.get("base_price"), data.get("image_url"), item_id)
+            SET name=$1, base_price=$2, image_url=$3, category=$4
+            WHERE id=$5
+        """, 
+        data.get("name"), 
+        data.get("base_price"), 
+        data.get("image_url"), 
+        data.get("category"), # New field
+        item_id)
+        
     return web.json_response({"status":"ok","message":f"Item {item_id} updated"})
-
 
 @admin_required
 async def delete_item_admin(request: web.Request) -> web.Response:
@@ -931,25 +938,27 @@ async def update_variant_admin(request: web.Request) -> web.Response:
     data = await request.json()
 
     async with request.app["db"]._open_connection() as conn:
+        # Added cost_price to the UPDATE statement
         await conn.execute("""
             UPDATE asbeza_variants
             SET name = $1,
                 price = $2,
-                stock = COALESCE($3, stock),
-                image_url = COALESCE($4, image_url)
-            WHERE id = $5
+                cost_price = $3,
+                stock = COALESCE($4, stock),
+                image_url = COALESCE($5, image_url)
+            WHERE id = $6
         """,
         data.get("name"),
         data.get("price"),
-        data.get("stock"),       # optional stock update
-        data.get("image_url"),   # new image_url field
+        data.get("cost_price"),  # New field
+        data.get("stock"),
+        data.get("image_url"),
         variant_id)
 
     return web.json_response({
         "status": "ok",
-        "message": f"Variant {variant_id} updated"
+        "message": f"Variant {variant_id} updated (Cost Price: {data.get('cost_price')})"
     })
-
 
 @admin_required
 async def delete_variant_admin(request: web.Request) -> web.Response:
@@ -958,13 +967,13 @@ async def delete_variant_admin(request: web.Request) -> web.Response:
         await conn.execute("DELETE FROM asbeza_variants WHERE id=$1", variant_id)
     return web.json_response({"status":"ok","message":f"Variant {variant_id} deleted"})
 
-
 @admin_required
 async def create_variant_admin(request: web.Request) -> web.Response:
     data = await request.json()
     item_id = data.get("item_id")
     name = data.get("name", "New Variant")
     price = data.get("price", 0)
+    cost_price = data.get("cost_price", 0) # Default cost
     stock = data.get("stock", 0)
     image_url = data.get("image_url")
 
@@ -972,17 +981,16 @@ async def create_variant_admin(request: web.Request) -> web.Response:
         return web.json_response({"status": "error", "message": "Missing item_id"}, status=400)
 
     async with request.app["db"]._open_connection() as conn:
+        # Added cost_price to the INSERT statement
         await conn.execute("""
-            INSERT INTO asbeza_variants (item_id, name, price, stock, image_url)
-            VALUES ($1, $2, $3, $4, $5)
-        """, item_id, name, price, stock, image_url)
+            INSERT INTO asbeza_variants (item_id, name, price, cost_price, stock, image_url)
+            VALUES ($1, $2, $3, $4, $5, $6)
+        """, item_id, name, price, cost_price, stock, image_url)
 
     return web.json_response({
         "status": "ok",
-        "message": f"Variant '{name}' created for item {item_id}"
+        "message": f"Variant '{name}' created with cost {cost_price}"
     })
-
-
 
 
 @admin_required

@@ -79,7 +79,7 @@ def get_main_menu_kb() -> ReplyKeyboardMarkup:
         [
             KeyboardButton(
                 text="🛠 Admin Page",
-                web_app=WebAppInfo(url="https://deliveraau.onrender.com/admin.html")
+                web_app=WebAppInfo(url="https://unibites-asbeza.vercel.app/admin.html")
             )
         ]
     ]
