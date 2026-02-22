@@ -45,60 +45,55 @@ async def get_asbeza_items(request: web.Request) -> web.Response:
     return web.json_response({"items": items})
 
 
+
 async def asbeza_checkout(request: web.Request) -> web.Response:
     """
+    Fast checkout: trust frontend totals to minimize latency while preserving
+    existing admin/user notification logic.
+
     POST /api/asbeza/checkout
     Expects JSON:
     {
       "user_id": 12345,
       "items": [
-        {"variant_id": 1, "quantity": 2},
+        {"variant_id": 1, "quantity": 2, "price": 120.0},
         ...
       ],
-      // optional client-side totals (will be validated server-side)
+      // optional client-side totals (trusted if provided)
       "delivery_fee": 80,
       "total_price": 480,
       "upfront_paid": 192,
-      // optional: payment_proof_url (public URL) or payment_proof_base64 (not required)
+      // optional: payment_proof_url (public URL) or payment_proof_base64
     }
+
     Returns:
     { "status": "ok", "order_id": 42, "upfront": 192 }
     """
     db = request.app["db"]
-
-    # Delivery fee rule (server-side) — keep existing logic
-    def compute_delivery_fee(subtotal: float) -> float:
-        base = 80.0
-        if subtotal >= 500:
-            return base + round(subtotal * 0.01)
-        return base
 
     try:
         payload = await request.json()
     except Exception:
         return web.json_response({"status": "error", "message": "invalid json"}, status=400)
 
-    # NEW SECURE CODE:
+    # Required minimal validation: user_id and items
     raw_user_id = payload.get("user_id")
     if raw_user_id is None:
         return web.json_response({
-            "status": "error", 
+            "status": "error",
             "message": "User identification missing. Please restart the app."
         }, status=400)
+
     items: List[Dict] = payload.get("items", [])
     try:
         user_id = int(raw_user_id)
     except (ValueError, TypeError):
-        return web.json_response({
-            "status": "error", 
-            "message": "Invalid User ID format"
-        }, status=400)
+        return web.json_response({"status": "error", "message": "Invalid User ID format"}, status=400)
 
-    if items is None or not isinstance(items, list) or len(items) == 0:
+    if not isinstance(items, list) or len(items) == 0:
         return web.json_response({"status": "error", "message": "items are required"}, status=400)
 
-    # Validate item structure and collect variant ids
-    variant_ids: List[int] = []
+    # Validate item structure (lightweight): ensure variant_id and quantity present and sane
     validated_items_input: List[Dict] = []
     for idx, it in enumerate(items):
         try:
@@ -106,72 +101,48 @@ async def asbeza_checkout(request: web.Request) -> web.Response:
             quantity = int(it.get("quantity", 1))
             if quantity <= 0:
                 raise ValueError()
+            # Accept client-provided price (trusted). Default to 0.0 if missing.
+            price = float(it.get("price", 0.0))
         except Exception:
             return web.json_response({"status": "error", "message": f"invalid item at index {idx}"}, status=400)
-        variant_ids.append(variant_id)
-        validated_items_input.append({"variant_id": variant_id, "quantity": quantity})
+        validated_items_input.append({"variant_id": variant_id, "quantity": quantity, "price": price})
 
-    # Optional client-provided fields (for validation only)
-    client_delivery = payload.get("delivery_fee")
-    client_total = payload.get("total_price")
-    client_upfront = payload.get("upfront_paid")
+    # Trust frontend totals if provided (fast path)
+    delivery_fee = payload.get("delivery_fee")
+    total_price = payload.get("total_price")
+    upfront_paid = payload.get("upfront_paid")
 
-    # Optional payment proof URL (frontend may upload and send this)
-    payment_proof_url = payload.get("payment_proof_url")  # e.g., "/uploads/abcd.jpg" or full URL
+    # Normalize numeric totals to floats/ints where possible (but do not recompute)
+    try:
+        if delivery_fee is not None:
+            delivery_fee = float(delivery_fee)
+        else:
+            delivery_fee = 0.0
+    except Exception:
+        return web.json_response({"status": "error", "message": "invalid delivery_fee"}, status=400)
+
+    try:
+        if total_price is not None:
+            total_price = float(total_price)
+        else:
+            total_price = 0.0
+    except Exception:
+        return web.json_response({"status": "error", "message": "invalid total_price"}, status=400)
+
+    try:
+        if upfront_paid is not None:
+            upfront_paid = int(upfront_paid)
+        else:
+            upfront_paid = int(math.floor(total_price * 0.4)) if total_price else 0
+    except Exception:
+        return web.json_response({"status": "error", "message": "invalid upfront_paid"}, status=400)
+
+    payment_proof_url = payload.get("payment_proof_url")
     payment_proof_base64 = payload.get("payment_proof_base64")
-    
 
-    # All DB operations must happen while connection is open
+    # Fast DB insertion trusting client-provided totals and item prices
     try:
         async with db._open_connection() as conn:
-            # fetch variants in one query
-            rows = await conn.fetch(
-                "SELECT id, price FROM asbeza_variants WHERE id = ANY($1::int[])", variant_ids
-            )
-            # build map
-            price_map = {r["id"]: float(r["price"]) for r in rows}
-
-            # ensure all variant ids exist
-            missing = [vid for vid in variant_ids if vid not in price_map]
-            if missing:
-                return web.json_response({"status": "error", "message": f"variant(s) not found: {missing}"}, status=400)
-
-            # compute subtotal using DB prices (server authoritative)
-            subtotal = 0.0
-            for it in validated_items_input:
-                vid = it["variant_id"]
-                qty = it["quantity"]
-                unit_price = price_map[vid]
-                subtotal += unit_price * qty
-
-            # compute delivery fee, total, upfront
-            delivery_fee = compute_delivery_fee(subtotal)
-            total_price = subtotal + delivery_fee
-            upfront_paid = int(math.floor(total_price * 0.4))
-
-            # If client provided totals, validate they match server computation
-            if client_delivery is not None:
-                try:
-                    if float(client_delivery) != float(delivery_fee):
-                        return web.json_response({"status": "error", "message": "delivery_fee mismatch"}, status=400)
-                except Exception:
-                    return web.json_response({"status": "error", "message": "invalid delivery_fee"}, status=400)
-
-            if client_total is not None:
-                try:
-                    if float(client_total) != float(total_price):
-                        return web.json_response({"status": "error", "message": "total_price mismatch"}, status=400)
-                except Exception:
-                    return web.json_response({"status": "error", "message": "invalid total_price"}, status=400)
-
-            if client_upfront is not None:
-                try:
-                    if int(client_upfront) != int(upfront_paid):
-                        return web.json_response({"status": "error", "message": "upfront_paid mismatch"}, status=400)
-                except Exception:
-                    return web.json_response({"status": "error", "message": "invalid upfront_paid"}, status=400)
-
-            # Insert order (server authoritative totals)
             order_id = await conn.fetchval(
                 """
                 INSERT INTO asbeza_orders (user_id, total_price, delivery_fee, upfront_paid, status)
@@ -181,19 +152,17 @@ async def asbeza_checkout(request: web.Request) -> web.Response:
                 user_id, total_price, delivery_fee, upfront_paid
             )
 
-            # Insert order items using DB prices (store price per item)
+            # Insert items using client-provided price
             for it in validated_items_input:
-                vid = it["variant_id"]
-                qty = it["quantity"]
-                unit_price = price_map[vid]
                 await conn.execute(
                     """
                     INSERT INTO asbeza_order_items (order_id, variant_id, quantity, price)
                     VALUES ($1, $2, $3, $4)
                     """,
-                    order_id, vid, qty, unit_price
+                    order_id, it["variant_id"], it["quantity"], it["price"]
                 )
-            
+
+            # Store payment proof if provided
             if payment_proof_base64:
                 await conn.execute(
                     """
@@ -211,14 +180,13 @@ async def asbeza_checkout(request: web.Request) -> web.Response:
                     order_id, user_id, upfront_paid, payment_proof_url, "screenshot"
                 )
 
-            # --- Notify admin group here (consistent with other flows) ---
-            # Build a compact items string for the admin message
+            # --- Admin notification (preserve original logic) ---
             try:
                 items_lines = []
                 for it in validated_items_input:
                     vid = it["variant_id"]
                     qty = it["quantity"]
-                    unit_price = price_map[vid]
+                    unit_price = it["price"]
                     items_lines.append(f"#{vid} ×{qty} @ {unit_price:.2f} birr")
                 items_str = "\n".join(items_lines)
 
@@ -234,7 +202,6 @@ async def asbeza_checkout(request: web.Request) -> web.Response:
                         f"⚡ Upfront: {upfront_paid:.2f} birr\n\n"
                         "Check the admin web app for full details."
                     )
-                    # Use the bot instance stored on the app (must be set during app startup)
                     try:
                         bot = request.app.get("bot")
                         if bot:
@@ -244,17 +211,13 @@ async def asbeza_checkout(request: web.Request) -> web.Response:
                     except Exception:
                         request.app.logger.exception(f"Failed to send admin notification for order {order_id}")
             except Exception:
-                # Ensure admin notification building doesn't break checkout
                 request.app.logger.exception("Failed to build/send admin notification")
 
-            # --- If user has Telegram id, send them a confirmation image/message ---
-            # If frontend provided a payment_proof_url, send that image back to the user with a short caption.
+            # --- User notification (preserve original logic) ---
             try:
                 bot = request.app.get("bot")
                 if bot and user_id:
-                    # prefer payment_proof_url if provided
                     if payment_proof_url:
-                        # If the URL is relative (starts with '/'), build absolute URL if app has public base
                         public_base = request.app.get("public_base_url", "").rstrip("/")
                         if payment_proof_url.startswith("/"):
                             photo_url = f"{public_base}{payment_proof_url}" if public_base else payment_proof_url
@@ -262,16 +225,13 @@ async def asbeza_checkout(request: web.Request) -> web.Response:
                             photo_url = payment_proof_url
                         caption = "✅ Your Asbeza order has been received and is pending confirmation. You can track it in the Asbeza admin web app."
                         try:
-                            # send_photo may accept a URL depending on bot library; keep try/except to avoid breaking flow
                             await bot.send_photo(user_id, photo=photo_url, caption=caption, parse_mode="HTML")
                         except Exception:
-                            # fallback to sending a text message if photo send fails
                             try:
                                 await bot.send_message(user_id, caption, parse_mode="HTML")
                             except Exception:
                                 request.app.logger.exception(f"Failed to notify user {user_id} with photo/message for order {order_id}")
                     else:
-                        # No proof image provided — send a short text confirmation
                         try:
                             await bot.send_message(
                                 user_id,
@@ -281,7 +241,6 @@ async def asbeza_checkout(request: web.Request) -> web.Response:
                         except Exception:
                             request.app.logger.exception(f"Failed to send user notification for order {order_id}")
                 else:
-                    # No bot or no user_id — skip user notification
                     if not bot:
                         request.app.logger.debug("Bot instance not available; skipping user notification.")
                     if not user_id:
