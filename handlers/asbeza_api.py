@@ -382,28 +382,32 @@ async def admin_login(request: web.Request) -> web.Response:
 async def add_item(request: web.Request) -> web.Response:
     data = await request.json()
     name = data.get("name")
-    desc = data.get("description")
-    price = data.get("base_price")
-    img = data.get("image_url")
-    variants = data.get("variants", []) # Expecting list of {name, price, stock}
+    desc = data.get("description", "")
+    price = data.get("base_price", 0)
+    img = data.get("image_url", "")
+    category = data.get("category", "General") # New field
+    variants = data.get("variants", []) 
 
     async with request.app["db"]._open_connection() as conn:
         async with conn.transaction():
-            # 1. Insert Item
+            # 1. Insert Item with Category
             item_id = await conn.fetchval("""
-                INSERT INTO asbeza_items (name, description, base_price, image_url)
-                VALUES ($1, $2, $3, $4) RETURNING id
-            """, name, desc, price, img)
+                INSERT INTO asbeza_items (name, description, base_price, image_url, category)
+                VALUES ($1, $2, $3, $4, $5) RETURNING id
+            """, name, desc, price, img, category)
 
-            # 2. Insert Variants
+            # 2. Insert Variants with Auto-Cost
             for v in variants:
+                v_price = v.get('price', price)
+                # If admin didn't provide cost_price, we use the selling price
+                v_cost = v.get('cost_price', v_price) 
+                
                 await conn.execute("""
-                    INSERT INTO asbeza_variants (item_id, name, price, stock)
-                    VALUES ($1, $2, $3, $4)
-                """, item_id, v['name'], v['price'], v.get('stock', 0))
+                    INSERT INTO asbeza_variants (item_id, name, price, cost_price, stock, image_url)
+                    VALUES ($1, $2, $3, $4, $5, $6)
+                """, item_id, v['name'], v_price, v_cost, v.get('stock', 0), v.get('image_url', img))
 
-    return web.json_response({"status": "ok", "message": "Product deployed to system"})
-
+    return web.json_response({"status": "ok", "message": "Product deployed successfully!"})
     
 import datetime
 from aiohttp import web
