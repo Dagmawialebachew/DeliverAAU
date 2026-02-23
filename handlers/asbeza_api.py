@@ -304,8 +304,8 @@ def setup_asbeza_routes(app: web.Application):
     app.router.add_get("/api/delivery/my_stats", get_my_stats)
     app.router.add_post("/api/delivery/update_status", update_order_status_delivery)
     app.router.add_get("/api/delivery/settings", get_settings)
-    app.router.add_post("/admin/orders/{order_id}/assign", assign_courier)
-    app.router.add_get("/admin/delivery-guys", list_delivery_guys) # now only active & not blocked
+    app.router.add_post("/api/admin/orders/{order_id}/assign", assign_courier)
+    app.router.add_get("/api/admin/delivery-guys", list_delivery_guys) # now only active & not blocked
 
 
 import base64
