@@ -16,6 +16,27 @@ def _int(v):
     except: return None
 
 
+# GET /api/auth/role?user_id=123
+async def get_user_role(request: web.Request) -> web.Response:
+    user_id = request.query.get("user_id")
+    if not user_id:
+        return web.json_response({"status": "error", "message": "Missing user_id"}, status=400)
+
+    async with request.app["db"]._open_connection() as conn:
+        # Check delivery_guys table first
+        dg = await conn.fetchrow("SELECT id FROM delivery_guys WHERE user_id=$1", int(user_id))
+        if dg:
+            return web.json_response({"status": "ok", "role": "delivery"})
+
+        # Otherwise check users table
+        u = await conn.fetchrow("SELECT id FROM users WHERE id=$1", int(user_id))
+        if u:
+            return web.json_response({"status": "ok", "role": "user"})
+
+    return web.json_response({"status": "error", "message": "User not found"}, status=404)
+
+
+
 async def get_asbeza_items(request: web.Request) -> web.Response:
     """
     GET /api/asbeza/items
@@ -306,6 +327,8 @@ def setup_asbeza_routes(app: web.Application):
     app.router.add_get("/api/delivery/settings", get_settings)
     app.router.add_post("/api/admin/orders/{order_id}/assign", assign_courier)
     app.router.add_get("/api/admin/delivery-guys", list_delivery_guys) # now only active & not blocked
+    app.router.add_get("/api/auth/role", get_user_role)
+
 
 
 import base64
