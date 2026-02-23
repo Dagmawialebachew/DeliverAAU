@@ -322,8 +322,8 @@ ADD COLUMN IF NOT EXISTS gender TEXT CHECK (gender IN ('male','female'));
 ALTER TABLE asbeza_orders 
 ADD COLUMN IF NOT EXISTS delivery_fee DOUBLE PRECISION DEFAULT 0,
 ADD COLUMN IF NOT EXISTS payment_proof_url TEXT, 
-ADD COLUMN IF NOT EXISTS created_by_ip TEXT;
-ADD COLUMN IF NOT EXISTS delivery_guy_id INTEGER REFERENCES delivery_guys(id);
+ADD COLUMN IF NOT EXISTS created_by_ip TEXT,
+ADD COLUMN IF NOT EXISTS delivery_guy_id INTEGER REFERENCES delivery_guys(id),
 ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMP NULL;
 -- Add delivered_at to measure fulfillment speed
 ALTER TABLE asbeza_orders

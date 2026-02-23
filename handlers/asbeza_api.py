@@ -11,6 +11,10 @@ from config import settings
 
 ALLOWED_IMAGE_MIMES = {"image/jpeg", "image/png", "image/webp", "image/jpg"}
 
+def _int(v):
+    try: return int(v)
+    except: return None
+
 
 async def get_asbeza_items(request: web.Request) -> web.Response:
     """
@@ -300,6 +304,8 @@ def setup_asbeza_routes(app: web.Application):
     app.router.add_get("/api/delivery/my_stats", get_my_stats)
     app.router.add_post("/api/delivery/update_status", update_order_status_delivery)
     app.router.add_get("/api/delivery/settings", get_settings)
+    app.router.add_post("/admin/orders/{order_id}/assign", assign_courier)
+    app.router.add_get("/admin/delivery-guys", list_delivery_guys) # now only active & not blocked
 
 
 import base64
@@ -1205,3 +1211,48 @@ async def get_settings(request: web.Request) -> web.Response:
         return web.json_response({"status": "error", "message": "Delivery guy not found"}, status=404)
 
     return web.json_response({"status": "ok", "settings": dict(dg)})
+
+# GET /admin/delivery-guys
+async def list_delivery_guys(request: web.Request) -> web.Response:
+    async with request.app["db"]._open_connection() as conn:
+        rows = await conn.fetch("""
+            SELECT id, name, campus, phone, active, blocked, gender
+            FROM delivery_guys
+            WHERE active = TRUE AND blocked = FALSE
+            ORDER BY name ASC
+        """)
+        guys = [dict(r) for r in rows]
+
+    return web.json_response({"status": "ok", "guys": guys})
+
+async def assign_courier(request: web.Request) -> web.Response:
+    order_id = _int(request.match_info.get("order_id"))
+    data = await request.json()
+    dg_id = _int(data.get("delivery_guy_id"))
+
+    if not order_id or not dg_id:
+        return web.json_response({"status": "error", "message": "Missing order_id or delivery_guy_id"}, status=400)
+
+    async with request.app["db"]._open_connection() as conn:
+        async with conn.transaction():
+            dg = await conn.fetchrow("SELECT id, blocked FROM delivery_guys WHERE id=$1", dg_id)
+            if not dg:
+                return web.json_response({"status": "error", "message": "Delivery guy not found"}, status=404)
+            if dg["blocked"]:
+                return web.json_response({"status": "error", "message": "Delivery guy is blocked"}, status=403)
+
+            await conn.execute("""
+                UPDATE asbeza_orders
+                SET delivery_guy_id=$1, status='confirmed'
+                WHERE id=$2
+            """, dg_id, order_id)
+
+            await conn.execute("""
+                UPDATE delivery_guys
+                SET total_requests = total_requests + 1,
+                    accepted_requests = accepted_requests + 1,
+                    last_online_at = NOW()
+                WHERE id=$1
+            """, dg_id)
+
+    return web.json_response({"status": "ok", "message": "Courier assigned successfully!"})
