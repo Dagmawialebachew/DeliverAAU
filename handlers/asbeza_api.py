@@ -292,11 +292,15 @@ def setup_asbeza_routes(app: web.Application):
     app.router.add_get("/api/admin/dashboard/order-status-breakdown", order_status_breakdown)
     app.router.add_get("/api/admin/dashboard/payment-method-split", payment_method_split)
     app.router.add_get("/api/admin/dashboard/fulfillment-speed", fulfillment_speed)
-    app.router.add_get("/api/admin/dashboard/stock-alerts", stock_alerts)
     app.router.add_get("/api/admin/dashboard/order-heatmap", order_heatmap)
     app.router.add_get("/api/admin/dashboard/campus-distribution", campus_distribution)
     
-    #
+    #DeliverGuy
+    app.router.add_get("/api/delivery/my_orders", get_my_orders)
+    app.router.add_get("/api/delivery/my_stats", get_my_stats)
+    app.router.add_post("/api/delivery/update_status", update_order_status_delivery)
+    app.router.add_get("/api/delivery/settings", get_settings)
+
 
 import base64
 
@@ -455,7 +459,7 @@ async def dashboard_stats(request: web.Request) -> web.Response:
             FROM asbeza_orders o
             JOIN asbeza_order_items oi ON o.id = oi.order_id
             JOIN asbeza_variants v ON oi.variant_id = v.id
-            WHERE o.created_at >= CURRENT_DATE - INTERVAL '6 days'
+            WHERE o.created_at >= CURRENT_DATE - INTERVAL '30 days'
               AND o.status != 'cancelled'
             GROUP BY DATE(o.created_at)
             ORDER BY DATE(o.created_at)
@@ -566,19 +570,19 @@ async def fulfillment_speed(request: web.Request) -> web.Response:
 # 5. Stock alerts
 # GET /admin/dashboard/stock-alerts?threshold=5
 # -------------------------
-@admin_required
-async def stock_alerts(request: web.Request) -> web.Response:
-    threshold = int(request.query.get("threshold", 5))
-    async with request.app["db"]._open_connection() as conn:
-        rows = await conn.fetch("""
-            SELECT v.id, v.item_id, i.name AS item_name, v.name AS variant_name, v.stock
-            FROM asbeza_variants v
-            JOIN asbeza_items i ON v.item_id = i.id
-            WHERE v.stock <= $1
-            ORDER BY v.stock ASC
-            LIMIT 200
-        """, threshold)
-    return web.json_response({"status": "ok", "threshold": threshold, "alerts": [dict(r) for r in rows]})
+# @admin_required
+# async def stock_alerts(request: web.Request) -> web.Response:
+#     threshold = int(request.query.get("threshold", 5))
+#     async with request.app["db"]._open_connection() as conn:
+#         rows = await conn.fetch("""
+#             SELECT v.id, v.item_id, i.name AS item_name, v.name AS variant_name, v.stock
+#             FROM asbeza_variants v
+#             JOIN asbeza_items i ON v.item_id = i.id
+#             WHERE v.stock <= $1
+#             ORDER BY v.stock ASC
+#             LIMIT 200
+#         """, threshold)
+#     return web.json_response({"status": "ok", "threshold": threshold, "alerts": [dict(r) for r in rows]})
 
 
 # -------------------------
@@ -1122,3 +1126,82 @@ async def get_user_orders(request: web.Request) -> web.Response:
         ]
             
     return web.json_response({"status": "ok", "orders": orders})
+
+
+#Delivery Guys
+
+
+
+# --- Delivery Guy Endpoints ---
+async def get_my_orders(request: web.Request) -> web.Response:
+    dg_id = request.query.get("delivery_guy_id")
+    if not dg_id:
+        return web.json_response({"status": "error", "message": "Missing ID"}, status=400)
+
+    async with request.app["db"]._open_connection() as conn:
+        # Fetch orders assigned to this guy, newest first
+        rows = await conn.fetch("""
+            SELECT id, total_price, upfront_paid, status, created_at, delivered_at, delivery_fee
+            FROM asbeza_orders 
+            WHERE delivery_guy_id = $1
+            ORDER BY created_at DESC
+        """, int(dg_id))
+        
+        orders = [to_dict(r) for r in rows]
+    return web.json_response({"status": "ok", "orders": orders})
+
+async def get_my_stats(request: web.Request) -> web.Response:
+    dg_id = request.query.get("delivery_guy_id")
+    async with request.app["db"]._open_connection() as conn:
+        stats = await conn.fetchrow("""
+            SELECT total_deliveries, accepted_requests, skipped_requests, coins, xp, level 
+            FROM delivery_guys WHERE id = $1
+        """, int(dg_id))
+        
+    return web.json_response({"status": "ok", "stats": dict(stats) if stats else {}})
+
+# CRITICAL: Endpoint to mark order as delivered
+async def update_order_status_delivery(request: web.Request) -> web.Response:
+    data = await request.json()
+    order_id = data.get("order_id")
+    new_status = data.get("status") # 'delivered'
+    dg_id = data.get("delivery_guy_id")
+
+    async with request.app["db"]._open_connection() as conn:
+        async with conn.transaction():
+            # 1. Update Order
+            await conn.execute("""
+                UPDATE asbeza_orders 
+                SET status = $1, delivered_at = CURRENT_TIMESTAMP 
+                WHERE id = $2 AND delivery_guy_id = $3
+            """, new_status, order_id, int(dg_id))
+
+            # 2. Reward the Delivery Guy (Simple Gamification)
+            if new_status == 'delivered':
+                await conn.execute("""
+                    UPDATE delivery_guys 
+                    SET total_deliveries = total_deliveries + 1,
+                        coins = coins + 10,
+                        xp = xp + 50
+                    WHERE id = $1
+                """, int(dg_id))
+
+    return web.json_response({"status": "ok", "message": "Order completed!"})
+
+
+# GET /api/delivery/settings?delivery_guy_id=123
+async def get_settings(request: web.Request) -> web.Response:
+    dg_id = request.query.get("delivery_guy_id")
+    if not dg_id:
+        return web.json_response({"status": "error", "message": "Missing ID"}, status=400)
+
+    async with request.app["db"]._open_connection() as conn:
+        dg = await conn.fetchrow("""
+            SELECT id, name, campus, phone, active, blocked, gender
+            FROM delivery_guys WHERE id = $1
+        """, int(dg_id))
+
+    if not dg:
+        return web.json_response({"status": "error", "message": "Delivery guy not found"}, status=404)
+
+    return web.json_response({"status": "ok", "settings": dict(dg)})
