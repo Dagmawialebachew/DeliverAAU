@@ -448,14 +448,24 @@ async def dashboard_stats(request: web.Request) -> web.Response:
 
         # 7-day revenue trend (last 7 days including today)
         rows = await conn.fetch("""
-            SELECT DATE(created_at) AS date, COALESCE(SUM(total_price),0) AS total
-            FROM asbeza_orders
-            WHERE created_at >= CURRENT_DATE - INTERVAL '6 days'
-            GROUP BY DATE(created_at)
-            ORDER BY DATE(created_at)
+            SELECT 
+                DATE(o.created_at) AS date, 
+                COALESCE(SUM(oi.price * oi.quantity), 0) AS daily_revenue,
+                COALESCE(SUM((oi.price - v.cost_price) * oi.quantity), 0) AS daily_profit
+            FROM asbeza_orders o
+            JOIN asbeza_order_items oi ON o.id = oi.order_id
+            JOIN asbeza_variants v ON oi.variant_id = v.id
+            WHERE o.created_at >= CURRENT_DATE - INTERVAL '6 days'
+              AND o.status != 'cancelled'
+            GROUP BY DATE(o.created_at)
+            ORDER BY DATE(o.created_at)
         """)
-        trend = [{"date": r["date"].isoformat(), "total": float(r["total"])} for r in rows]
-
+        
+        trend = [{
+            "date": r["date"].isoformat(), 
+            "total": float(r["daily_revenue"]),
+            "profit": float(r["daily_profit"])
+        } for r in rows]
         # Top selling items by quantity
         top = await conn.fetch("""
             SELECT i.id AS item_id, i.name, COALESCE(SUM(oi.quantity),0) AS qty_sold
@@ -467,13 +477,22 @@ async def dashboard_stats(request: web.Request) -> web.Response:
             LIMIT 6
         """)
         top_selling = [dict(r) for r in top]
+        total_profit = await conn.fetchval("""
+            SELECT SUM((oi.price - v.cost_price) * oi.quantity)
+            FROM asbeza_order_items oi
+            JOIN asbeza_variants v ON oi.variant_id = v.id
+            JOIN asbeza_orders o ON oi.order_id = o.id
+            WHERE o.status != 'cancelled'
+        """)
 
     return web.json_response({
         "status": "ok",
         "kpis": {
             "net_revenue": float(net_revenue or 0),
             "pending_orders": int(pending_count or 0),
+            "total_profit": float(total_profit or 0),
             "live_items": int(live_items or 0),
+            "margin_pct": (float(total_profit or 0) / max(1, float(net_revenue or 1))) * 100,
             "total_customers": int(total_customers or 0),
             "repeat_customers": int(repeat_customers or 0),
             "repeat_pct": (float(repeat_customers or 0) / max(1, float(total_customers or 1))) * 100,
