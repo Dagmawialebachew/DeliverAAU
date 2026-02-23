@@ -1243,7 +1243,7 @@ async def assign_courier(request: web.Request) -> web.Response:
 
             await conn.execute("""
                 UPDATE asbeza_orders
-                SET delivery_guy_id=$1, status='confirmed'
+                SET delivery_guy_id=$1
                 WHERE id=$2
             """, dg_id, order_id)
 
