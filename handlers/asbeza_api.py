@@ -275,7 +275,7 @@ def setup_asbeza_routes(app: web.Application):
     # Inventory
     app.router.add_get("/api/admin/items", list_items_admin)              # list items with variant counts
     app.router.add_get("/api/admin/items/{id}", get_item_admin)           # get item + variants
-    app.router.add_post("/api/admin/items", add_item)                     # add new item
+    app.router.add_post("/api/admin/add_items", add_item)                     # add new item
     app.router.add_put("/api/admin/items/{id}", update_item_admin)        # update item
     app.router.add_delete("/api/admin/items/{id}", delete_item_admin)     # delete item + variants
     app.router.add_put("/api/admin/variants/{id}", update_variant_admin)  # update variant
