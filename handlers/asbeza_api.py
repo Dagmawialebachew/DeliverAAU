@@ -465,8 +465,9 @@ async def dashboard_stats(request: web.Request) -> web.Response:
             FROM asbeza_orders o
             JOIN asbeza_order_items oi ON o.id = oi.order_id
             JOIN asbeza_variants v ON oi.variant_id = v.id
-            WHERE o.created_at >= CURRENT_DATE - INTERVAL '30 days'
+            WHERE o.created_at >= CURRENT_DATE - INTERVAL '6 days'
               AND o.status != 'cancelled'
+              AND o.status == 'completed'
             GROUP BY DATE(o.created_at)
             ORDER BY DATE(o.created_at)
         """)
