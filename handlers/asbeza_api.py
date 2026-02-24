@@ -1133,7 +1133,7 @@ async def get_user_orders(request: web.Request) -> web.Response:
                 (SELECT payment_proof_url FROM asbeza_order_payments WHERE order_id = o.id LIMIT 1) as image_url,
                 d.name AS delivery_name,
                 d.campus AS delivery_campus,
-                d.phone_number AS delivery_phone
+                d.phone AS delivery_phone
             FROM asbeza_orders o
             LEFT JOIN delivery_guys d ON o.delivery_guy_id = d.id
             WHERE o.user_id = $1 
