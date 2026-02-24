@@ -24,7 +24,7 @@ async def get_user_role(request: web.Request) -> web.Response:
 
     async with request.app["db"]._open_connection() as conn:
         # Check delivery_guys table first
-        dg = await conn.fetchrow("SELECT id FROM delivery_guys WHERE user_id=$1", int(user_id))
+        dg = await conn.fetchrow("SELECT id FROM delivery_guys WHERE telegram_id=$1", int(user_id))
         if dg:
             return web.json_response({"status": "ok", "role": "delivery"})
 

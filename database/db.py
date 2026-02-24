@@ -33,7 +33,7 @@ SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
     telegram_id BIGINT UNIQUE,
-    role TEXT,
+role TEXT,
     first_name TEXT,
     phone TEXT,
     campus TEXT,
