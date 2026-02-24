@@ -36,17 +36,13 @@ async def get_user_role(request: web.Request) -> web.Response:
     return web.json_response({"status": "error", "message": "User not found"}, status=404)
 
 
-
+# In your Python backend:
 async def get_asbeza_items(request: web.Request) -> web.Response:
-    """
-    GET /api/asbeza/items
-    Returns active items with their variants
-    """
     db = request.app["db"]
     async with db._open_connection() as conn:
         rows = await conn.fetch(
             """
-            SELECT i.id, i.name, i.description, i.base_price, i.image_url,
+            SELECT i.id, i.name, i.description, i.base_price, i.image_url, i.category, -- ADDED i.category
                    COALESCE(
                      json_agg(
                        json_build_object(
@@ -68,7 +64,6 @@ async def get_asbeza_items(request: web.Request) -> web.Response:
         )
     items = [dict(r) for r in rows]
     return web.json_response({"items": items})
-
 
 
 async def asbeza_checkout(request: web.Request) -> web.Response:
