@@ -1111,7 +1111,6 @@ async def get_user_details(request: web.Request) -> web.Response:
         "favorites": [dict(f) for f in favorites],
         "recent_orders": [to_dict(o) for o in orders]
     })
-
 async def get_user_orders(request: web.Request) -> web.Response:
     user_id_str = request.query.get("user_id")
     if not user_id_str:
@@ -1121,7 +1120,7 @@ async def get_user_orders(request: web.Request) -> web.Response:
     db = request.app["db"]
     
     async with db._open_connection() as conn:
-        # Optimization: Use LEFT JOIN and GROUP BY instead of subqueries
+        # Optimized: Removed GROUP BY, added Subqueries for counts/images
         rows = await conn.fetch("""
             SELECT 
                 o.id, 
@@ -1130,29 +1129,40 @@ async def get_user_orders(request: web.Request) -> web.Response:
                 o.upfront_paid, 
                 o.delivery_fee,
                 o.created_at,
-                COUNT(oi.id) as item_count,
-                MAX(p.payment_proof_url) as image_url
+                (SELECT COUNT(*) FROM asbeza_order_items WHERE order_id = o.id) as item_count,
+                (SELECT payment_proof_url FROM asbeza_order_payments WHERE order_id = o.id LIMIT 1) as image_url,
+                d.name AS delivery_name,
+                d.campus AS delivery_campus,
+                d.phone_number AS delivery_phone
             FROM asbeza_orders o
-            LEFT JOIN asbeza_order_items oi ON oi.order_id = o.id
-            LEFT JOIN asbeza_order_payments p ON p.order_id = o.id
+            LEFT JOIN delivery_guys d ON o.delivery_guy_id = d.id
             WHERE o.user_id = $1 
-            GROUP BY o.id, p.order_id -- Grouping prevents duplicate counting
             ORDER BY o.created_at DESC 
             LIMIT 15
         """, user_id)
         
-        # Fast processing using list comprehension
-        orders = [
-            {
-                **dict(r), 
-                "created_at": r['created_at'].isoformat(),
-                "image_url": r['image_url'] or ""
-            } for r in rows
-        ]
+        orders = []
+        for r in rows:
+            # High-end structured response
+            order_data = dict(r)
+            order_data["created_at"] = r["created_at"].isoformat()
+            order_data["image_url"] = r["image_url"] or ""
+            
+            # Sub-object for delivery guy
+            order_data["delivery"] = {
+                "name": r["delivery_name"],
+                "campus": r["delivery_campus"],
+                "phone": r["delivery_phone"]
+            } if r["delivery_name"] else None
+            
+            # Remove the flat delivery fields to keep the payload small
+            del order_data["delivery_name"]
+            del order_data["delivery_campus"]
+            del order_data["delivery_phone"]
+            
+            orders.append(order_data)
             
     return web.json_response({"status": "ok", "orders": orders})
-
-
 #Delivery Guys
 
 

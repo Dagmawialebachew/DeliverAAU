@@ -336,7 +336,7 @@ CREATE INDEX IF NOT EXISTS idx_orders_user_id ON asbeza_orders (user_id);
 CREATE INDEX IF NOT EXISTS idx_order_items_variant_id ON asbeza_order_items (variant_id);
 CREATE INDEX IF NOT EXISTS idx_variants_stock ON asbeza_variants (stock);
 CREATE INDEX IF NOT EXISTS idx_payments_order_id ON asbeza_order_payments (order_id);
-
+CREATE INDEX IF NOT EXISTS idx_orders_delivery_guy ON asbeza_orders (delivery_guy_id);
 
 
 ALTER TABLE delivery_guys
