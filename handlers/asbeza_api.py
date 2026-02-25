@@ -326,6 +326,7 @@ def setup_asbeza_routes(app: web.Application):
     app.router.add_get('/api/delivery/order_details/{order_id}/{delivery_guy_id}', get_rider_order_details)
     app.router.add_get("/api/delivery/food_stats", get_food_stats)
     app.router.add_get("/api/delivery/asbeza_stats", get_asbeza_stats)
+    app.router.add_get("/api/delivery/delivery_guy_id", get_delivery_guy_id)
 
 
 
@@ -1362,3 +1363,19 @@ async def assign_courier(request: web.Request) -> web.Response:
             """, dg_id)
 
     return web.json_response({"status": "ok", "message": "Courier assigned successfully!"})
+
+
+async def get_delivery_guy_id(request: web.Request) -> web.Response:
+    telegram_id = request.query.get("telegram_id")
+    if not telegram_id:
+        return web.json_response({"status": "error", "message": "Missing telegram_id"}, status=400)
+
+    async with request.app["db"]._open_connection() as conn:
+        dg = await conn.fetchrow("""
+            SELECT id FROM delivery_guys WHERE telegram_id = $1
+        """, int(telegram_id))
+    
+    if not dg:
+        return web.json_response({"status": "error", "message": "Delivery guy not found"}, status=404)
+
+    return web.json_response({"status": "ok", "delivery_guy_id": dg["id"]})
