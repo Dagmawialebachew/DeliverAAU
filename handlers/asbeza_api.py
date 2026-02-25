@@ -1,3 +1,4 @@
+import asyncio
 import datetime
 from aiohttp import web
 from typing import List, Dict
@@ -1170,48 +1171,47 @@ async def get_user_orders(request: web.Request) -> web.Response:
     return web.json_response({"status": "ok", "orders": orders})
 
 async def get_rider_order_details(request: web.Request) -> web.Response:
-    order_id = request.match_info.get("order_id") 
-    dg_id = request.match_info.get("delivery_guy_id")
+    try:
+        order_id = int(request.match_info.get("order_id"))
+        dg_id = int(request.match_info.get("delivery_guy_id"))
+    except (ValueError, TypeError):
+        return web.json_response({"status": "error", "message": "Invalid IDs"}, status=400)
 
-    if not order_id or not dg_id:
-        return web.json_response({"status": "error", "message": "Missing Data"}, status=400)
-
-    async with request.app["db"]._open_connection() as conn:
-        order_row = await conn.fetchrow("""
+    # Use a connection pool (acquire from request.app["db"])
+    async with request.app["db"].acquire() as conn:
+        # 1. Fetch Order and Items in parallel tasks to save time
+        order_task = conn.fetchrow("""
             SELECT 
                 o.id, o.status, o.total_price, o.upfront_paid, o.delivery_fee, o.created_at,
                 u.first_name AS customer_name, u.phone AS customer_phone,
-                u.campus AS delivery_location, -- use user's campus instead of order column
-                (SELECT payment_proof_url FROM asbeza_order_payments WHERE order_id = o.id LIMIT 1) AS image_url
+                u.campus AS delivery_location
             FROM asbeza_orders o
             JOIN users u ON o.user_id = u.telegram_id
             WHERE o.id = $1 AND o.delivery_guy_id = $2
-        """, int(order_id), int(dg_id))
+            LIMIT 1
+        """, order_id, dg_id)
+
+        items_task = conn.fetch("""
+            SELECT 
+                i.name, oi.quantity, oi.price, 
+                v.name as variant_name, v.image_url as variant_image
+            FROM asbeza_order_items oi
+            JOIN asbeza_variants v ON oi.variant_id = v.id
+            JOIN asbeza_items i ON v.item_id = i.id
+            WHERE oi.order_id = $1
+        """, order_id)
+
+        # Run both queries at the same time
+        order_row, item_rows = await asyncio.gather(order_task, items_task)
 
         if not order_row:
             return web.json_response({"status": "error", "message": "Order not found"}, status=404)
-
-        item_rows = await conn.fetch("""
-        SELECT 
-        i.name, 
-        oi.quantity, 
-        oi.price, 
-        v.name as variant_name  -- Added this to get the specific choice
-        v.image_url as variant_image  -- Fetch the specific variant image
-    FROM asbeza_order_items oi
-    JOIN asbeza_variants v ON oi.variant_id = v.id
-    JOIN asbeza_items i ON v.item_id = i.id
-    WHERE oi.order_id = $1
-""", int(order_id))
-
-
 
         order_data = dict(order_row)
         order_data["created_at"] = order_row["created_at"].isoformat()
         order_data["items"] = [dict(i) for i in item_rows]
         
     return web.json_response({"status": "ok", "order": order_data})
-
 # GET /api/delivery/food_stats?delivery_guy_id=123
 async def get_food_stats(request: web.Request) -> web.Response:
     dg_id = request.query.get("delivery_guy_id")

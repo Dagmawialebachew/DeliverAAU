@@ -369,6 +369,12 @@ CREATE INDEX IF NOT EXISTS idx_orders_dg_id_created ON orders(delivery_guy_id, c
 CREATE INDEX IF NOT EXISTS idx_ratings_vendor_id ON ratings(vendor_id);
 CREATE INDEX IF NOT EXISTS idx_ratings_dg_id ON ratings(delivery_guy_id);
 
+-- Index the foreign keys used in the JOINs
+CREATE INDEX IF NOT EXISTS idx_asbeza_orders_dg ON asbeza_orders(delivery_guy_id);
+CREATE INDEX IF NOT EXISTS idx_asbeza_order_items_order ON asbeza_order_items(order_id);
+CREATE INDEX IF NOT EXISTS idx_asbeza_variants_id ON asbeza_variants(id);
+CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users(telegram_id);
+
 -- 1) Users: referral + combo flag
 ALTER TABLE users
 ADD COLUMN IF NOT EXISTS referral_code TEXT UNIQUE,
