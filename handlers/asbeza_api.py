@@ -1192,11 +1192,12 @@ async def get_rider_order_details(request: web.Request) -> web.Response:
             return web.json_response({"status": "error", "message": "Order not found"}, status=404)
 
         item_rows = await conn.fetch("""
-    SELECT 
+        SELECT 
         i.name, 
         oi.quantity, 
         oi.price, 
         v.name as variant_name  -- Added this to get the specific choice
+        v.image_url as variant_image  -- Fetch the specific variant image
     FROM asbeza_order_items oi
     JOIN asbeza_variants v ON oi.variant_id = v.id
     JOIN asbeza_items i ON v.item_id = i.id
