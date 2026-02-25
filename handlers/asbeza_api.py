@@ -661,6 +661,16 @@ async def campus_distribution(request: web.Request) -> web.Response:
 # 8. Orders list with filters & pagination
 # GET /admin/orders?status=&limit=50&offset=0
 # -------------------------
+from datetime import datetime
+
+def serialize_record(record):
+    d = dict(record)
+    for k, v in d.items():
+        if isinstance(v, datetime):
+            d[k] = v.isoformat()
+    return d
+
+
 @admin_required
 async def list_orders(request: web.Request) -> web.Response:
     status = request.query.get("status")
@@ -682,10 +692,7 @@ async def list_orders(request: web.Request) -> web.Response:
             LIMIT $2 OFFSET $3
         """, status, limit, offset)
 
-        orders = [dict(r) for r in rows]
-        for o in orders:
-            if o.get("created_at"):
-                o["created_at"] = o["created_at"].isoformat()
+        orders = [serialize_record(r) for r in rows]
 
         total_count = await conn.fetchval(
             "SELECT COUNT(*) FROM asbeza_orders WHERE ($1::text IS NULL OR status = $1)",
@@ -697,6 +704,7 @@ async def list_orders(request: web.Request) -> web.Response:
         "orders": orders,
         "total": int(total_count or 0)
     })
+
 
 # -------------------------
 # 9. Order details expanded
