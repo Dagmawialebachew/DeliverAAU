@@ -323,7 +323,7 @@ def setup_asbeza_routes(app: web.Application):
     app.router.add_post("/api/admin/orders/{order_id}/assign", assign_courier)
     app.router.add_get("/api/admin/delivery-guys", list_delivery_guys) # now only active & not blocked
     app.router.add_get("/api/auth/role", get_user_role)
-    app.router.add_get('/api/delivery/order_details', get_rider_order_details)
+    app.router.add_get('/api/delivery/order_details/{order_id}/{delivery_guy_id}', get_rider_order_details)
     app.router.add_get("/api/delivery/food_stats", get_food_stats)
     app.router.add_get("/api/delivery/asbeza_stats", get_asbeza_stats)
 
@@ -1169,8 +1169,8 @@ async def get_user_orders(request: web.Request) -> web.Response:
     return web.json_response({"status": "ok", "orders": orders})
 
 async def get_rider_order_details(request: web.Request) -> web.Response:
-    order_id = request.query.get("order_id")
-    dg_id = request.query.get("delivery_guy_id")
+    order_id = request.match_info.get("order_id") 
+    dg_id = request.match_info.get("delivery_guy_id")
 
     if not order_id or not dg_id:
         return web.json_response({"status": "error", "message": "Missing Data"}, status=400)
