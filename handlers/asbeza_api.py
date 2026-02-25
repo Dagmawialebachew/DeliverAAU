@@ -324,6 +324,9 @@ def setup_asbeza_routes(app: web.Application):
     app.router.add_get("/api/admin/delivery-guys", list_delivery_guys) # now only active & not blocked
     app.router.add_get("/api/auth/role", get_user_role)
     app.router.add_get('/api/delivery/order_details', get_rider_order_details)
+    app.router.add_get("/api/delivery/food_stats", get_food_stats)
+    app.router.add_get("/api/delivery/asbeza_stats", get_asbeza_stats)
+
 
 
 
@@ -1198,6 +1201,44 @@ async def get_rider_order_details(request: web.Request) -> web.Response:
         order_data["items"] = [dict(i) for i in item_rows]
         
     return web.json_response({"status": "ok", "order": order_data})
+
+# GET /api/delivery/food_stats?delivery_guy_id=123
+async def get_food_stats(request: web.Request) -> web.Response:
+    dg_id = request.query.get("delivery_guy_id")
+    if not dg_id:
+        return web.json_response({"status": "error", "message": "Missing delivery_guy_id"}, status=400)
+
+    async with request.app["db"]._open_connection() as conn:
+        stats = await conn.fetchrow("""
+            SELECT 
+                COUNT(*) AS total_orders,
+                SUM(delivery_fee) AS total_delivery_fees,
+                SUM(delivery_fee) AS total_earnings
+            FROM orders
+            WHERE delivery_guy_id = $1 AND status = 'delivered'
+        """, int(dg_id))
+
+    return web.json_response({"status": "ok", "stats": dict(stats) if stats else {}})
+
+
+# GET /api/delivery/asbeza_stats?delivery_guy_id=123
+async def get_asbeza_stats(request: web.Request) -> web.Response:
+    dg_id = request.query.get("delivery_guy_id")
+    if not dg_id:
+        return web.json_response({"status": "error", "message": "Missing delivery_guy_id"}, status=400)
+
+    async with request.app["db"]._open_connection() as conn:
+        stats = await conn.fetchrow("""
+            SELECT 
+                COUNT(*) AS total_orders,
+                SUM(delivery_fee) AS total_delivery_fees,
+                SUM(total_price) AS total_order_value,
+                SUM(delivery_fee + total_price) AS total_earnings
+            FROM asbeza_orders
+            WHERE delivery_guy_id = $1 AND status = 'delivered'
+        """, int(dg_id))
+
+    return web.json_response({"status": "ok", "stats": dict(stats) if stats else {}})
 
 #Delivery Guys
 
