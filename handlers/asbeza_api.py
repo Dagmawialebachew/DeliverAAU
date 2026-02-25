@@ -6,6 +6,7 @@ import math
 import os
 import uuid
 import aiofiles
+from numpy import record
 
 import app
 from config import settings
@@ -661,9 +662,9 @@ async def campus_distribution(request: web.Request) -> web.Response:
 # 8. Orders list with filters & pagination
 # GET /admin/orders?status=&limit=50&offset=0
 # -------------------------
-from datetime import datetime
 
 def serialize_record(record):
+    from datetime import datetime
     d = dict(record)
     for k, v in d.items():
         if isinstance(v, datetime):
