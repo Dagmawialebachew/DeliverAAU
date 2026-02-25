@@ -1169,6 +1169,7 @@ async def get_user_orders(request: web.Request) -> web.Response:
             orders.append(order_data)
             
     return web.json_response({"status": "ok", "orders": orders})
+
 async def get_rider_order_details(request: web.Request) -> web.Response:
     try:
         order_id = int(request.match_info.get("order_id"))
@@ -1176,31 +1177,30 @@ async def get_rider_order_details(request: web.Request) -> web.Response:
     except (ValueError, TypeError):
         return web.json_response({"status": "error", "message": "Invalid IDs"}, status=400)
 
-    conn = request.app["db"]
+    async with request.app["db"]._open_connection() as conn:
+        order_row = await conn.fetchrow("""
+            SELECT 
+                o.id, o.status, o.total_price, o.upfront_paid, o.delivery_fee, o.created_at,
+                u.first_name AS customer_name, u.phone AS customer_phone,
+                u.campus AS delivery_location
+            FROM asbeza_orders o
+            JOIN users u ON o.user_id = u.telegram_id
+            WHERE o.id = $1 AND o.delivery_guy_id = $2
+            LIMIT 1
+        """, order_id, dg_id)
 
-    order_row = await conn.fetchrow("""
-        SELECT 
-            o.id, o.status, o.total_price, o.upfront_paid, o.delivery_fee, o.created_at,
-            u.first_name AS customer_name, u.phone AS customer_phone,
-            u.campus AS delivery_location
-        FROM asbeza_orders o
-        JOIN users u ON o.user_id = u.telegram_id
-        WHERE o.id = $1 AND o.delivery_guy_id = $2
-        LIMIT 1
-    """, order_id, dg_id)
-
-    item_rows = await conn.fetch("""
-        SELECT 
-            i.name AS item_name, 
-            oi.quantity, 
-            oi.price, 
-            v.name AS variant_name, 
-            v.image_url AS variant_image
-        FROM asbeza_order_items oi
-        JOIN asbeza_variants v ON oi.variant_id = v.id
-        JOIN asbeza_items i ON v.item_id = i.id
-        WHERE oi.order_id = $1
-    """, order_id)
+        item_rows = await conn.fetch("""
+            SELECT 
+                i.name AS item_name, 
+                oi.quantity, 
+                oi.price, 
+                v.name AS variant_name, 
+                v.image_url AS variant_image
+            FROM asbeza_order_items oi
+            JOIN asbeza_variants v ON oi.variant_id = v.id
+            JOIN asbeza_items i ON v.item_id = i.id
+            WHERE oi.order_id = $1
+        """, order_id)
 
     if not order_row:
         return web.json_response({"status": "error", "message": "Order not found"}, status=404)
