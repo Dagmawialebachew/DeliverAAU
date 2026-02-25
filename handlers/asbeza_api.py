@@ -1165,43 +1165,40 @@ async def get_user_orders(request: web.Request) -> web.Response:
             
     return web.json_response({"status": "ok", "orders": orders})
 
-
 async def get_rider_order_details(request: web.Request) -> web.Response:
     order_id = request.query.get("order_id")
-    dg_id = request.query.get("delivery_guy_id") # Security: Ensure this rider owns this order
+    dg_id = request.query.get("delivery_guy_id")
 
     if not order_id or not dg_id:
         return web.json_response({"status": "error", "message": "Missing Data"}, status=400)
 
     async with request.app["db"]._open_connection() as conn:
-        # 1. Fetch Order + Customer Info
         order_row = await conn.fetchrow("""
             SELECT 
                 o.id, o.status, o.total_price, o.upfront_paid, o.delivery_fee, o.created_at,
-                u.name as customer_name, u.phone as customer_phone,
-                o.delivery_location, -- Assuming you have this field
-                (SELECT payment_proof_url FROM asbeza_order_payments WHERE order_id = o.id LIMIT 1) as image_url
+                u.first_name AS customer_name, u.phone AS customer_phone,
+                u.campus AS delivery_location, -- use user's campus instead of order column
+                (SELECT payment_proof_url FROM asbeza_order_payments WHERE order_id = o.id LIMIT 1) AS image_url
             FROM asbeza_orders o
             JOIN users u ON o.user_id = u.id
             WHERE o.id = $1 AND o.delivery_guy_id = $2
         """, int(order_id), int(dg_id))
 
         if not order_row:
-            return web.json_response({"status": "error", "message": "Mission Not Found"}, status=404)
+            return web.json_response({"status": "error", "message": "Order not found"}, status=404)
 
-        # 2. Fetch the specific items they need to buy
         item_rows = await conn.fetch("""
             SELECT name, quantity, price 
             FROM asbeza_order_items 
             WHERE order_id = $1
         """, int(order_id))
 
-        # 3. Format Response
         order_data = dict(order_row)
         order_data["created_at"] = order_row["created_at"].isoformat()
         order_data["items"] = [dict(i) for i in item_rows]
         
     return web.json_response({"status": "ok", "order": order_data})
+
 #Delivery Guys
 
 
