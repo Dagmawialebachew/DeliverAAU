@@ -323,7 +323,7 @@ def setup_asbeza_routes(app: web.Application):
     app.router.add_post("/api/admin/orders/{order_id}/assign", assign_courier)
     app.router.add_get("/api/admin/delivery-guys", list_delivery_guys) # now only active & not blocked
     app.router.add_get("/api/auth/role", get_user_role)
-    app.router.add_get('/api/delivery/order_details/{order_id}/{delivery_guy_id}', get_rider_order_details)
+    app.router.add_get('/api/delivery/order_details_for_dg/{order_id}/{delivery_guy_id}', get_rider_order_details)
     app.router.add_get("/api/delivery/food_stats", get_food_stats)
     app.router.add_get("/api/delivery/asbeza_stats", get_asbeza_stats)
     app.router.add_get("/api/delivery/delivery_guy_id", get_delivery_guy_id)
@@ -1184,7 +1184,7 @@ async def get_rider_order_details(request: web.Request) -> web.Response:
                 u.campus AS delivery_location, -- use user's campus instead of order column
                 (SELECT payment_proof_url FROM asbeza_order_payments WHERE order_id = o.id LIMIT 1) AS image_url
             FROM asbeza_orders o
-            JOIN users u ON o.user_id = u.id
+            JOIN users u ON o.user_id = u.telegram_id
             WHERE o.id = $1 AND o.delivery_guy_id = $2
         """, int(order_id), int(dg_id))
 
