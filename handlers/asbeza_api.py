@@ -492,7 +492,7 @@ async def dashboard_stats(request: web.Request) -> web.Response:
             JOIN asbeza_variants v ON oi.variant_id = v.id
             WHERE o.created_at >= CURRENT_DATE - INTERVAL '6 days'
               AND o.status != 'cancelled'
-              AND o.status == 'completed'
+              AND o.status = 'completed'
             GROUP BY DATE(o.created_at)
             ORDER BY DATE(o.created_at)
         """)
