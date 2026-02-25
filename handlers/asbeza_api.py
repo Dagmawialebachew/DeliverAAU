@@ -1192,10 +1192,14 @@ async def get_rider_order_details(request: web.Request) -> web.Response:
             return web.json_response({"status": "error", "message": "Order not found"}, status=404)
 
         item_rows = await conn.fetch("""
-            SELECT name, quantity, price 
-            FROM asbeza_order_items 
-            WHERE order_id = $1
-        """, int(order_id))
+        SELECT i.name, oi.quantity, oi.price
+        FROM asbeza_order_items oi
+        JOIN asbeza_variants v ON oi.variant_id = v.id
+        JOIN asbeza_items i ON v.item_id = i.id
+        WHERE oi.order_id = $1
+    """, int(order_id))
+
+
 
         order_data = dict(order_row)
         order_data["created_at"] = order_row["created_at"].isoformat()
