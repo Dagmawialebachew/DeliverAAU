@@ -1243,20 +1243,25 @@ async def ask_final_confirmation(message: Message, state: FSMContext):
         item = next((m for m in menu if m["id"] == item_id), None)
         if item and item["price"] >= 100:
             chargeable_items += count
+    
+    dropoff = data.get("dropoff", "N/A")
+    campus_text = await db.get_user_campus_by_order(data.get("order_id", 0))
 
     # Delivery fee based on chargeable items only
         # Delivery fee based on chargeable items only
     if chargeable_items == 0:
         delivery_fee = 0.0
     else:
-        if dropoff.strip().upper() == "FBE":
+        if campus_text.strip().upper() == "FBE":
             # Normal fee schedule
             if chargeable_items == 1:
                 delivery_fee = 30.0
             elif chargeable_items == 2:
-                delivery_fee = 45.0
-            elif chargeable_items >= 3:
                 delivery_fee = 55.0
+            elif chargeable_items == 3:
+                delivery_fee = 80.0
+            elif chargeable_items >= 4:
+                delivery_fee = 105.0
         else:
             # Higher fee schedule for non-FBE dropoffs
             if chargeable_items == 1:
@@ -1274,8 +1279,7 @@ async def ask_final_confirmation(message: Message, state: FSMContext):
     total = subtotal + delivery_fee
 
 
-    dropoff = data.get("dropoff", "N/A")
-    campus_text = await db.get_user_campus_by_order(data.get("order_id", 0))
+    
     dropoff = f"{dropoff} • {campus_text}" if campus_text else dropoff
     
 
