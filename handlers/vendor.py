@@ -562,7 +562,7 @@ async def vendor_accept_order(cb: CallbackQuery, bot: Bot):
     
     # 2b. Status check before update
     current_status = order.get("status")
-    if current_status != "pending":
+    if current_status == "cancelled":
         # Edit the original vendor message instead of sending a new one
         await cb.message.edit_text(
             f"❌ ይህ ትዕዛዝ መቀበል አይቻልም፣ ጊዜው አልፎበታል።\n\n"
@@ -579,6 +579,27 @@ async def vendor_accept_order(cb: CallbackQuery, bot: Bot):
         except Exception as e:
             print(f"[vendor_accept_order] Failed to notify admin about invalid accept for order #{order_id}: {e}")
         return
+    elif current_status == "preparing":
+        # Edit the original vendor message instead of sending a new one
+        await cb.message.edit_text(
+            f"⚙️ ትዕዛዙ {order_id} በመዘጋጀት ላይ ነው። \n\n"
+            "ትዕዛዙ ዝግጁ በሚሆንበት ሰአት *በመዘጋጀት ላይ* የሚለውን በመንካት "
+            "ለመወሰድ ዝግጁ እንደሆነ ያሳውቁ....",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="⚙️ በመዘጋጀት ላይ ያሉ", callback_data="vendor:preparing")]
+                ]
+            )
+        )
+        try:
+            await notify_admin_log(
+                bot,
+                ADMIN_GROUP_ID,
+                f"⚠️ Vendor tried to accept Order #{order_id} but status was {current_status}. Hanlded gracefully by showing preparing message."
+            )
+        except Exception as e:
+            print(f"[vendor_accept_order] Failed to notify admin about invalid accept for order #{order_id}: {e}")
+        return
 
     # 3) Update status and timestamp
     try:
@@ -591,10 +612,6 @@ async def vendor_accept_order(cb: CallbackQuery, bot: Bot):
         await cb.message.answer("❌ Failed to update order status. Try again.")
         return
 
-    # try:
-    #     await db.set_order_timestamp(order_id, "accepted_at")
-    # except Exception as e:
-    #     print(f"[vendor_accept_order] Failed to set accepted_at for order #{order_id}: {e}")
 
     # 4) Vendor info
     vendor = await db.get_vendor(order["vendor_id"])
@@ -963,6 +980,16 @@ async def order_mark_ready(cb: CallbackQuery, bot: Bot):
         await cb.message.answer("⚠️ ትዕዛዝ አልተገኘም።")
         return
 
+    current_status = order.get("status")
+    if current_status in ("ready", "delivered", "completed"):
+        # Already marked ready or delivered — don’t update again
+        await cb.message.edit_text(
+            f"ℹ️ ትዕዛዝ #{order_id} ቀድሞውኑ ዝግጁ ነበር ወይም ለአዘዘው ሰው ተሰጥቷል።\n",
+            parse_mode="HTML"
+        )
+        return
+
+    # Otherwise safe to update
     # Update status and optionally set a timestamp (if you track)
     await db.update_order_status(order_id, "ready")
 

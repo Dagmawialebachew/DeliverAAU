@@ -74,12 +74,12 @@ def main_menu(user_id: int) -> ReplyKeyboardMarkup:
                 KeyboardButton(text="🛒 Order"),
                 KeyboardButton(text="📍 Track Order"),
             ],
-            [
-                KeyboardButton(
-                    text="🧺 Asbeza 🧺",
-                    web_app=WebAppInfo(url=f"https://unibites-asbeza.vercel.app?user_id={user_id}")
-                )
-            ],
+            # [
+            #     KeyboardButton(
+            #         text="🧺 Asbeza 🧺",
+            #         web_app=WebAppInfo(url=f"https://unibites-asbeza.vercel.app?user_id={user_id}")
+            #     )
+            # ],
             [
                 KeyboardButton(text="🧑‍🍳 Need Help"),
                 KeyboardButton(text="⚙️ More Options"),

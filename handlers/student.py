@@ -821,7 +821,9 @@ async def cart_clear(cb: CallbackQuery, state: FSMContext):
     # Build keyboard for current page
     kb = menu_keyboard(menu, {}, page)
 
-    await cb.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    if cb.message.text != text or cb.message.reply_markup != kb:
+        await cb.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+
 
 @router.callback_query(OrderStates.menu, F.data == "order:cancel")
 @router.callback_query(OrderStates.cart_review, F.data == "order:cancel")
@@ -1250,19 +1252,19 @@ async def ask_final_confirmation(message: Message, state: FSMContext):
         if dropoff.strip().upper() == "FBE":
             # Normal fee schedule
             if chargeable_items == 1:
-                delivery_fee = 20.0
+                delivery_fee = 30.0
             elif chargeable_items == 2:
-                delivery_fee = 35.0
-            elif chargeable_items >= 3:
                 delivery_fee = 45.0
+            elif chargeable_items >= 3:
+                delivery_fee = 55.0
         else:
             # Higher fee schedule for non-FBE dropoffs
             if chargeable_items == 1:
-                delivery_fee = 20.0
+                delivery_fee = 25.0
             elif chargeable_items == 2:
-                delivery_fee = 35.0
+                delivery_fee = 40.0
             elif chargeable_items >= 3:
-                delivery_fee = 50.0
+                delivery_fee = 55.0
             else:
                 delivery_fee = 65.0
   # extend logic if needed
@@ -1276,17 +1278,19 @@ async def ask_final_confirmation(message: Message, state: FSMContext):
     
 
     summary = (
-        f"✨ *Final Preview*\n"
-        f"──────────────────────\n"
-        f"{text}\n"
-        f"🚚 _Delivery fee:_ *{delivery_fee:.2f} birr*\n"
-        f"──────────────────────\n"
-        f"💵 *Total Payable:* *{total:.2f} birr*\n\n"
-        f"📍 _Drop-off:_ *{dropoff}*\n"
-        f"{('📝 _Notes:_ ' + notes) if notes else ''}\n"
-        "\n✅ *Everything looks perfect?*\n"
-        "_Tap Confirm to place your order._"
-    )
+    f"✨ *Final Preview*\n"
+    f"──────────────────────\n"
+    f"{text}\n"
+    f"🚚 _Delivery fee:_ *{delivery_fee:.2f} birr*\n"
+    f"──────────────────────\n"
+    f"💵 *Total Payable:* *{total:.2f} birr*\n\n"
+    f"📍 _Drop-off:_ *{dropoff}*\n"
+    f"{('📝 _Notes:_ ' + notes) if notes else ''}\n"
+    f"\n⏱️ _Estimated delivery:_ *Most orders arrive in about 30–60 minutes*\n"
+    "\n✅ *Everything looks perfect?*\n"
+    "_Tap Confirm to place your order._"
+)
+
 
     # Dynamic typing animation
     status_msg = await message.answer("⏳ Preparing your order summary")
@@ -1549,7 +1553,11 @@ async def final_confirm(cb: CallbackQuery, state: FSMContext):
         
 
 
-
+    admin_items = breakdown["items"]
+    items_admin = "\n".join(
+    f"• {i['name']} x{i['qty']}" if i['qty'] > 1 else f"• {i['name']}"
+    for i in admin_items
+) or "—"
     # Admin log: order placed, waiting for vendor
     if settings.ADMIN_DAILY_GROUP_ID:
         try:
@@ -1562,7 +1570,7 @@ async def final_confirm(cb: CallbackQuery, state: FSMContext):
                 f"🍴 Vendor: {vendor_name}\n"
                 f"📍 Drop-off: {data.get('dropoff', '')}\n"
                 f"{('📝 Notes: ' + data.get('notes', '') + '\n') if data.get('notes') else ''}"
-                f"🛒 Foods:\n{items}\n\n"
+                f"🛒 Foods:\n{items_admin}\n\n"                
                 f"💵 Total: {total_payable:.2f} birr (COD)\n"
                 f"⚡ Status: Meal request sent — waiting for confirmation…"
             )

@@ -441,11 +441,23 @@ async def _fetch_single_past_order(order_id: int) -> Optional[Dict[str, Any]]:
     except Exception:
         return None
     
-    
+from collections import defaultdict
+import contextlib
+def _fmt_dt(dt):
+    if not dt:
+        return None
+    if isinstance(dt, str):
+        return dt
+    try:
+        return dt.isoformat(sep=" ", timespec="seconds")
+    except Exception:
+        return str(dt)
 
 @router.callback_query(lambda c: c.data.startswith("past:view:"))
 async def handle_past_order_view(callback: CallbackQuery):
+    from datetime import datetime
     """Show full receipt-like breakdown of one past order (delivered or cancelled)."""
+    # parse order id
     try:
         _, _, order_id_str = callback.data.split(":")
         order_id = int(order_id_str)
@@ -458,14 +470,26 @@ async def handle_past_order_view(callback: CallbackQuery):
         await callback.answer("Order not found.", show_alert=True)
         return
 
-    # Parse breakdown
+    # parse breakdown safely
     try:
         breakdown = json.loads(order.get("breakdown_json") or "{}")
-        items = breakdown.get("items", [])
+        items_list = breakdown.get("items", []) or []
     except Exception:
-        items = []
+        items_list = []
 
-    # Status handling
+    # normalize items into name -> qty mapping
+    counts = defaultdict(int)
+    for it in items_list:
+        # item may be a dict with name and qty, or a simple string
+        if isinstance(it, dict):
+            name = it.get("name") or it.get("title") or "Unknown item"
+            qty = int(it.get("qty", 1) or 1)
+        else:
+            name = str(it)
+            qty = 1
+        counts[name] += qty
+
+    # status and timestamps
     status = (order.get("status") or "").lower()
     if status == "delivered":
         status_str = "✅ Delivered"
@@ -474,47 +498,47 @@ async def handle_past_order_view(callback: CallbackQuery):
     else:
         status_str = status.capitalize() or "—"
 
-    # Receipt text layout
-    text_lines = [
-        "🧾 **Order Receipt**",
+    delivered_at = _fmt_dt(order.get("delivered_at"))
+    cancelled_at = _fmt_dt(order.get("updated_at"))
+
+    # build receipt lines
+    lines = [
+        "🧾 *Order Receipt*",
         "──────────────────────────",
-        f"**Order ID:** #{order_id}",
-        f"**Status:** {status_str}",
+        f"*Order ID:* #{order_id}",
+        f"*Status:* {status_str}",
     ]
+    if delivered_at and status == "delivered":
+        lines.append(f"*Delivered At:* {delivered_at}")
+    if cancelled_at and status == "cancelled":
+        lines.append(f"*Cancelled At:* {cancelled_at}")
 
-    if status == "delivered" and order.get("delivered_at"):
-        text_lines.append(f"**Delivered At:** {order['delivered_at']}")
-    if status == "cancelled" and order.get("updated_at"):
-        text_lines.append(f"**Cancelled At:** {order['updated_at']}")
-
-    text_lines.append("\n🍴 **Items:**")
-    if items:
-        counts = Counter(items)
-        for name, count in counts.items():
-            text_lines.append(f" • {name} x{count}" if count > 1 else f" • {name}")
+    lines.append("\n🍴 *Items:*")
+    if counts:
+        for name, qty in counts.items():
+            lines.append(f" • {name} x{qty}" if qty > 1 else f" • {name}")
     else:
-        text_lines.append(" • (details unavailable)")
+        lines.append(" • (details unavailable)")
 
     subtotal = order.get("food_subtotal") or 0
     delivery_fee = order.get("delivery_fee") or 0
-    total = subtotal + delivery_fee if subtotal or delivery_fee else order.get("total", 0)
+    total = subtotal + delivery_fee if (subtotal or delivery_fee) else order.get("total", 0)
 
-    text_lines.append(
-        f"\n💳 **Payment:** {order.get('payment_method', 'N/A').capitalize()}\n"
-        f"💰 **Total:** {total} birr"
+    lines.append(
+        f"\n💳 *Payment:* {str(order.get('payment_method', 'N/A')).capitalize()}\n"
+        f"💰 *Total:* {total} birr"
     )
 
     if subtotal and delivery_fee:
-        text_lines.append(f"\nSubtotal: {subtotal} birr\nDelivery Fee: {delivery_fee} birr")
+        lines.append(f"\nSubtotal: {subtotal} birr\nDelivery Fee: {delivery_fee} birr")
 
-    # Footer
     if status == "delivered":
-        text_lines.append("\nThank you for choosing DeliverAAU! 🌍")
-        text_lines.append("\n⭐ Please rate your overall experience:")
+        lines.append("\nThank you for choosing DeliverAAU! 🌍")
+        lines.append("\n⭐ Please rate your overall experience:")
     else:
-        text_lines.append("\nThis order was cancelled. ❌")
+        lines.append("\nThis order was cancelled. ❌")
 
-    # Inline buttons
+    # keyboard
     kb_rows = []
     if status == "delivered":
         kb_rows.append([
@@ -525,28 +549,26 @@ async def handle_past_order_view(callback: CallbackQuery):
             InlineKeyboardButton(text="⭐5", callback_data=f"rate_vendor:{order_id}:5"),
         ])
     kb_rows.append([InlineKeyboardButton(text="⬅️ Back", callback_data="past:back")])
-
     kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
 
-    try:
-        await callback.message.edit_text(
-            "\n".join(text_lines),
-            reply_markup=kb,
-            parse_mode="Markdown",
-            disable_web_page_preview=True,
-        )
-    except Exception:
-        await callback.message.answer(
-            "\n".join(text_lines),
-            reply_markup=kb,
-            parse_mode="Markdown",
-            disable_web_page_preview=True,
-        )
-    try:
-        await callback.answer()
-    except Exception:
-        pass
+    text = "\n".join(lines)
 
+    # try to edit, fall back to sending a new message
+    try:
+        # avoid Telegram "same content" error by comparing text and markup
+        same_text = (callback.message and callback.message.text == text)
+        same_markup = (callback.message and callback.message.reply_markup == kb)
+        if not (same_text and same_markup):
+            await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown", disable_web_page_preview=True)
+        else:
+            # still answer the callback so UI doesn't hang
+            await callback.answer()
+    except Exception:
+        with contextlib.suppress(Exception):
+            await callback.message.answer(text, reply_markup=kb, parse_mode="Markdown", disable_web_page_preview=True)
+    finally:
+        with contextlib.suppress(Exception):
+            await callback.answer()
 
 @router.callback_query(lambda c: c.data.startswith("past:page:"))
 async def handle_past_orders_pagination(callback: CallbackQuery):
