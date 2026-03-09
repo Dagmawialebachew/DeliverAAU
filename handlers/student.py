@@ -1262,11 +1262,13 @@ async def ask_final_confirmation(message: Message, state: FSMContext):
             if chargeable_items == 1:
                 delivery_fee = 25.0
             elif chargeable_items == 2:
-                delivery_fee = 40.0
-            elif chargeable_items >= 3:
-                delivery_fee = 55.0
-            else:
+                delivery_fee = 45.0
+            elif chargeable_items == 3:
                 delivery_fee = 65.0
+            elif chargeable_items >= 4:
+                delivery_fee = 85.0
+            else:
+                delivery_fee = 100.0
   # extend logic if needed
 
     total = subtotal + delivery_fee
