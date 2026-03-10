@@ -1252,7 +1252,7 @@ async def ask_final_confirmation(message: Message, state: FSMContext):
     if chargeable_items == 0:
         delivery_fee = 0.0
     else:
-        if campus_text.strip().upper() == "FBE":
+        if campus_text and campus_text.strip().upper() == "FBE":
             # Normal fee schedule
             if chargeable_items == 1:
                 delivery_fee = 30.0
